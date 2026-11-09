@@ -115,3 +115,4 @@ def test_smart_analyzer_sandbox_probe_and_one_click_cleanup(tmp_path: Path):
         assert len(db.list_vault_archives(status="QUARANTINED")) == 2
     finally:
         kernel32.CloseHandle(h)
+

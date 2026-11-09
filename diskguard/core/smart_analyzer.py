@@ -477,3 +477,4 @@ class SmartAppAnalyzer:
             "archives_created": archives_created,
             "rules_saved": rules_saved,
         }
+

@@ -360,3 +360,4 @@ class SettingsTab(QWidget):
             f"Số gói tự động Rollback: {len(res['auto_rolled_back'])}\n"
             f"Số gói quá hạn D ngày đã xóa: {len(res['purged'])}",
         )
+

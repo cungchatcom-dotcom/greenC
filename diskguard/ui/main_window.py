@@ -491,13 +491,16 @@ class MainWindow(QMainWindow):
             self._update_drive_header(self.drive_combo.currentText())
             self.settings_tab.refresh_all()
             if res and not stopped:
-                QMessageBox.information(
-                    self,
-                    "Hoàn tất dọn dẹp",
-                    f"Đã thu hồi an toàn {format_bytes(res['freed_bytes'])}.\n\n"
-                    f"• Đã lưu bản nén dự phòng (giữ {7} ngày) trong Cài đặt > Kho Dự phòng.\n"
-                    f"• Đã thiết lập {res['rules_saved']} quy tắc tự động chạy ngầm trong Cài đặt > Quy tắc Ứng dụng.",
+                summary_msg = (
+                    f"Đã thu hồi an toàn {format_bytes(res['freed_bytes'])} "
+                    f"(Lưu dự phòng 7 ngày trong Kho dự phòng và kích hoạt {res['rules_saved']} quy tắc chạy ngầm)"
                 )
+                self.progress_card.update_progress(
+                    100,
+                    "Hoàn tất dọn dẹp và thiết lập quy tắc chạy ngầm",
+                    summary_msg,
+                )
+                self.cleanup_tab.proposal_summary_label.setText(summary_msg)
 
         self._launch_background_worker(
             "Đang thực thi dọn dẹp an toàn và thiết lập quy tắc chạy ngầm...",

@@ -190,3 +190,4 @@ class SmartCleanupTab(QWidget):
         selected = [p for p in self._proposals if p.selected]
         if selected:
             self.executeCleanupRequested.emit(selected)
+

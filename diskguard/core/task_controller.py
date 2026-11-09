@@ -64,3 +64,4 @@ class TaskControl:
         if cb is not None:
             cb(max(0, min(100, int(percent))), step_title, detail)
         return self.wait_if_paused()
+

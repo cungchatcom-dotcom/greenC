@@ -173,3 +173,4 @@ class TaskProgressCard(QFrame):
         self.btn_stop.setEnabled(False)
         self.title_label.setText("Tác vụ gặp sự cố")
         self.detail_label.setText(err_msg)
+
