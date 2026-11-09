@@ -139,6 +139,20 @@ Chạy định kỳ hoặc theo sự kiện cho mọi gói `.zip` đang ở tr�
 3. **Tự động xóa sau $D$ ngày an toàn (`purge_expired_archives()`):**
    - Với mọi gói `QUARANTINED` có `now >= expires_at` và không phát sinh bất kỳ cảnh báo mất an toàn nào: xóa file `.zip` và `.manifest.json` khỏi đĩa, cập nhật `status = 'PURGED'` và `status_reason = 'An toàn sau D ngày — đã xóa tự động'`.
 
+### 4.5. Chuyên biệt hóa cho Nhóm Ứng dụng Chat/Media (Zalo, DingTalk) & Xử lý `NTFS HardLink` (`core/app_profiles.py`)
+1. **Nhận diện Hồ sơ Thông minh Đa Ổ Đĩa (`Smart App Profiles`):**
+   - **Zalo Profile:** Tự động đọc `%APPDATA%\ZaloData\config.json` để phát hiện thư mục lưu trữ Media/DB liên ổ đĩa (ví dụ `F:\Zalo Data\media`, `F:\Zalo Data\message`), kết hợp với `%APPDATA%\ZaloData\Cache`, `%LOCALAPPDATA%\Programs\Zalo\Zalo-*` (tự động nhận diện các thư mục phiên bản cũ không còn chạy so với tiến trình `Zalo.exe` hiện hành), `%LOCALAPPDATA%\Zalo\pending`, và `%USERPROFILE%\Documents\Zalo Received Files`.
+   - **DingTalk Profile:** Tự động phát hiện các thư mục tài khoản `%APPDATA%\DingTalk\*_v2\EAppFiles\download` (gói `.amr`), `EAppFiles\unziped`, `resource_cache\00..ff`, `log`, `holmeslogs`, và `%LOCALAPPDATA%\DingTalk\dumps`.
+   - **Bảo vệ tự động (`Protected Core`):** Tự động thêm `Database\_production\*`, `DBFiles\*`, `dtnest_db\*`, `*.db`, `*.db-wal`, `*.db-shm`, `*.rescache`, `lockfile` vào `exclude_patterns` để đảm bảo ứng dụng chat không bao giờ mất lịch sử chỉ mục tin nhắn.
+2. **Đo lường & Nén/Rollback Nhận biết `NTFS HardLink` (`st_ino` Deduplication & HardLink Group):**
+   - Khi tính toán dung lượng thực tế của một thư mục (như `ZaloDownloads\fileNoise` và `ZaloDownloads\resource\<chat_id>\fileNoise`), hệ thống sử dụng `os.stat(path).st_ino` để khử trùng lặp, chỉ cộng dung lượng 1 lần cho mỗi inode vật lý.
+   - Khi thu hồi một file có `st_nlink > 1` (nhiều đường dẫn cùng trỏ tới một inode trong các thư mục mục tiêu):
+     - Gom tất cả các đường dẫn đồng liên kết (`hardlink_siblings`) vào cùng một mục `FileManifestItem` trong `manifest.json` và cột `hardlink_paths_json` trong bảng `vault_files`.
+     - Chỉ lưu 1 bản dữ liệu vật lý vào `.zip`, sau đó xóa đồng bộ tất cả các đường dẫn trong nhóm HardLink để NTFS thực sự giải phóng dung lượng đĩa (`nlink -> 0`).
+     - Khi **Rollback**: Giải nén trả file vật lý về đường dẫn đầu tiên, khôi phục `mtime`, sau đó dùng `os.link(primary_path, sibling_path)` để tái tạo lại toàn bộ các nhánh HardLink đúng nguyên trạng như trước khi nén.
+3. **Kho Lưu Trữ Liên Ổ Đĩa (`Cross-Drive Safe Vault`):**
+   - Mặc định đặt `Safe Vault` tại ổ đĩa có dung lượng trống dồi dào (ví dụ `C:\DiskGuard\vault`), cho phép thu hồi ngay 100% dung lượng vật lý trên các ổ đĩa đang đầy (như ổ `F:\` chứa `F:\Zalo Data`) ngay cả với các file Media (`.jpg`, `.mp4`, `.amr`, `fileNoise`) vốn có tỷ lệ nén thấp.
+
 ---
 
 ## 5. Thiết kế Giao diện Người dùng (PySide6 Desktop + System Tray)
@@ -167,3 +181,4 @@ Chạy định kỳ hoặc theo sự kiện cho mọi gói `.zip` đang ở tr�
    - Kiểm tra Rollback tự động & thủ công khôi phục đúng 100% nội dung (`SHA-256` khớp tuyệt đối), khôi phục `mtime` và tự động đưa file vào danh sách bảo vệ (`protected_files`) để lần quét Quota tiếp theo không nén lại file đó.
    - Kiểm tra tự động xóa gói `.zip` khi hết hạn $D$ ngày mà vẫn an toàn.
 2. Ứng dụng GUI khởi chạy mượt mà không lỗi, biểu đồ cột bấm chọn được từng ngày và cập nhật bảng chi tiết tức thời.
+
