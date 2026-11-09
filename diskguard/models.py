@@ -75,3 +75,4 @@ class VaultArchive:
     status: str  # QUARANTINED | ROLLED_BACK | PURGED
     status_reason: str
     resolved_at: str = ""
+

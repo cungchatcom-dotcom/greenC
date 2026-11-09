@@ -309,3 +309,4 @@ class QuotaManagerTab(QWidget):
                 "Kiểm tra Quota",
                 "Tất cả các Rule hiện đều nằm trong ngưỡng cho phép.",
             )
+

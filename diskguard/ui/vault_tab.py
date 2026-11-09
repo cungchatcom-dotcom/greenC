@@ -229,3 +229,4 @@ class SafeVaultTab(QWidget):
             f"• Số gói tự động Rollback do phát hiện lỗi: {len(res['auto_rolled_back'])}\n"
             f"• Số gói đã xóa vĩnh viễn do đủ D ngày an toàn: {len(res['purged'])}",
         )
+

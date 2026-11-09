@@ -83,3 +83,4 @@ def compute_physical_usage(
 
     physical_bytes = sum(inode_sizes.values())
     return physical_bytes, naive_bytes, inode_map
+

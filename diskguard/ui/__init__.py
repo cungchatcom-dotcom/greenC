@@ -9,3 +9,4 @@ def format_bytes(num_bytes: int | float) -> str:
             return f"{sign}{val:.2f} {unit}"
         val /= 1024.0
     return f"{sign}{val:.2f} TB"
+

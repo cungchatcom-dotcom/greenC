@@ -1,7 +1,7 @@
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QGroupBox,
+    QFrame,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -21,14 +21,13 @@ from diskguard.ui.chart_widget import DailyBarChartWidget
 
 class DailyMonitorTab(QWidget):
     """
-    Tab 1:
-    - Top: Interactive Daily Bar Chart (`DailyBarChartWidget`).
-    - Bottom Left: Which folders grew on the selected day & Why (Reason classification).
-    - Bottom Right: Which Application (.exe) or Windows Service caused the growth,
-      with a 1-click button to set a Soft Rolling Quota for that application.
+    Clean Apple/Google-style Overview page:
+    - Top: Interactive Daily Bar Chart.
+    - Bottom Left: Folders that grew on the selected day & why.
+    - Bottom Right: Applications & Windows Services responsible for the growth.
     """
 
-    requestCreateQuota = Signal(str, str, str, list)  # app_name, process_name, service_name, paths
+    requestCreateQuota = Signal(str, str, str, list)
 
     def __init__(self, db: DiskGuardDB, parent: QWidget | None = None):
         super().__init__(parent)
@@ -37,33 +36,42 @@ class DailyMonitorTab(QWidget):
         self._selected_date = ""
 
         root_layout = QVBoxLayout(self)
-        root_layout.setContentsMargins(8, 8, 8, 8)
-        root_layout.setSpacing(10)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(12)
 
         self.chart = DailyBarChartWidget(self)
         self.chart.daySelected.connect(self._on_day_selected)
         root_layout.addWidget(self.chart)
 
-        self.day_banner = QLabel("📅 Chi tiết biến động ngày: (Chọn một cột ngày trên biểu đồ)")
+        self.day_banner = QLabel("Chi tiết biến động theo ngày")
         self.day_banner.setStyleSheet(
-            "font-size: 13px; font-weight: bold; color: #38BDF8; padding: 4px;"
+            "font-size: 13px; font-weight: 600; color: #1D1D1F; padding: 2px 4px;"
         )
         root_layout.addWidget(self.day_banner)
 
         splitter = QSplitter(Qt.Orientation.Horizontal, self)
+        splitter.setHandleWidth(12)
 
-        # Left group: Folders & Reasons
-        left_group = QGroupBox("1. Chỗ nào đang làm đầy ổ cứng? Nguyên nhân vì sao?")
-        left_layout = QVBoxLayout(left_group)
-        self.folder_table = QTableWidget(0, 4)
+        # Left card: Folders & Reasons
+        left_card = QFrame()
+        left_card.setObjectName("SurfaceCard")
+        left_layout = QVBoxLayout(left_card)
+        left_layout.setContentsMargins(14, 12, 14, 12)
+        left_title = QLabel("Vị trí tăng dung lượng & Nguyên nhân")
+        left_title.setStyleSheet("font-size: 13px; font-weight: 600; color: #1D1D1F;")
+        left_layout.addWidget(left_title)
+
+        self.folder_table = QTableWidget(0, 3)
         self.folder_table.setHorizontalHeaderLabels(
             [
-                "Thư mục phát sinh dung lượng",
-                "Mức tăng trong ngày",
-                "Mã Nguyên nhân",
-                "Giải thích Nguyên nhân & Số file",
+                "Thư mục",
+                "Mức tăng",
+                "Nguyên nhân ghi nhận",
             ]
         )
+        self.folder_table.verticalHeader().setVisible(False)
+        self.folder_table.setShowGrid(False)
+        self.folder_table.setAlternatingRowColors(True)
         self.folder_table.horizontalHeader().setSectionResizeMode(
             0, QHeaderView.ResizeMode.Stretch
         )
@@ -71,46 +79,48 @@ class DailyMonitorTab(QWidget):
             1, QHeaderView.ResizeMode.ResizeToContents
         )
         self.folder_table.horizontalHeader().setSectionResizeMode(
-            2, QHeaderView.ResizeMode.ResizeToContents
-        )
-        self.folder_table.horizontalHeader().setSectionResizeMode(
-            3, QHeaderView.ResizeMode.Stretch
+            2, QHeaderView.ResizeMode.Stretch
         )
         left_layout.addWidget(self.folder_table)
 
-        # Right group: Applications & Windows Services
-        right_group = QGroupBox("2. Do Ứng dụng hay Windows Service nào? (Bấm Đặt Quota để khống chế)")
-        right_layout = QVBoxLayout(right_group)
-        self.actor_table = QTableWidget(0, 5)
+        # Right card: Applications & Services
+        right_card = QFrame()
+        right_card.setObjectName("SurfaceCard")
+        right_layout = QVBoxLayout(right_card)
+        right_layout.setContentsMargins(14, 12, 14, 12)
+        right_title = QLabel("Ứng dụng & Dịch vụ hệ thống (Services)")
+        right_title.setStyleSheet("font-size: 13px; font-weight: 600; color: #1D1D1F;")
+        right_layout.addWidget(right_title)
+
+        self.actor_table = QTableWidget(0, 4)
         self.actor_table.setHorizontalHeaderLabels(
             [
-                "Tiến trình (.exe)",
-                "Ứng dụng / Windows Service",
-                "Dung lượng đã ghi",
-                "Nguyên nhân chính",
-                "Khống chế Quota",
+                "Ứng dụng / Service",
+                "Tiến trình",
+                "Dung lượng ghi",
+                "Giới hạn",
             ]
         )
+        self.actor_table.verticalHeader().setVisible(False)
+        self.actor_table.setShowGrid(False)
+        self.actor_table.setAlternatingRowColors(True)
         self.actor_table.horizontalHeader().setSectionResizeMode(
-            0, QHeaderView.ResizeMode.ResizeToContents
+            0, QHeaderView.ResizeMode.Stretch
         )
         self.actor_table.horizontalHeader().setSectionResizeMode(
-            1, QHeaderView.ResizeMode.Stretch
+            1, QHeaderView.ResizeMode.ResizeToContents
         )
         self.actor_table.horizontalHeader().setSectionResizeMode(
             2, QHeaderView.ResizeMode.ResizeToContents
         )
         self.actor_table.horizontalHeader().setSectionResizeMode(
-            3, QHeaderView.ResizeMode.Stretch
-        )
-        self.actor_table.horizontalHeader().setSectionResizeMode(
-            4, QHeaderView.ResizeMode.ResizeToContents
+            3, QHeaderView.ResizeMode.ResizeToContents
         )
         right_layout.addWidget(self.actor_table)
 
-        splitter.addWidget(left_group)
-        splitter.addWidget(right_group)
-        splitter.setSizes([540, 560])
+        splitter.addWidget(left_card)
+        splitter.addWidget(right_card)
+        splitter.setSizes([580, 520])
         root_layout.addWidget(splitter, stretch=1)
 
     def load_drive_data(
@@ -122,7 +132,6 @@ class DailyMonitorTab(QWidget):
             if snapshots is not None
             else self.db.get_daily_snapshots(drive, limit_days=14)
         )
-        # Pick the most recent day with events or the last snapshot day
         selected = self._selected_date
         if snaps and (
             not selected or all(s.snapshot_date != selected for s in snaps)
@@ -144,27 +153,22 @@ class DailyMonitorTab(QWidget):
         total_day_delta = sum(int(f["total_delta_bytes"]) for f in folders)
 
         self.day_banner.setText(
-            f"📅 Chi tiết biến động ổ {self._current_drive} vào ngày {date_str} — "
-            f"Tổng dung lượng phát sinh ghi nhận: +{format_bytes(total_day_delta)} "
-            f"({len(folders)} nhóm thư mục / {len(actors)} ứng dụng & service)"
+            f"Ngày {date_str} trên ổ {self._current_drive} — "
+            f"Tổng mức tăng ghi nhận: +{format_bytes(total_day_delta)} "
+            f"({len(folders)} thư mục, {len(actors)} tác nhân)"
         )
 
-        # Populate folder breakdown table
         self.folder_table.setRowCount(len(folders))
         for row_idx, f in enumerate(folders):
             p_item = QTableWidgetItem(f["folder_path"])
             delta_item = QTableWidgetItem(f"+{format_bytes(f['total_delta_bytes'])}")
-            delta_item.setForeground(QColor("#FDBA74"))
-            code_item = QTableWidgetItem(f["reason_code"])
-            code_item.setForeground(QColor("#38BDF8"))
+            delta_item.setForeground(QColor("#B45309"))
             detail_item = QTableWidgetItem(f["reason_detail"])
 
             self.folder_table.setItem(row_idx, 0, p_item)
             self.folder_table.setItem(row_idx, 1, delta_item)
-            self.folder_table.setItem(row_idx, 2, code_item)
-            self.folder_table.setItem(row_idx, 3, detail_item)
+            self.folder_table.setItem(row_idx, 2, detail_item)
 
-        # Populate actor (application / Windows Service) table
         self.actor_table.setRowCount(len(actors))
         for row_idx, a in enumerate(actors):
             proc_name = a["process_name"] or "Unknown.exe"
@@ -177,20 +181,15 @@ class DailyMonitorTab(QWidget):
                 if p.strip()
             ]
 
-            self.actor_table.setItem(row_idx, 0, QTableWidgetItem(proc_name))
-            self.actor_table.setItem(row_idx, 1, QTableWidgetItem(label_svc))
+            self.actor_table.setItem(row_idx, 0, QTableWidgetItem(label_svc))
+            self.actor_table.setItem(row_idx, 1, QTableWidgetItem(proc_name))
 
             d_item = QTableWidgetItem(f"+{format_bytes(a['total_delta_bytes'])}")
-            d_item.setForeground(QColor("#F87171"))
+            d_item.setForeground(QColor("#0066CC"))
             self.actor_table.setItem(row_idx, 2, d_item)
-            self.actor_table.setItem(
-                row_idx, 3, QTableWidgetItem(a.get("primary_reason") or "")
-            )
 
-            btn = QPushButton("⚡ Đặt Quota")
-            btn.setStyleSheet(
-                "background-color: #0284C7; color: white; font-weight: bold; padding: 4px 8px; border-radius: 4px;"
-            )
+            btn = QPushButton("Thiết lập quy tắc")
+            btn.setObjectName("SecondaryButton")
             btn.clicked.connect(
                 lambda _=False, app_n=svc_disp, pr=proc_name, sv=svc_name, fl=folders_list: self.requestCreateQuota.emit(
                     app_n, pr, sv, fl
@@ -200,4 +199,4 @@ class DailyMonitorTab(QWidget):
             h = QHBoxLayout(container)
             h.setContentsMargins(2, 2, 2, 2)
             h.addWidget(btn)
-            self.actor_table.setCellWidget(row_idx, 4, container)
+            self.actor_table.setCellWidget(row_idx, 3, container)

@@ -38,3 +38,4 @@ DEFAULT_PROTECTED_PATTERNS = [
 def ensure_app_dirs() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     DEFAULT_VAULT_DIR.mkdir(parents=True, exist_ok=True)
+

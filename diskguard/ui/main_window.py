@@ -1,12 +1,13 @@
-import ctypes
 from pathlib import Path
 import shutil
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QComboBox,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -14,9 +15,9 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QStackedWidget,
     QStyle,
     QSystemTrayIcon,
-    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -27,24 +28,31 @@ from diskguard.config import (
     SANDBOX_DEMO_DIR,
     ensure_app_dirs,
 )
+from diskguard.core.app_profiles import discover_installed_heavy_apps
 from diskguard.core.disk_tracker import DiskTracker
 from diskguard.core.quota_enforcer import QuotaEnforcer
 from diskguard.core.safety_watchdog import SafetyWatchdog
 from diskguard.core.simulator import SandboxSimulator
+from diskguard.core.smart_analyzer import AppAnalysisProposal, SmartAppAnalyzer
+from diskguard.core.task_controller import TaskControl
+from diskguard.models import QuotaRule
 from diskguard.storage.database import DiskGuardDB
 from diskguard.ui import format_bytes
 from diskguard.ui.daily_tab import DailyMonitorTab
-from diskguard.ui.quota_tab import QuotaManagerTab
-from diskguard.ui.vault_tab import SafeVaultTab
+from diskguard.ui.settings_tab import SettingsTab
+from diskguard.ui.smart_cleanup_tab import SmartCleanupTab
+from diskguard.ui.workers import BackgroundTaskWorker, TaskProgressCard
 
 
 class MainWindow(QMainWindow):
     """
-    Main PySide6 window for DiskGuard:
-    - Drive selector + real-time disk usage progress bar.
-    - 1-click real drive & Zalo/DingTalk scanner + 1-click Sandbox Demo.
-    - 3 tabs: Daily Monitor & Drill-down, Application Quota Rules, Safe Vault & Rollback.
-    - System Tray integration and background monitoring timer.
+    Apple macOS / Google Material inspired minimalist desktop interface for DiskGuard:
+    - Left Sidebar navigation:
+        1. Tổng quan ổ đĩa (Daily bar chart & drill-down)
+        2. Dọn dẹp Thông minh (Scan apps -> Auto-test Sandbox -> 1-Click "Dọn dẹp")
+        3. Cài đặt (Settings > Rules chạy ngầm & Kho dự phòng Safe Vault)
+    - Non-blocking QThread execution with Progress Bar, Pause/Resume/Stop, and
+      live step-by-step caption explaining what the engine is doing.
     """
 
     def __init__(
@@ -65,194 +73,311 @@ class MainWindow(QMainWindow):
         self.enforcer = QuotaEnforcer(self.db, self.vault_dir)
         self.watchdog = SafetyWatchdog(self.db)
         self.simulator = SandboxSimulator(self.db, self.sandbox_dir, self.vault_dir)
-
-        self.setWindowTitle(
-            "DiskGuard — Theo Dõi Biến Động Ổ Cứng, Truy Vết Tác Nhân (Zalo/DingTalk) & Quản Lý Quota An Toàn"
+        self.analyzer = SmartAppAnalyzer(
+            self.db, self.vault_dir, self.sandbox_dir / "canary_probes"
         )
-        self.resize(1340, 820)
-        self._apply_dark_theme()
+        self._active_worker: BackgroundTaskWorker | None = None
+
+        self.setWindowTitle("DiskGuard")
+        self.resize(1280, 800)
+        self._apply_clean_apple_google_theme()
 
         central = QWidget(self)
         self.setCentralWidget(central)
-        main_layout = QVBoxLayout(central)
-        main_layout.setContentsMargins(12, 12, 12, 12)
-        main_layout.setSpacing(10)
+        root_h = QHBoxLayout(central)
+        root_h.setContentsMargins(0, 0, 0, 0)
+        root_h.setSpacing(0)
 
-        # Top control bar
-        header_bar = QHBoxLayout()
-        header_bar.addWidget(QLabel("<b>Chọn Ổ Đĩa:</b>"))
+        # Left Navigation Sidebar (macOS System Settings style)
+        sidebar = QFrame()
+        sidebar.setObjectName("Sidebar")
+        sidebar.setFixedWidth(220)
+        sb_layout = QVBoxLayout(sidebar)
+        sb_layout.setContentsMargins(14, 20, 14, 16)
+        sb_layout.setSpacing(6)
+
+        brand_label = QLabel("DiskGuard")
+        brand_label.setStyleSheet(
+            "font-size: 18px; font-weight: 700; color: #1D1D1F; padding: 0 8px 4px 8px;"
+        )
+        brand_sub = QLabel("Quản lý dung lượng thông minh")
+        brand_sub.setStyleSheet(
+            "font-size: 11px; color: #6E6E73; padding: 0 8px 14px 8px;"
+        )
+        sb_layout.addWidget(brand_label)
+        sb_layout.addWidget(brand_sub)
+
+        self.nav_group = QButtonGroup(self)
+        self.nav_group.setExclusive(True)
+
+        self.btn_nav_overview = self._create_nav_button("Tổng quan ổ đĩa", 0, checked=True)
+        self.btn_nav_cleanup = self._create_nav_button("Dọn dẹp thông minh", 1)
+        self.btn_nav_settings = self._create_nav_button("Cài đặt (Rules & Vault)", 2)
+
+        sb_layout.addWidget(self.btn_nav_overview)
+        sb_layout.addWidget(self.btn_nav_cleanup)
+        sb_layout.addWidget(self.btn_nav_settings)
+        sb_layout.addStretch(1)
+
+        self.bg_status_label = QLabel("Chế độ bảo vệ ngầm: Đang bật")
+        self.bg_status_label.setStyleSheet(
+            "font-size: 11px; color: #15803D; padding: 6px 8px;"
+        )
+        sb_layout.addWidget(self.bg_status_label)
+
+        root_h.addWidget(sidebar)
+
+        # Right Main Content Area
+        content_wrap = QWidget()
+        content_layout = QVBoxLayout(content_wrap)
+        content_layout.setContentsMargins(20, 16, 20, 16)
+        content_layout.setSpacing(12)
+
+        # Top Storage Header Card
+        header_card = QFrame()
+        header_card.setObjectName("SurfaceCard")
+        header_layout = QHBoxLayout(header_card)
+        header_layout.setContentsMargins(16, 12, 16, 12)
+        header_layout.setSpacing(12)
+
+        drive_lbl = QLabel("Ổ đĩa:")
+        drive_lbl.setStyleSheet("font-weight: 600; color: #1D1D1F;")
+        header_layout.addWidget(drive_lbl)
 
         self.drive_combo = QComboBox()
+        self.drive_combo.setMinimumWidth(85)
         drives = self.tracker.list_available_drives()
         self.drive_combo.addItems(drives)
         self.drive_combo.currentTextChanged.connect(self._on_drive_changed)
-        header_bar.addWidget(self.drive_combo)
+        header_layout.addWidget(self.drive_combo)
 
         self.drive_usage_bar = QProgressBar()
-        self.drive_usage_bar.setMinimumWidth(260)
-        header_bar.addWidget(self.drive_usage_bar)
+        self.drive_usage_bar.setFixedWidth(220)
+        self.drive_usage_bar.setFixedHeight(8)
+        self.drive_usage_bar.setTextVisible(False)
+        header_layout.addWidget(self.drive_usage_bar)
 
         self.drive_stats_label = QLabel("")
-        header_bar.addWidget(self.drive_stats_label, stretch=1)
+        self.drive_stats_label.setStyleSheet("color: #6E6E73; font-size: 12px;")
+        header_layout.addWidget(self.drive_stats_label, stretch=1)
 
-        is_admin = self._is_running_as_admin()
-        admin_badge = QLabel(
-            "🛡️ Quyền: Administrator" if is_admin else "ℹ️ Quyền: User Standard"
-        )
-        admin_badge.setStyleSheet(
-            "color: #4ADE80; font-weight: bold;"
-            if is_admin
-            else "color: #FBBF24; font-weight: bold;"
-        )
-        header_bar.addWidget(admin_badge)
+        btn_rescan_drive = QPushButton("Làm mới biểu đồ ngày")
+        btn_rescan_drive.setObjectName("SecondaryButton")
+        btn_rescan_drive.clicked.connect(self.start_drive_scan_async)
+        header_layout.addWidget(btn_rescan_drive)
 
-        btn_scan = QPushButton("🔍 Quét Ổ Đĩa & Zalo/DingTalk")
-        btn_scan.setStyleSheet(
-            "background-color: #0284C7; color: white; font-weight: bold; padding: 6px 12px;"
-        )
-        btn_scan.clicked.connect(self.scan_current_drive)
-        header_bar.addWidget(btn_scan)
+        content_layout.addWidget(header_card)
 
-        btn_demo = QPushButton("🧪 Chạy Mô Phỏng Thực Tế (Sandbox Demo)")
-        btn_demo.setToolTip(
-            "Tạo kịch bản Zalo HardLink Media vượt trần Quota -> Tự nén vào Safe Vault -> Sẵn sàng test Auto-Rollback"
-        )
-        btn_demo.setStyleSheet(
-            "background-color: #7C3AED; color: white; font-weight: bold; padding: 6px 12px;"
-        )
-        btn_demo.clicked.connect(lambda: self.run_sandbox_demo(silent=False))
-        header_bar.addWidget(btn_demo)
-
-        main_layout.addLayout(header_bar)
-
-        # Tabs
-        self.tabs = QTabWidget()
+        # Stacked Pages
+        self.stack = QStackedWidget()
         self.daily_tab = DailyMonitorTab(self.db, self)
-        self.quota_tab = QuotaManagerTab(self.db, self.enforcer, self)
-        self.vault_tab = SafeVaultTab(self.db, self.watchdog, self.simulator, self)
-
-        self.tabs.addTab(
-            self.daily_tab,
-            "📊 1. Biểu Đồ Ngày & Truy Vết Nguyên Nhân / Ứng Dụng",
-        )
-        self.tabs.addTab(
-            self.quota_tab,
-            "⚖️ 2. Giới Hạn Quota Xoay Vòng (Zalo / DingTalk / App)",
-        )
-        self.tabs.addTab(
-            self.vault_tab,
-            "📦 3. Kho Nén Tạm (Safe Vault) & Tự Động Rollback (D Ngày)",
+        self.cleanup_tab = SmartCleanupTab(self)
+        self.settings_tab = SettingsTab(
+            self.db, self.enforcer, self.watchdog, self.simulator, self
         )
 
+        self.stack.addWidget(self.daily_tab)
+        self.stack.addWidget(self.cleanup_tab)
+        self.stack.addWidget(self.settings_tab)
+        content_layout.addWidget(self.stack, stretch=1)
+
+        # Persistent Non-Blocking Task Progress Card (Start / Pause / Resume / Stop + Step Caption)
+        self.progress_card = TaskProgressCard(self)
+        self.progress_card.startRequested.connect(self.start_smart_app_analysis_async)
+        content_layout.addWidget(self.progress_card)
+
+        root_h.addWidget(content_wrap, stretch=1)
+
+        # Wire signals
         self.daily_tab.requestCreateQuota.connect(self._on_request_create_quota)
-        self.quota_tab.archiveCreated.connect(self.vault_tab.refresh_vault_table)
-        self.vault_tab.vaultChanged.connect(self.quota_tab.refresh_rules_table)
-
-        main_layout.addWidget(self.tabs, stretch=1)
+        self.cleanup_tab.scanAppsRequested.connect(self.start_smart_app_analysis_async)
+        self.cleanup_tab.executeCleanupRequested.connect(
+            self.start_one_click_cleanup_async
+        )
+        self.settings_tab.settingsDataChanged.connect(self._on_settings_changed)
 
         self._setup_system_tray()
 
-        # Background periodic timer (every 30s) for Quota & Safety Watchdog
+        # Background periodic timer (every 45s) for silent rules & D-day safety check
         self._bg_timer = QTimer(self)
-        self._bg_timer.timeout.connect(self._run_background_cycle)
-        self._bg_timer.start(30_000)
+        self._bg_timer.timeout.connect(self._run_silent_background_cycle)
+        self._bg_timer.start(45_000)
 
         self._update_drive_header(self.drive_combo.currentText())
-        self.vault_tab.refresh_vault_table()
 
         if auto_scan_on_init:
+            self._seed_default_silent_rules()
             cur_drv = self.drive_combo.currentText() or "C:\\"
             existing = self.db.get_daily_snapshots(cur_drv, limit_days=14)
             if existing:
                 self.daily_tab.load_drive_data(cur_drv, existing)
-                self.quota_tab.refresh_profiles_and_rules()
+                self.settings_tab.refresh_all()
             else:
-                self.scan_current_drive()
+                self.start_drive_scan_async()
         else:
-            self.quota_tab.refresh_rules_table()
+            self.settings_tab.refresh_all()
 
-    def closeEvent(self, event) -> None:  # noqa: N802
-        self._bg_timer.stop()
-        if hasattr(self, "tray_icon") and self.tray_icon is not None:
-            self.tray_icon.hide()
-        super().closeEvent(event)
+    def _create_nav_button(
+        self, text: str, page_index: int, checked: bool = False
+    ) -> QPushButton:
+        btn = QPushButton(text)
+        btn.setObjectName("NavButton")
+        btn.setCheckable(True)
+        btn.setChecked(checked)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.nav_group.addButton(btn, page_index)
+        btn.clicked.connect(lambda: self.stack.setCurrentIndex(page_index))
+        return btn
 
-    @staticmethod
-    def _is_running_as_admin() -> bool:
-        try:
-            return bool(ctypes.windll.shell32.IsUserAnAdmin())
-        except Exception:
-            return False
+    def _seed_default_silent_rules(self) -> None:
+        """
+        Silently registers specialized rules for Zalo, DingTalk, and detected heavy apps
+        into Settings > Rules so they run in the background without cluttering the main UI.
+        """
+        existing_names = {r.app_name for r in self.db.list_quota_rules()}
+        for prof in discover_installed_heavy_apps():
+            if prof.app_name in existing_names:
+                continue
+            cur_gb = prof.physical_bytes / (1024**3)
+            cap_bytes = (
+                int(max(0.5, cur_gb * 0.90) * (1024**3))
+                if cur_gb > 0.2
+                else int(prof.recommended_max_gb * (1024**3))
+            )
+            rule = QuotaRule(
+                id=None,
+                app_name=prof.app_name,
+                process_name=prof.process_name,
+                service_name=prof.service_name,
+                target_paths=prof.reclaimable_paths,
+                max_bytes=cap_bytes,
+                watermark_ratio=0.88,
+                retention_days=7,
+                min_file_age_seconds=60,
+                exclude_patterns=prof.exclude_patterns,
+                protected_files=[],
+                enabled=True,
+            )
+            self.db.save_quota_rule(rule)
 
-    def _apply_dark_theme(self) -> None:
+    def _apply_clean_apple_google_theme(self) -> None:
         self.setStyleSheet(
             """
             QMainWindow, QWidget {
-                background-color: #0F172A;
-                color: #E2E8F0;
+                background-color: #F5F5F7;
+                color: #1D1D1F;
                 font-family: 'Segoe UI';
                 font-size: 12px;
             }
-            QGroupBox {
-                border: 1px solid #334155;
-                border-radius: 6px;
-                margin-top: 8px;
-                padding-top: 10px;
-                font-weight: bold;
+            QFrame#Sidebar {
+                background-color: #EBEBED;
+                border-right: 1px solid #D2D2D7;
             }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 4px;
-                color: #38BDF8;
+            QFrame#SurfaceCard, QFrame#TaskProgressCard {
+                background-color: #FFFFFF;
+                border: 1px solid #E5E5EA;
+                border-radius: 10px;
+            }
+            QPushButton#NavButton {
+                background-color: transparent;
+                color: #1D1D1F;
+                border: none;
+                border-radius: 7px;
+                padding: 9px 12px;
+                text-align: left;
+                font-size: 13px;
+                font-weight: 500;
+            }
+            QPushButton#NavButton:hover {
+                background-color: #DFDFE4;
+            }
+            QPushButton#NavButton:checked {
+                background-color: #0066CC;
+                color: #FFFFFF;
+                font-weight: 600;
+            }
+            QPushButton#PrimaryButton {
+                background-color: #0066CC;
+                color: #FFFFFF;
+                border: none;
+                border-radius: 7px;
+                padding: 7px 16px;
+                font-size: 12px;
+                font-weight: 600;
+            }
+            QPushButton#PrimaryButton:hover {
+                background-color: #0055B3;
+            }
+            QPushButton#PrimaryButton:disabled {
+                background-color: #B0C4DE;
+                color: #F5F5F7;
+            }
+            QPushButton#SecondaryButton {
+                background-color: #F2F2F7;
+                color: #1D1D1F;
+                border: 1px solid #D1D1D6;
+                border-radius: 7px;
+                padding: 6px 12px;
+                font-size: 12px;
+                font-weight: 500;
+            }
+            QPushButton#SecondaryButton:hover {
+                background-color: #E5E5EA;
+            }
+            QPushButton#SecondaryButton:disabled {
+                color: #AEAEB2;
+                background-color: #F9F9FB;
+                border-color: #E5E5EA;
             }
             QTableWidget {
-                background-color: #1E293B;
-                alternate-background-color: #0F172A;
-                gridline-color: #334155;
-                border: 1px solid #334155;
-                border-radius: 4px;
+                background-color: #FFFFFF;
+                alternate-background-color: #F9F9FB;
+                border: 1px solid #E5E5EA;
+                border-radius: 6px;
+                selection-background-color: #E8F0FE;
+                selection-color: #1D1D1F;
             }
             QHeaderView::section {
-                background-color: #0F172A;
-                color: #93C5FD;
-                padding: 6px;
-                border: 1px solid #334155;
-                font-weight: bold;
+                background-color: #F5F5F7;
+                color: #6E6E73;
+                padding: 7px 8px;
+                border: none;
+                border-bottom: 1px solid #E5E5EA;
+                font-weight: 600;
+                font-size: 11px;
+            }
+            QProgressBar {
+                background-color: #E5E5EA;
+                border: none;
+                border-radius: 3px;
+            }
+            QProgressBar::chunk {
+                background-color: #0066CC;
+                border-radius: 3px;
+            }
+            QComboBox, QLineEdit, QTextEdit, QSpinBox, QDoubleSpinBox {
+                background-color: #FFFFFF;
+                border: 1px solid #D1D1D6;
+                border-radius: 6px;
+                padding: 5px 8px;
+                color: #1D1D1F;
             }
             QTabWidget::pane {
-                border: 1px solid #334155;
-                border-radius: 4px;
+                border: none;
+                background-color: transparent;
             }
             QTabBar::tab {
-                background-color: #1E293B;
-                color: #94A3B8;
-                padding: 8px 16px;
-                margin-right: 4px;
-                border-top-left-radius: 6px;
-                border-top-right-radius: 6px;
-                font-weight: bold;
+                background-color: #E5E5EA;
+                color: #6E6E73;
+                padding: 7px 14px;
+                margin-right: 6px;
+                border-radius: 6px;
+                font-weight: 600;
             }
             QTabBar::tab:selected {
-                background-color: #0284C7;
-                color: #FFFFFF;
-            }
-            QLineEdit, QTextEdit, QSpinBox, QDoubleSpinBox, QComboBox {
-                background-color: #1E293B;
-                border: 1px solid #475569;
-                border-radius: 4px;
-                padding: 4px;
-                color: #F8FAFC;
-            }
-            QPushButton {
-                background-color: #334155;
-                color: #F8FAFC;
-                border: 1px solid #475569;
-                border-radius: 4px;
-                padding: 5px 10px;
-            }
-            QPushButton:hover {
-                background-color: #475569;
+                background-color: #FFFFFF;
+                color: #1D1D1F;
+                border: 1px solid #D1D1D6;
             }
             """
         )
@@ -262,18 +387,15 @@ class MainWindow(QMainWindow):
         icon = self.style().standardIcon(QStyle.StandardPixmap.SP_DriveHDIcon)
         self.setWindowIcon(icon)
         self.tray_icon.setIcon(icon)
-        self.tray_icon.setToolTip("DiskGuard — Giám sát ổ đĩa & Quota chạy nền")
+        self.tray_icon.setToolTip("DiskGuard — Đang chạy ngầm")
 
         menu = QMenu(self)
-        act_show = QAction("Mở cửa sổ DiskGuard", self)
+        act_show = QAction("Mở DiskGuard", self)
         act_show.triggered.connect(self.showNormal)
-        act_scan = QAction("Quét & Kiểm tra Quota ngay", self)
-        act_scan.triggered.connect(self._run_background_cycle)
-        act_quit = QAction("Thoát hoàn toàn", self)
+        act_quit = QAction("Thoát", self)
         act_quit.triggered.connect(QApplication.instance().quit)
 
         menu.addAction(act_show)
-        menu.addAction(act_scan)
         menu.addSeparator()
         menu.addAction(act_quit)
         self.tray_icon.setContextMenu(menu)
@@ -287,9 +409,8 @@ class MainWindow(QMainWindow):
             pct = int(u.used / max(1, u.total) * 100)
             self.drive_usage_bar.setValue(pct)
             self.drive_stats_label.setText(
-                f"Đã dùng: <b>{format_bytes(u.used)}</b> / {format_bytes(u.total)} "
-                f"(Còn trống: <b style='color:#4ADE80;'>{format_bytes(u.free)}</b>) "
-                f"| Vault: <code>{self.vault_dir}</code>"
+                f"Đã dùng {format_bytes(u.used)} / {format_bytes(u.total)} "
+                f"(Còn trống {format_bytes(u.free)})"
             )
         except OSError:
             pass
@@ -299,73 +420,140 @@ class MainWindow(QMainWindow):
             return
         self._update_drive_header(drive)
         snaps = self.db.get_daily_snapshots(drive, limit_days=14)
-        if not snaps:
-            self.scan_current_drive()
-        else:
+        if snaps:
             self.daily_tab.load_drive_data(drive, snaps)
+        else:
+            self.start_drive_scan_async()
 
-    def scan_current_drive(self) -> None:
+    def _launch_background_worker(
+        self,
+        initial_title: str,
+        fn,
+        on_done,
+    ) -> None:
+        if self._active_worker is not None and self._active_worker.isRunning():
+            return
+        worker = BackgroundTaskWorker(fn, self)
+        self._active_worker = worker
+        self.progress_card.attach_worker(worker, initial_title)
+        worker.taskFinished.connect(
+            lambda res, stopped: on_done(res, stopped)
+        )
+        worker.start()
+
+    def start_drive_scan_async(self) -> None:
         drive = self.drive_combo.currentText() or "C:\\"
         self._update_drive_header(drive)
-        snaps = self.tracker.scan_drive_history_by_day(drive, days_back=14)
-        self.daily_tab.load_drive_data(drive, snaps)
-        self.quota_tab.refresh_profiles_and_rules()
-        self.vault_tab.refresh_vault_table()
+
+        def _work(ctrl: TaskControl):
+            return self.tracker.scan_drive_history_by_day(
+                drive, days_back=14, task_control=ctrl
+            )
+
+        def _done(snaps, stopped: bool):
+            if snaps:
+                self.daily_tab.load_drive_data(drive, snaps)
+            self.settings_tab.refresh_all()
+
+        self._launch_background_worker(
+            f"Đang phân tích lịch sử biến động ổ đĩa {drive}...",
+            _work,
+            _done,
+        )
+
+    def start_smart_app_analysis_async(self) -> None:
+        self.btn_nav_cleanup.setChecked(True)
+        self.stack.setCurrentWidget(self.cleanup_tab)
+
+        def _work(ctrl: TaskControl):
+            return self.analyzer.scan_and_probe_apps(task_control=ctrl)
+
+        def _done(proposals, stopped: bool):
+            if proposals is not None:
+                self.cleanup_tab.set_proposals(proposals)
+            self.settings_tab.refresh_all()
+
+        self._launch_background_worker(
+            "Đang quét các ứng dụng trên máy và chạy thử chu trình Sandbox...",
+            _work,
+            _done,
+        )
+
+    def start_one_click_cleanup_async(
+        self, proposals: list[AppAnalysisProposal]
+    ) -> None:
+        def _work(ctrl: TaskControl):
+            return self.analyzer.execute_one_click_cleanup(
+                proposals, task_control=ctrl
+            )
+
+        def _done(res: dict | None, stopped: bool):
+            self._update_drive_header(self.drive_combo.currentText())
+            self.settings_tab.refresh_all()
+            if res and not stopped:
+                QMessageBox.information(
+                    self,
+                    "Hoàn tất dọn dẹp",
+                    f"Đã thu hồi an toàn {format_bytes(res['freed_bytes'])}.\n\n"
+                    f"• Đã lưu bản nén dự phòng (giữ {7} ngày) trong Cài đặt > Kho Dự phòng.\n"
+                    f"• Đã thiết lập {res['rules_saved']} quy tắc tự động chạy ngầm trong Cài đặt > Quy tắc Ứng dụng.",
+                )
+
+        self._launch_background_worker(
+            "Đang thực thi dọn dẹp an toàn và thiết lập quy tắc chạy ngầm...",
+            _work,
+            _done,
+        )
 
     def _on_request_create_quota(
         self, app_name: str, process_name: str, service_name: str, paths: list[str]
     ) -> None:
-        self.tabs.setCurrentWidget(self.quota_tab)
-        self.quota_tab.open_new_rule_dialog(
+        self.btn_nav_settings.setChecked(True)
+        self.stack.setCurrentWidget(self.settings_tab)
+        self.settings_tab.open_new_rule_dialog(
             app_name=app_name,
             process_name=process_name,
             service_name=service_name,
             paths=paths,
         )
 
+    def _on_settings_changed(self) -> None:
+        self._update_drive_header(self.drive_combo.currentText())
+
+    # Compatibility helpers for automated tests
     def run_sandbox_demo(self, silent: bool = False) -> dict:
         res = self.simulator.setup_and_trigger_quota_demo()
         self.daily_tab.load_drive_data(self.drive_combo.currentText() or "C:\\")
-        self.quota_tab.refresh_rules_table()
-        self.vault_tab.refresh_vault_table()
-        if not silent:
-            arch = res["archive"]
-            self.tabs.setCurrentWidget(self.vault_tab)
-            if arch:
-                QMessageBox.information(
-                    self,
-                    "🧪 Mô Phỏng Sandbox Thành Công",
-                    f"Đã tạo môi trường giả lập Zalo HardLink Media tại:\n{res['demo_dir']}\n\n"
-                    f"1. Đã tạo 4 cặp file Media HardLink (~9.8 MB vật lý) vượt trần Quota 6 MB.\n"
-                    f"2. Hệ thống tự động bỏ qua file 'Media.db' và chỉ nén các cặp file cũ nhất vào Safe Vault (#{arch.id}).\n"
-                    f"3. Tại Tab 3 (Safe Vault), bạn có thể bấm nút [🧪 Giả lập Lỗi -> Auto-Rollback] hoặc [⏪ Rollback Ngay] để kiểm chứng!",
-                )
+        self.settings_tab.refresh_all()
         return res
 
     def simulate_auto_rollback_for_archive(
         self, archive_id: int, silent: bool = False
     ) -> dict:
         res = self.simulator.simulate_unsafe_file_access_and_auto_rollback(archive_id)
-        self.quota_tab.refresh_rules_table()
-        self.vault_tab.refresh_vault_table()
-        if not silent and archive_id in res["auto_rolled_back"]:
-            QMessageBox.warning(
-                self,
-                "⚡ Tự Động Rollback Thành Công",
-                f"Đã tự động khôi phục gói #{archive_id} và đưa vào danh sách miễn trừ!",
-            )
+        self.settings_tab.refresh_all()
         return res
 
-    def _run_background_cycle(self) -> None:
+    def _run_silent_background_cycle(self) -> None:
+        if self._active_worker is not None and self._active_worker.isRunning():
+            return
         created = self.enforcer.enforce_all_rules()
         safety = self.watchdog.run_safety_cycle()
         if created or safety["auto_rolled_back"] or safety["purged"]:
-            self.quota_tab.refresh_rules_table()
-            self.vault_tab.refresh_vault_table()
+            self.settings_tab.refresh_all()
             if safety["auto_rolled_back"] and self.tray_icon.isVisible():
                 self.tray_icon.showMessage(
-                    "DiskGuard — Tự động Rollback Khẩn cấp",
-                    f"Đã tự động giải nén khôi phục {len(safety['auto_rolled_back'])} gói do phát hiện ứng dụng cần lại file!",
-                    QSystemTrayIcon.MessageIcon.Warning,
+                    "DiskGuard — Tự động khôi phục dữ liệu",
+                    f"Đã tự động giải nén trả lại {len(safety['auto_rolled_back'])} gói dữ liệu cho ứng dụng.",
+                    QSystemTrayIcon.MessageIcon.Information,
                     5000,
                 )
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        self._bg_timer.stop()
+        if self._active_worker is not None and self._active_worker.isRunning():
+            self._active_worker.control.stop()
+            self._active_worker.wait(1500)
+        if hasattr(self, "tray_icon") and self.tray_icon is not None:
+            self.tray_icon.hide()
+        super().closeEvent(event)

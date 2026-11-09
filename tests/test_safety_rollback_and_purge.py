@@ -129,3 +129,4 @@ def test_auto_purge_after_d_days_when_safe(tmp_path: Path):
     arch_loaded = db.get_vault_archive(archive.id)
     assert arch_loaded is not None
     assert arch_loaded.status == "PURGED"
+

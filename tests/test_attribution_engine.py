@@ -107,3 +107,4 @@ def test_zalo_and_dingtalk_smart_profile_discovery(tmp_path: Path):
     dt_profile = discover_dingtalk_profile_from_dirs(dt_roaming, dt_local)
     assert dt_profile is not None
     assert len(dt_profile.reclaimable_paths) >= 3
+

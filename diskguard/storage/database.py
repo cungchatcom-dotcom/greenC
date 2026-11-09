@@ -538,3 +538,4 @@ class DiskGuardDB:
                 """,
                 (status, reason, now_iso, archive_id),
             )
+

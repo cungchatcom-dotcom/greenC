@@ -125,3 +125,4 @@ class SandboxSimulator:
 
         watchdog = SafetyWatchdog(self.db)
         return watchdog.run_safety_cycle()
+

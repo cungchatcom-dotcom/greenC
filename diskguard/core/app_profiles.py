@@ -199,3 +199,4 @@ def discover_installed_heavy_apps() -> list[AppProfile]:
     if dt:
         profiles.append(dt)
     return profiles
+
