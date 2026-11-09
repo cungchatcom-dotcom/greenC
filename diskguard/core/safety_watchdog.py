@@ -144,14 +144,16 @@ class SafetyWatchdog:
                         f"{primary_path.name}.restored_{ts}"
                     )
 
+                hasher = hashlib.sha256()
                 with zf.open(vf.rel_arcname, "r") as src, open(
                     target_primary, "wb"
                 ) as dst:
                     while chunk := src.read(1024 * 1024):
+                        hasher.update(chunk)
                         dst.write(chunk)
 
-                # Verify SHA-256 integrity
-                actual_sha = self._sha256_file(target_primary)
+                # Verify SHA-256 integrity inline without reading from disk a second time
+                actual_sha = hasher.hexdigest()
                 if vf.sha256 and actual_sha != vf.sha256:
                     raise RuntimeError(
                         f"SHA-256 mismatch when rolling back {target_primary}"

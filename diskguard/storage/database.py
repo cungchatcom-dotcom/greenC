@@ -1,8 +1,10 @@
+from contextlib import contextmanager
 import json
 import sqlite3
 import threading
 from datetime import datetime
 from pathlib import Path
+from typing import Iterator
 
 from diskguard.models import (
     DailySnapshot,
@@ -14,7 +16,7 @@ from diskguard.models import (
 
 
 class DiskGuardDB:
-    """Thread-safe SQLite storage layer for DiskGuard."""
+    """Thread-safe SQLite storage layer for DiskGuard with deterministic handle cleanup."""
 
     def __init__(self, db_path: Path | str):
         self.db_path = Path(db_path)
@@ -22,15 +24,21 @@ class DiskGuardDB:
         self._lock = threading.RLock()
         self._init_schema()
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
         conn = sqlite3.connect(str(self.db_path), timeout=30.0, check_same_thread=False)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=NORMAL;")
         conn.execute("PRAGMA foreign_keys=ON;")
-        return conn
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
     def _init_schema(self) -> None:
         with self._lock, self._connect() as conn:
+            conn.execute("PRAGMA journal_mode=WAL;")
             conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS daily_snapshots (

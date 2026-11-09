@@ -31,7 +31,7 @@ class BackgroundTaskWorker(QThread):
         super().__init__(parent)
         self._fn = fn
         self.control = TaskControl()
-        self.control.set_callback(self._on_progress)
+        self.control.set_callback(self._on_progress, min_interval_s=0.016)
 
     def _on_progress(self, percent: int, title: str, detail: str) -> None:
         self.progressChanged.emit(percent, title, detail)

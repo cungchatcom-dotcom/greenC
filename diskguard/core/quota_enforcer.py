@@ -89,8 +89,9 @@ class QuotaEnforcer:
             os.path.normcase(os.path.abspath(p)) for p in rule.protected_files
         }
 
-        # Build candidate inode groups: every path in the hardlink group must be unlocked & eligible
-        candidates: list[tuple[float, int, list[Path]]] = []
+        # Gather candidate inode groups with mtime & size first, then sort oldest-first
+        # so we only perform Win32 lock checks lazily until we reach bytes_to_free.
+        raw_groups: list[tuple[float, int, list[Path]]] = []
         for _, group_paths in inode_map.items():
             primary = group_paths[0]
             try:
@@ -101,7 +102,15 @@ class QuotaEnforcer:
                 continue
             if (now - st.st_mtime) < rule.min_file_age_seconds:
                 continue
+            raw_groups.append((st.st_mtime, st.st_size, group_paths))
 
+        # Sort oldest first (by mtime ascending)
+        raw_groups.sort(key=lambda item: item[0])
+
+        selected: list[tuple[float, int, list[Path]]] = []
+        accumulated = 0
+        for item in raw_groups:
+            _, size_b, group_paths = item
             # If ANY path in the hardlink group is excluded, protected, or locked -> skip group
             skip_group = False
             for gp in group_paths:
@@ -114,16 +123,8 @@ class QuotaEnforcer:
             if skip_group:
                 continue
 
-            candidates.append((st.st_mtime, st.st_size, group_paths))
-
-        # Sort oldest first (by mtime ascending)
-        candidates.sort(key=lambda item: item[0])
-
-        selected: list[tuple[float, int, list[Path]]] = []
-        accumulated = 0
-        for item in candidates:
             selected.append(item)
-            accumulated += item[1]
+            accumulated += size_b
             if accumulated >= bytes_to_free:
                 break
 
@@ -140,23 +141,26 @@ class QuotaEnforcer:
         total_orig_bytes = 0
 
         with zipfile.ZipFile(
-            zip_path, mode="w", compression=zipfile.ZIP_DEFLATED, compresslevel=6
+            zip_path, mode="w", compression=zipfile.ZIP_DEFLATED, compresslevel=1
         ) as zf:
             for idx, (_, size_b, group_paths) in enumerate(selected, start=1):
                 primary = group_paths[0]
-                if is_file_locked(primary) or not primary.exists():
+                if not primary.exists():
                     continue
                 try:
                     st = os.stat(primary, follow_symlinks=False)
-                    digest = self._sha256_file(primary)
                     arcname = f"item_{idx:05d}_{primary.name}"
-                    zf.write(primary, arcname=arcname)
+                    hasher = hashlib.sha256()
+                    with open(primary, "rb") as src, zf.open(arcname, "w") as dst:
+                        while chunk := src.read(1024 * 1024):
+                            hasher.update(chunk)
+                            dst.write(chunk)
                     manifest_items.append(
                         FileManifestItem(
                             original_path=str(primary),
                             rel_arcname=arcname,
                             size_bytes=int(size_b),
-                            sha256=digest,
+                            sha256=hasher.hexdigest(),
                             mtime=float(st.st_mtime),
                             atime=float(st.st_atime),
                             hardlink_paths=[str(p) for p in group_paths],
