@@ -161,7 +161,13 @@ class MainWindow(QMainWindow):
         self.vault_tab.refresh_vault_table()
 
         if auto_scan_on_init:
-            self.scan_current_drive()
+            cur_drv = self.drive_combo.currentText() or "C:\\"
+            existing = self.db.get_daily_snapshots(cur_drv, limit_days=14)
+            if existing:
+                self.daily_tab.load_drive_data(cur_drv, existing)
+                self.quota_tab.refresh_profiles_and_rules()
+            else:
+                self.scan_current_drive()
         else:
             self.quota_tab.refresh_rules_table()
 
