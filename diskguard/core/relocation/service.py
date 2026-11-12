@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Callable
 
-from diskguard.core.relocation.base import CheckResult, RelocationCandidate, RelocationStrategy
+from diskguard.core.relocation.base import CheckResult, RelocationCandidate, RelocationStrategy, now_iso
 from diskguard.core.relocation.fs_ops import RelocationError
 from diskguard.core.relocation.junction import JunctionStrategy
 from diskguard.core.relocation.known_folders import KNOWN_FOLDERS, KnownFolderStrategy
@@ -54,3 +54,15 @@ class RelocationService:
 
     def records(self) -> list[RelocationRecord]:
         return self.db.list_relocations(status=RELOCATION_DONE)
+
+    def complete_guided(self, cand: RelocationCandidate) -> RelocationRecord | None:
+        strategy = cand.strategy
+        if not hasattr(strategy, "verify_done") or not strategy.verify_done():
+            return None
+        return self._save(
+            RelocationRecord(
+                id=None, app_id=cand.app_id, app_name=cand.name, strategy=strategy.kind,
+                source_path=cand.source_path, target_path=str(strategy.data_dir()),
+                size_bytes=cand.size_bytes, status=RELOCATION_DONE, created_at=now_iso(),
+            )
+        )
