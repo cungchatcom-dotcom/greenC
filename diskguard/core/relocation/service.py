@@ -4,6 +4,7 @@ from typing import Callable
 from diskguard.core.relocation.base import CheckResult, RelocationCandidate, RelocationStrategy
 from diskguard.core.relocation.fs_ops import RelocationError
 from diskguard.core.relocation.junction import JunctionStrategy
+from diskguard.core.relocation.known_folders import KNOWN_FOLDERS, KnownFolderStrategy
 from diskguard.core.settings import AppSettings
 from diskguard.core.task_controller import TaskControl
 from diskguard.models import RELOCATION_DONE, RelocationRecord
@@ -13,6 +14,8 @@ from diskguard.storage.database import DiskGuardDB
 def strategy_for_record(rec: RelocationRecord) -> RelocationStrategy:
     if rec.strategy == "junction":
         return JunctionStrategy([p for p in rec.process_names.split(",") if p])
+    if rec.strategy == "known_folder" and rec.app_id in KNOWN_FOLDERS:
+        return KnownFolderStrategy(KNOWN_FOLDERS[rec.app_id])
     raise RelocationError("Không thể hoàn tác mục này tự động")
 
 
