@@ -188,7 +188,7 @@ def test_wb04_smart_analyzer_fallback_to_cache_subdirs_on_probe_failure(tmp_path
         locked_count=5,
     )
     assert ok is True
-    assert "Phương án dự phòng" in strategy
+    assert strategy == "Chỉ dọn bộ đệm"
     assert any("Cache" in d or "logs" in d for d in effective_dirs)
 
 

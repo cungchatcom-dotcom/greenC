@@ -38,7 +38,7 @@ def test_main_window_initializes_and_runs_sandbox_flow(tmp_path: Path):
         reclaimable_bytes=40 * 1024 * 1024,
         recommended_max_bytes=60 * 1024 * 1024,
         probe_passed=True,
-        probe_strategy="Chu trình chuẩn (Verified Safe)",
+        probe_strategy="Đạt",
         probe_detail="Đã chạy thử 1 vòng Nén -> Khôi phục khớp SHA-256 100%.",
     )
     win.cleanup_tab.set_proposals([sample_prop])

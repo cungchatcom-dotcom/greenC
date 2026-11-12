@@ -46,18 +46,15 @@ class DailyBarChartWidget(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         rect = self.rect()
-        # Clean white surface with subtle border
-        painter.setPen(QPen(QColor("#E5E5EA"), 1))
-        painter.setBrush(QColor("#FFFFFF"))
-        painter.drawRoundedRect(rect.adjusted(1, 1, -1, -1), 10.0, 10.0)
+        painter.fillRect(rect, QColor("#FFFFFF"))
 
         if not self._snapshots:
-            painter.setPen(QColor("#6E6E73"))
+            painter.setPen(QColor("#616161"))
             painter.setFont(QFont("Segoe UI", 10))
             painter.drawText(
                 rect,
                 Qt.AlignmentFlag.AlignCenter,
-                "Đang chuẩn bị dữ liệu biểu đồ ngày...",
+                "Chưa có dữ liệu. Bấm Làm mới để đọc lịch sử ổ đĩa.",
             )
             return
 
@@ -69,14 +66,10 @@ class DailyBarChartWidget(QWidget):
         chart_w = max(100.0, rect.width() - left_pad - right_pad)
         chart_h = max(80.0, rect.height() - top_pad - bottom_pad)
 
-        # Header title
-        painter.setPen(QColor("#1D1D1F"))
-        painter.setFont(QFont("Segoe UI", 10, QFont.Weight.DemiBold))
-        painter.drawText(
-            20,
-            24,
-            "Mức sử dụng & Biến động dung lượng theo ngày (Chọn một cột để xem chi tiết)",
-        )
+        # Header caption
+        painter.setPen(QColor("#616161"))
+        painter.setFont(QFont("Segoe UI", 9))
+        painter.drawText(4, 20, "Mức tăng mỗi ngày · chọn một cột để xem chi tiết")
 
         max_delta = max(max(0, s.net_change_bytes) for s in self._snapshots) or 1
         max_used = max(s.used_bytes for s in self._snapshots) or 1
@@ -85,7 +78,7 @@ class DailyBarChartWidget(QWidget):
         base_used = max(0, min_used - int(used_span * 0.25))
 
         # Subtle horizontal grid lines
-        grid_pen = QPen(QColor("#F0F0F5"), 1, Qt.PenStyle.SolidLine)
+        grid_pen = QPen(QColor("#EDEDED"), 1, Qt.PenStyle.SolidLine)
         painter.setFont(QFont("Segoe UI", 8))
         for i in range(4):
             ratio = i / 3.0
@@ -93,7 +86,7 @@ class DailyBarChartWidget(QWidget):
             painter.setPen(grid_pen)
             painter.drawLine(int(left_pad), int(y), int(left_pad + chart_w), int(y))
             val_bytes = base_used + ratio * (max_used - base_used)
-            painter.setPen(QColor("#8E8E93"))
+            painter.setPen(QColor("#616161"))
             painter.drawText(
                 QRectF(6, y - 10, left_pad - 14, 20),
                 Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
@@ -127,13 +120,13 @@ class DailyBarChartWidget(QWidget):
             is_spike = snap.net_change_bytes >= 200 * 1024 * 1024
 
             if is_selected:
-                fill_color = QColor("#0066CC") if not is_spike else QColor("#D97706")
-                border_pen = QPen(QColor("#1D1D1F"), 1.5)
+                fill_color = QColor("#0067C0") if not is_spike else QColor("#C42B1C")
+                border_pen = QPen(QColor("#1B1B1B"), 1.5)
             elif is_hovered:
-                fill_color = QColor("#4791FF") if not is_spike else QColor("#F59E0B")
+                fill_color = QColor("#2B88D8") if not is_spike else QColor("#E0705E")
                 border_pen = QPen(Qt.PenStyle.NoPen)
             else:
-                fill_color = QColor("#BFD9FF") if not is_spike else QColor("#FDE68A")
+                fill_color = QColor("#C7E0F4") if not is_spike else QColor("#F4CFC9")
                 border_pen = QPen(Qt.PenStyle.NoPen)
 
             painter.setPen(border_pen)
@@ -144,9 +137,9 @@ class DailyBarChartWidget(QWidget):
             if snap.net_change_bytes > 0:
                 delta_txt = f"+{format_bytes(snap.net_change_bytes)}"
                 painter.setPen(
-                    QColor("#B45309")
+                    QColor("#C42B1C")
                     if is_spike
-                    else (QColor("#0066CC") if is_selected else QColor("#6E6E73"))
+                    else (QColor("#0067C0") if is_selected else QColor("#616161"))
                 )
             else:
                 delta_txt = ""
@@ -168,7 +161,7 @@ class DailyBarChartWidget(QWidget):
             # Date label on X axis
             short_date = f"{snap.snapshot_date[8:10]}/{snap.snapshot_date[5:7]}"
             painter.setPen(
-                QColor("#1D1D1F") if is_selected else QColor("#6E6E73")
+                QColor("#1B1B1B") if is_selected else QColor("#616161")
             )
             painter.setFont(
                 QFont(
@@ -184,7 +177,7 @@ class DailyBarChartWidget(QWidget):
             )
 
             if is_selected:
-                painter.setBrush(QColor("#0066CC"))
+                painter.setBrush(QColor("#0067C0"))
                 painter.setPen(Qt.PenStyle.NoPen)
                 painter.drawEllipse(QRectF(cx - 2.5, top_pad + chart_h + 26.0, 5.0, 5.0))
 

@@ -1,5 +1,5 @@
 from typing import Any, Callable
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -45,81 +45,53 @@ class BackgroundTaskWorker(QThread):
 
 
 class TaskProgressCard(QFrame):
-    """
-    Clean Apple/Google-style progress panel displaying:
-    - Current step title (bold)
-    - Smooth progress bar (0..100%)
-    - Live caption underneath explaining what the background worker is doing
-    - Start / Pause / Resume / Stop buttons
-    """
+    """Compact status bar at the bottom of the window; hidden while idle."""
 
-    startRequested = Signal()
+    startRequested = Signal()  # kept for compatibility; no start button any more
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
-        self.setObjectName("TaskProgressCard")
+        self.setObjectName("StatusBar")
         self._worker: BackgroundTaskWorker | None = None
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 12, 16, 12)
-        layout.setSpacing(6)
-
-        top_row = QHBoxLayout()
-        self.title_label = QLabel("Hệ thống sẵn sàng")
-        self.title_label.setStyleSheet(
-            "font-size: 13px; font-weight: 600; color: #1D1D1F;"
-        )
-        top_row.addWidget(self.title_label, stretch=1)
-
-        self.pct_label = QLabel("")
-        self.pct_label.setStyleSheet(
-            "font-size: 12px; font-weight: 600; color: #0066CC;"
-        )
-        top_row.addWidget(self.pct_label)
-
-        self.btn_start = QPushButton("Bắt đầu quét")
-        self.btn_start.setObjectName("SecondaryButton")
-        self.btn_start.clicked.connect(self.startRequested.emit)
-
-        self.btn_pause = QPushButton("Tạm dừng")
-        self.btn_pause.setObjectName("SecondaryButton")
-        self.btn_pause.setEnabled(False)
-        self.btn_pause.clicked.connect(self._on_toggle_pause)
-
-        self.btn_stop = QPushButton("Dừng")
-        self.btn_stop.setObjectName("SecondaryButton")
-        self.btn_stop.setEnabled(False)
-        self.btn_stop.clicked.connect(self._on_stop)
-
-        top_row.addWidget(self.btn_start)
-        top_row.addWidget(self.btn_pause)
-        top_row.addWidget(self.btn_stop)
-        layout.addLayout(top_row)
-
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(20, 8, 20, 8)
+        lay.setSpacing(12)
+        self.title_label = QLabel("Sẵn sàng")
+        self.title_label.setStyleSheet("font-weight: 600;")
+        self.detail_label = QLabel("")
+        self.detail_label.setObjectName("Muted")
+        self.detail_label.setMinimumWidth(80)
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
-        self.progress_bar.setValue(0)
         self.progress_bar.setTextVisible(False)
-        self.progress_bar.setFixedHeight(6)
-        layout.addWidget(self.progress_bar)
-
-        self.detail_label = QLabel(
-            "Các quy tắc bảo vệ dung lượng đang chạy ngầm. Bạn có thể bấm 'Bắt đầu quét' hoặc chuyển sang mục Dọn dẹp Thông minh."
-        )
-        self.detail_label.setStyleSheet("font-size: 12px; color: #6E6E73;")
-        self.detail_label.setWordWrap(True)
-        layout.addWidget(self.detail_label)
+        self.progress_bar.setFixedWidth(180)
+        self.pct_label = QLabel("")
+        self.pct_label.setObjectName("Muted")
+        self.pct_label.setFixedWidth(40)
+        self.btn_pause = QPushButton("Tạm dừng")
+        self.btn_pause.setEnabled(False)
+        self.btn_pause.clicked.connect(self._on_toggle_pause)
+        self.btn_stop = QPushButton("Dừng")
+        self.btn_stop.setEnabled(False)
+        self.btn_stop.clicked.connect(self._on_stop)
+        lay.addWidget(self.title_label)
+        lay.addWidget(self.detail_label, 1)
+        lay.addWidget(self.progress_bar)
+        lay.addWidget(self.pct_label)
+        lay.addWidget(self.btn_pause)
+        lay.addWidget(self.btn_stop)
+        self.setVisible(False)
 
     def attach_worker(self, worker: BackgroundTaskWorker, initial_title: str) -> None:
         self._worker = worker
+        self.setVisible(True)
         self.title_label.setText(initial_title)
+        self.detail_label.setText("")
         self.pct_label.setText("0%")
         self.progress_bar.setValue(0)
-        self.btn_start.setEnabled(False)
         self.btn_pause.setEnabled(True)
         self.btn_pause.setText("Tạm dừng")
         self.btn_stop.setEnabled(True)
-
         worker.progressChanged.connect(self.update_progress)
         worker.taskFinished.connect(self._on_finished)
         worker.taskFailed.connect(self._on_failed)
@@ -130,7 +102,12 @@ class TaskProgressCard(QFrame):
         if title:
             self.title_label.setText(title)
         if detail:
-            self.detail_label.setText(detail)
+            self.detail_label.setText(
+                self.detail_label.fontMetrics().elidedText(
+                    detail, Qt.TextElideMode.ElideRight, max(80, self.detail_label.width())
+                )
+            )
+            self.detail_label.setToolTip(detail)
 
     def _on_toggle_pause(self) -> None:
         if not self._worker:
@@ -139,11 +116,10 @@ class TaskProgressCard(QFrame):
         if ctrl.is_paused:
             ctrl.resume()
             self.btn_pause.setText("Tạm dừng")
-            self.title_label.setText("Đang tiếp tục xử lý...")
         else:
             ctrl.pause()
             self.btn_pause.setText("Tiếp tục")
-            self.title_label.setText("Đã tạm dừng — Bấm 'Tiếp tục' để chạy tiếp")
+            self.title_label.setText("Đã tạm dừng")
 
     def _on_stop(self) -> None:
         if not self._worker:
@@ -151,26 +127,29 @@ class TaskProgressCard(QFrame):
         self._worker.control.stop()
         self.btn_pause.setEnabled(False)
         self.btn_stop.setEnabled(False)
-        self.title_label.setText("Đang dừng tác vụ an toàn...")
-        self.detail_label.setText("Đang hoàn tất bước hiện tại và giải phóng tài nguyên...")
+        self.title_label.setText("Đang dừng…")
 
-    def _on_finished(self, _result: object, was_stopped: bool) -> None:
-        self.btn_start.setEnabled(True)
+    def _finish_ui(self) -> None:
         self.btn_pause.setEnabled(False)
         self.btn_pause.setText("Tạm dừng")
         self.btn_stop.setEnabled(False)
+        QTimer.singleShot(5000, self._hide_if_idle)
+
+    def _hide_if_idle(self) -> None:
+        if self._worker is None or not self._worker.isRunning():
+            self.setVisible(False)
+
+    def _on_finished(self, _result: object, was_stopped: bool) -> None:
         if was_stopped:
-            self.title_label.setText("Đã dừng theo yêu cầu")
-            self.detail_label.setText("Tác vụ đã dừng an toàn. Bạn có thể bấm 'Bắt đầu quét' để chạy lại.")
+            self.title_label.setText("Đã dừng")
+            self.detail_label.setText("")
         else:
             self.progress_bar.setValue(100)
             self.pct_label.setText("100%")
+        self._finish_ui()
 
     def _on_failed(self, err_msg: str) -> None:
-        self.btn_start.setEnabled(True)
-        self.btn_pause.setEnabled(False)
-        self.btn_pause.setText("Tạm dừng")
-        self.btn_stop.setEnabled(False)
-        self.title_label.setText("Tác vụ gặp sự cố")
+        self.title_label.setText("Có lỗi")
         self.detail_label.setText(err_msg)
-
+        self.detail_label.setToolTip(err_msg)
+        self._finish_ui()

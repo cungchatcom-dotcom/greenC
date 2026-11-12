@@ -165,7 +165,7 @@ class SmartAppAnalyzer:
         user_temp = local / "Temp"
         if user_temp.exists():
             results.append(
-                ("Bộ nhớ tạm Hệ thống & Ứng dụng (Temp)", "System/Temp", [str(user_temp)])
+                ("Thư mục Temp của Windows", "System/Temp", [str(user_temp)])
             )
 
         for app_label, dirs in sorted(app_folders.items()):
@@ -182,8 +182,8 @@ class SmartAppAnalyzer:
         ctrl = task_control or TaskControl()
         if not ctrl.report(
             5,
-            "Bước 1/4: Khởi tạo bộ quét ứng dụng trên máy",
-            "Đang thu thập danh sách tiến trình đang chạy và bản đồ thư mục ứng dụng...",
+            "Đang chuẩn bị phân tích",
+            "Đang lấy danh sách ứng dụng và tiến trình.",
         ):
             return []
 
@@ -209,8 +209,8 @@ class SmartAppAnalyzer:
             pct = 10 + int((idx / total_cands) * 75)
             if not ctrl.report(
                 pct,
-                f"Bước 2/4: Đang phân tích ứng dụng ({idx}/{total_cands}): {app_name}",
-                f"Kiểm tra cấu trúc lưu trữ, khóa file Win32 và liên kết NTFS HardLink tại {target_dirs[0] if target_dirs else ''}...",
+                f"Đang phân tích {app_name} · {idx}/{total_cands}",
+                target_dirs[0] if target_dirs else "",
             ):
                 break
 
@@ -256,8 +256,8 @@ class SmartAppAnalyzer:
             # Step 3: Execute 1-Cycle Automated Sandbox Canary Probe on the oldest unlocked file group!
             if not ctrl.report(
                 min(95, pct + 2),
-                f"Bước 3/4: Thử nghiệm chu trình Sandbox cho {app_name}",
-                f"Đang nén thử 1 mẫu dữ liệu cũ vào vùng cách ly và kiểm tra tính toàn vẹn khôi phục...",
+                f"Đang kiểm tra an toàn cho {app_name}",
+                "Nén thử một file cũ rồi khôi phục để kiểm tra dữ liệu.",
             ):
                 break
 
@@ -280,11 +280,11 @@ class SmartAppAnalyzer:
             else:
                 traits.append("Đang nghỉ")
             if hardlink_count > 0 or hl_diff > 1024 * 1024:
-                traits.append(f"Có NTFS HardLink ({hardlink_count} nhóm)")
+                traits.append(f"Có liên kết cứng · {hardlink_count} nhóm")
             if locked_count > 0:
-                traits.append(f"Đã tách {locked_count} file đang khóa")
+                traits.append(f"Bỏ qua {locked_count} file đang mở")
             else:
-                traits.append("Các file cũ đều rảnh (Unlocked)")
+                traits.append("File cũ đều không bị khóa")
 
             # Target cleanup: reclaim ~40% of reclaimable old data while keeping a comfortable rolling cap
             target_reclaim = int(reclaimable_bytes * 0.45)
@@ -314,8 +314,8 @@ class SmartAppAnalyzer:
         proposals.sort(key=lambda p: p.reclaimable_bytes, reverse=True)
         ctrl.report(
             100,
-            f"Bước 4/4: Hoàn tất phân tích ({len(proposals)} ứng dụng đủ điều kiện an toàn)",
-            "Đã kiểm chứng xong chu trình Sandbox. Bấm nút 'Dọn dẹp' để thực thi tự động.",
+            f"Đã phân tích xong {len(proposals)} ứng dụng",
+            "Chọn ứng dụng rồi bấm Dọn dẹp.",
         )
         return proposals
 
@@ -381,14 +381,14 @@ class SmartAppAnalyzer:
             if locked_count > 0:
                 return (
                     True,
-                    "Phương án thích ứng (Adaptive Filter)",
-                    f"Đã tự động bỏ qua {locked_count} file đang khóa; kiểm thử nén & khôi phục mẫu '{primary.name}' khớp SHA-256 100%.",
+                    "Đạt · bỏ qua file đang mở",
+                    f"Bỏ qua {locked_count} file đang mở. Đã thử nén và khôi phục '{primary.name}', dữ liệu khớp.",
                     target_dirs,
                 )
             return (
                 True,
-                "Chu trình chuẩn (Verified Safe)",
-                f"Đã chạy thử 1 vòng Nén -> Khôi phục trên '{primary.name}' (khớp SHA-256 & HardLink 100%).",
+                "Đạt",
+                f"Đã thử nén và khôi phục '{primary.name}', dữ liệu và liên kết cứng khớp.",
                 target_dirs,
             )
         except Exception:
@@ -417,11 +417,11 @@ class SmartAppAnalyzer:
             if safe_subdirs:
                 return (
                     True,
-                    "Phương án dự phòng (Chỉ dọn vùng Cache/Temp)",
-                    "Thư mục gốc có file nhạy cảm — đã tự động chuyển sang chế độ chỉ dọn thư mục con Cache/Temp an toàn.",
+                    "Chỉ dọn bộ đệm",
+                    "Thư mục chính có file quan trọng, chỉ dọn các thư mục Cache, Temp, Logs.",
                     safe_subdirs[:6],
                 )
-            return False, "Không khả dụng", "Không vượt qua bài kiểm thử Sandbox", target_dirs
+            return False, "Không đạt", "Không vượt qua kiểm tra an toàn.", target_dirs
         finally:
             probe_zip.unlink(missing_ok=True)
 
@@ -429,6 +429,7 @@ class SmartAppAnalyzer:
         self,
         proposals: list[AppAnalysisProposal],
         task_control: TaskControl | None = None,
+        retention_days: int = 7,
     ) -> dict:
         """
         Executes the user's 1-click "Dọn dẹp" action:
@@ -453,8 +454,8 @@ class SmartAppAnalyzer:
             pct = int(((idx - 1) / total) * 90) + 5
             if not ctrl.report(
                 pct,
-                f"Đang dọn dẹp ({idx}/{total}): {prop.app_name}",
-                f"Đang nén các file cũ không dùng tới vào Kho dự phòng (Safe Vault) và lưu Quy tắc chạy ngầm...",
+                f"Đang dọn {prop.app_name} · {idx}/{total}",
+                "Nén file cũ vào Kho dự phòng.",
             ):
                 break
 
@@ -467,7 +468,7 @@ class SmartAppAnalyzer:
                 target_paths=prop.target_paths,
                 max_bytes=prop.recommended_max_bytes,
                 watermark_ratio=0.92,
-                retention_days=7,
+                retention_days=retention_days,
                 min_file_age_seconds=60,
                 exclude_patterns=prop.exclude_patterns,
                 protected_files=existing.protected_files if existing else [],
@@ -485,10 +486,11 @@ class SmartAppAnalyzer:
                 freed_bytes += arch.original_bytes
                 archives_created += 1
 
-        detail = f"Đã thu hồi {freed_bytes / (1024*1024):.1f} MB từ {archives_created} ứng dụng và đưa {rules_saved} quy tắc vào Cài đặt > Quy tắc chạy ngầm."
+        freed_gb = f"{freed_bytes / (1024**3):.1f}".replace(".", ",")
+        detail = f"Đã giải phóng {freed_gb} GB từ {archives_created} ứng dụng."
         if errors:
             detail += f" Lỗi ở {len(errors)} ứng dụng: " + "; ".join(errors)
-        ctrl.report(100, "Hoàn tất dọn dẹp và thiết lập Quy tắc tự động", detail)
+        ctrl.report(100, "Đã dọn xong", detail)
         return {
             "freed_bytes": freed_bytes,
             "archives_created": archives_created,
