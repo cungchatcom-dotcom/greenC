@@ -76,3 +76,23 @@ class VaultArchive:
     status_reason: str
     resolved_at: str = ""
 
+
+RELOCATION_MOVING = "moving"
+RELOCATION_DONE = "done"
+RELOCATION_FAILED = "failed"
+RELOCATION_UNDONE = "undone"
+
+
+@dataclass
+class RelocationRecord:
+    id: int | None
+    app_id: str
+    app_name: str
+    strategy: str  # junction | known_folder | tool_config | guided
+    source_path: str
+    target_path: str
+    size_bytes: int
+    status: str
+    process_names: str = ""  # comma-separated exe names (junction strategy)
+    created_at: str = ""
+    detail: str = ""

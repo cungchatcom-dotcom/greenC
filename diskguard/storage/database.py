@@ -10,6 +10,7 @@ from diskguard.models import (
     DailySnapshot,
     FileManifestItem,
     QuotaRule,
+    RelocationRecord,
     VaultArchive,
     WriteEvent,
 )
@@ -126,6 +127,20 @@ class DiskGuardDB:
                 CREATE TABLE IF NOT EXISTS app_settings (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS relocations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    app_id TEXT NOT NULL,
+                    app_name TEXT NOT NULL,
+                    strategy TEXT NOT NULL,
+                    source_path TEXT NOT NULL,
+                    target_path TEXT NOT NULL,
+                    size_bytes INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL,
+                    process_names TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    detail TEXT NOT NULL DEFAULT ''
                 );
                 """
             )
@@ -574,3 +589,47 @@ class DiskGuardDB:
                 (status, reason, now_iso, archive_id),
             )
 
+    def save_relocation(self, rec: RelocationRecord) -> int:
+        with self._lock, self._connect() as conn:
+            if rec.id is None:
+                rec.created_at = rec.created_at or datetime.now().isoformat(timespec="seconds")
+                cur = conn.execute(
+                    "INSERT INTO relocations(app_id, app_name, strategy, source_path, target_path, "
+                    "size_bytes, status, process_names, created_at, detail) "
+                    "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (rec.app_id, rec.app_name, rec.strategy, rec.source_path, rec.target_path,
+                     int(rec.size_bytes), rec.status, rec.process_names, rec.created_at, rec.detail),
+                )
+                rec.id = int(cur.lastrowid)
+            else:
+                conn.execute(
+                    "UPDATE relocations SET app_id=?, app_name=?, strategy=?, source_path=?, "
+                    "target_path=?, size_bytes=?, status=?, process_names=?, detail=? WHERE id=?",
+                    (rec.app_id, rec.app_name, rec.strategy, rec.source_path, rec.target_path,
+                     int(rec.size_bytes), rec.status, rec.process_names, rec.detail, rec.id),
+                )
+        return rec.id
+
+    @staticmethod
+    def _row_to_relocation(r: sqlite3.Row) -> RelocationRecord:
+        return RelocationRecord(
+            id=r["id"], app_id=r["app_id"], app_name=r["app_name"], strategy=r["strategy"],
+            source_path=r["source_path"], target_path=r["target_path"],
+            size_bytes=r["size_bytes"], status=r["status"], process_names=r["process_names"],
+            created_at=r["created_at"], detail=r["detail"],
+        )
+
+    def list_relocations(self, status: str | None = None) -> list[RelocationRecord]:
+        with self._lock, self._connect() as conn:
+            if status:
+                rows = conn.execute(
+                    "SELECT * FROM relocations WHERE status = ? ORDER BY id DESC", (status,)
+                ).fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM relocations ORDER BY id DESC").fetchall()
+        return [self._row_to_relocation(r) for r in rows]
+
+    def get_relocation(self, rec_id: int) -> RelocationRecord | None:
+        with self._lock, self._connect() as conn:
+            row = conn.execute("SELECT * FROM relocations WHERE id = ?", (rec_id,)).fetchone()
+        return self._row_to_relocation(row) if row else None
