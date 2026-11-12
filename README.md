@@ -26,3 +26,4 @@ uv run python main.py
 cd C:\DiskGuard
 uv run pytest -v
 ```
+

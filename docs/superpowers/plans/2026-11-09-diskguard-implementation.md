@@ -176,3 +176,4 @@
 - [ ] **Step 3: Chạy toàn bộ bộ test `uv run pytest -v` xác nhận PASS 100% và khởi chạy thử ứng dụng**
 - [ ] **Step 4: Commit hoàn chỉnh mã nguồn**
   - Commit: `feat: add PySide6 desktop UI with interactive daily bar chart, Zalo/DingTalk presets, and system tray`
+
