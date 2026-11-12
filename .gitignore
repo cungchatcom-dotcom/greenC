@@ -11,3 +11,8 @@ sandbox_demo/
 
 
 .superpowers/
+
+# Build output
+build/
+dist/
+

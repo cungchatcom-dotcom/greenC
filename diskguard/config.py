@@ -1,8 +1,12 @@
 import os
 from pathlib import Path
 
+from diskguard import __version__
+
 APP_NAME = "Green C:\\"
-APP_VERSION = "2.0.0"
+APP_VERSION = __version__
+# Stable id shared by the installer (AppId) and the single-instance mutex.
+APP_ID = "GreenC"
 AUTHOR = "Cùng Chat"
 WEBSITE_URL = "https://cungchat.com"
 WEBSITE_LABEL = "cungchat.com"

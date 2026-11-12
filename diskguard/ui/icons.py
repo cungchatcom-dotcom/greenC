@@ -34,5 +34,29 @@ def icon(name: str, color: str = TEXT_MUTED, size: int = 16) -> QIcon:
     return QIcon(pixmap)
 
 
+def app_icon_svg() -> bytes:
+    """Filled tile used for the window, taskbar, exe and installer icons."""
+    return (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">'
+        f'<rect x="0.5" y="0.5" width="15" height="15" rx="3.5" fill="{BRAND_GREEN}"/>'
+        '<g fill="none" stroke="#FFFFFF" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">'
+        '<rect x="3" y="5" width="10" height="6" rx="1.2"/><path d="M10.4 8h.1M5.2 8h2.8"/></g></svg>'
+    ).encode("utf-8")
+
+
+def render_app_icon(size: int) -> QPixmap:
+    renderer = QSvgRenderer(QByteArray(app_icon_svg()))
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    renderer.render(painter)
+    painter.end()
+    return pixmap
+
+
 def app_icon() -> QIcon:
-    return icon("drive", BRAND_GREEN, 32)
+    result = QIcon()
+    for size in (16, 24, 32, 48, 64, 128, 256):
+        result.addPixmap(render_app_icon(size))
+    return result
