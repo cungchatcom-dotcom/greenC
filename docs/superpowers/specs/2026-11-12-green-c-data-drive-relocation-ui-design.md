@@ -30,7 +30,7 @@ Non-goals: renaming the Python package `diskguard`, cloud sync, moving apps inst
 | Vault (zip archives + manifests) | `<data drive>:\Green C\Vault\` |
 | Relocated app data (junction strategy) | `<data drive>:\Green C\Apps\<app-id>\` |
 | Relocated known folders | `<data drive>:\Green C\<Downloads/Documents/…>\` |
-| Sandbox probes | `%LOCALAPPDATA%\Green C\probes\` |
+| Sandbox probes | `%LOCALAPPDATA%\Green C\sandbox\canary_probes\` |
 
 `diskguard/config.py` stops hard-coding `C:\DiskGuard`; it exposes `app_home()` (LOCALAPPDATA
 path) and default retention. Paths that depend on the data drive come from the settings store.
