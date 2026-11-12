@@ -553,6 +553,13 @@ class DiskGuardDB:
                 for r in rows
             ]
 
+    def update_vault_paths(self, archive_id: int, zip_path: str, manifest_path: str) -> None:
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "UPDATE vault_archives SET zip_path = ?, manifest_path = ? WHERE id = ?",
+                (zip_path, manifest_path, archive_id),
+            )
+
     def update_vault_status(
         self, archive_id: int, status: str, reason: str
     ) -> None:
