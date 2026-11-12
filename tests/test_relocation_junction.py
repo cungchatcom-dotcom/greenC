@@ -4,15 +4,15 @@ from pathlib import Path
 
 import pytest
 
-from diskguard.core.relocation import junction as jmod
-from diskguard.core.relocation.base import MOVING_SUFFIX, RelocationCandidate
-from diskguard.core.relocation.fs_ops import RelocationError, create_junction, is_reparse_point
-from diskguard.core.relocation.junction import JunctionStrategy
-from diskguard.core.relocation.recovery import recover_interrupted
-from diskguard.core.relocation.service import RelocationService
-from diskguard.core.settings import AppSettings
-from diskguard.models import RELOCATION_DONE, RELOCATION_FAILED, RELOCATION_MOVING, RELOCATION_UNDONE, RelocationRecord
-from diskguard.storage.database import DiskGuardDB
+from greenc.core.relocation import junction as jmod
+from greenc.core.relocation.base import MOVING_SUFFIX, RelocationCandidate
+from greenc.core.relocation.fs_ops import RelocationError, create_junction, is_reparse_point
+from greenc.core.relocation.junction import JunctionStrategy
+from greenc.core.relocation.recovery import recover_interrupted
+from greenc.core.relocation.service import RelocationService
+from greenc.core.settings import AppSettings
+from greenc.models import RELOCATION_DONE, RELOCATION_FAILED, RELOCATION_MOVING, RELOCATION_UNDONE, RelocationRecord
+from greenc.storage.database import GreenCDB
 
 Usage = namedtuple("Usage", "total used free")
 BIG = lambda _p: Usage(10**13, 0, 10**13)  # noqa: E731
@@ -105,14 +105,14 @@ def test_undo_restores_real_folder(tmp_path: Path):
     assert not (root / "Apps" / "telegram").exists()
 
 
-def _moving_record(db: DiskGuardDB, src: Path, target: Path) -> RelocationRecord:
+def _moving_record(db: GreenCDB, src: Path, target: Path) -> RelocationRecord:
     rec = RelocationRecord(None, "telegram", "Telegram Desktop", "junction", str(src), str(target), 5, RELOCATION_MOVING)
     rec.id = db.save_relocation(rec)
     return rec
 
 
 def test_recover_after_rename_without_junction(tmp_path: Path):
-    db = DiskGuardDB(tmp_path / "r.db")
+    db = GreenCDB(tmp_path / "r.db")
     src = _app(tmp_path)
     target = tmp_path / "D" / "Apps" / "telegram"
     target.mkdir(parents=True)
@@ -126,7 +126,7 @@ def test_recover_after_rename_without_junction(tmp_path: Path):
 
 
 def test_recover_after_junction_created(tmp_path: Path):
-    db = DiskGuardDB(tmp_path / "r.db")
+    db = GreenCDB(tmp_path / "r.db")
     src = _app(tmp_path)
     target = tmp_path / "D" / "Apps" / "telegram"
     target.mkdir(parents=True)
@@ -141,7 +141,7 @@ def test_recover_after_junction_created(tmp_path: Path):
 
 
 def test_service_persists_records_and_requires_data_root(tmp_path: Path):
-    db = DiskGuardDB(tmp_path / "s.db")
+    db = GreenCDB(tmp_path / "s.db")
     settings = AppSettings(db)
     svc = RelocationService(db, settings)
     src = _app(tmp_path)

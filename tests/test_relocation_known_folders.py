@@ -4,16 +4,16 @@ from pathlib import Path
 
 import pytest
 
-from diskguard.core.relocation.base import RelocationCandidate
-from diskguard.core.relocation.fs_ops import RelocationError
-from diskguard.core.relocation.known_folders import (
+from greenc.core.relocation.base import RelocationCandidate
+from greenc.core.relocation.fs_ops import RelocationError
+from greenc.core.relocation.known_folders import (
     KNOWN_FOLDERS,
     KnownFolderStrategy,
     WindowsShellFolders,
     is_onedrive_path,
 )
-from diskguard.core.relocation.service import strategy_for_record
-from diskguard.models import RELOCATION_DONE, RELOCATION_UNDONE
+from greenc.core.relocation.service import strategy_for_record
+from greenc.models import RELOCATION_DONE, RELOCATION_UNDONE
 
 Usage = namedtuple("Usage", "total used free")
 DL = KNOWN_FOLDERS["kf_downloads"]
@@ -98,7 +98,7 @@ def test_real_shell_reads_downloads():
 
 
 def test_factory_builds_known_folder_strategy():
-    from diskguard.models import RelocationRecord
+    from greenc.models import RelocationRecord
 
     rec = RelocationRecord(1, "kf_downloads", "Downloads", "known_folder", "a", "b", 0, "done")
     assert isinstance(strategy_for_record(rec), KnownFolderStrategy)

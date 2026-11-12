@@ -1,6 +1,6 @@
 """
 Bộ Kịch Bản Kiểm Thử Thực Tế Toàn Diện (End-to-End Application Test Cases)
-Thực thi trực tiếp trên giao diện PySide6 MainWindow của DiskGuard:
+Thực thi trực tiếp trên giao diện PySide6 MainWindow của Green C:
 - TC-01: Giao diện chuẩn Apple/Google & Điều hướng Sidebar 3 màn hình.
 - TC-02: Biểu đồ cột biến động theo ngày & Click chọn cột ngày xem chi tiết (Drill-down).
 - TC-03: Kiểm tra Rule chuyên sâu (Zalo / DingTalk) ẩn trong Settings > Rules và chạy ngầm.
@@ -24,10 +24,10 @@ from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import QApplication
 
-from diskguard.models import WriteEvent
-from diskguard.storage.database import DiskGuardDB
-from diskguard.ui.main_window import MainWindow
-from diskguard.ui.workers import BackgroundTaskWorker
+from greenc.models import WriteEvent
+from greenc.storage.database import GreenCDB
+from greenc.ui.main_window import MainWindow
+from greenc.ui.workers import BackgroundTaskWorker
 
 
 def _wait_for_worker(app: QApplication, worker: BackgroundTaskWorker | None, timeout_s: float = 15.0) -> None:
@@ -43,7 +43,7 @@ def _wait_for_worker(app: QApplication, worker: BackgroundTaskWorker | None, tim
 def test_tc01_clean_ui_and_sidebar_navigation(tmp_path: Path):
     """TC-01: Kiểm tra giao diện tối giản chuẩn Apple/Google và chuyển trang trên Sidebar."""
     app = QApplication.instance() or QApplication([])
-    db = DiskGuardDB(tmp_path / "tc01.db")
+    db = GreenCDB(tmp_path / "tc01.db")
     win = MainWindow(db=db, vault_dir=tmp_path / "vault", sandbox_dir=tmp_path / "sandbox", auto_scan_on_init=False)
     win.show()
     app.processEvents()
@@ -70,7 +70,7 @@ def test_tc01_clean_ui_and_sidebar_navigation(tmp_path: Path):
 def test_tc02_daily_bar_chart_click_drilldown(tmp_path: Path):
     """TC-02: Kiểm tra biểu đồ cột theo ngày và sự kiện click chuột vào cột ngày để xem chi tiết."""
     app = QApplication.instance() or QApplication([])
-    db = DiskGuardDB(tmp_path / "tc02.db")
+    db = GreenCDB(tmp_path / "tc02.db")
 
     # Tạo dữ liệu 3 ngày liên tiếp với biến động khác nhau
     db.upsert_daily_snapshot("C:\\", "2026-11-07", 200 * 1024**3, 150 * 1024**3, 50 * 1024**3, 100 * 1024**2)
@@ -134,7 +134,7 @@ def test_tc02_daily_bar_chart_click_drilldown(tmp_path: Path):
 def test_tc03_silent_rules_in_settings_not_cluttering_main_ui(tmp_path: Path):
     """TC-03: Kiểm tra Rule chuyên sâu của Zalo & DingTalk nằm gọn trong Settings > Rules và chạy ngầm."""
     app = QApplication.instance() or QApplication([])
-    db = DiskGuardDB(tmp_path / "tc03.db")
+    db = GreenCDB(tmp_path / "tc03.db")
     win = MainWindow(db=db, vault_dir=tmp_path / "vault", sandbox_dir=tmp_path / "sandbox", auto_scan_on_init=False)
     win._seed_default_silent_rules()
     win.settings_tab.refresh_all()
@@ -158,7 +158,7 @@ def test_tc04_and_tc06_smart_scan_sandbox_probe_and_one_click_cleanup_on_ui(tmp_
     tự chuyển phương án dự phòng nếu gặp file khóa) -> Hiển thị lên UI -> Bấm 1 nút 'Dọn dẹp'.
     """
     app = QApplication.instance() or QApplication([])
-    db = DiskGuardDB(tmp_path / "tc04.db")
+    db = GreenCDB(tmp_path / "tc04.db")
     vault_dir = tmp_path / "vault"
     sandbox_dir = tmp_path / "sandbox"
 
@@ -234,7 +234,7 @@ def test_tc04_and_tc06_smart_scan_sandbox_probe_and_one_click_cleanup_on_ui(tmp_
 def test_tc05_background_qthread_pause_resume_stop_and_step_captions(tmp_path: Path):
     """TC-05: Kiểm tra tác vụ nặng chạy trên QThread có thể Tạm dừng (Pause), Tiếp tục (Resume), Dừng (Stop) và hiển thị chú thích từng bước."""
     app = QApplication.instance() or QApplication([])
-    db = DiskGuardDB(tmp_path / "tc05.db")
+    db = GreenCDB(tmp_path / "tc05.db")
     win = MainWindow(db=db, vault_dir=tmp_path / "vault", sandbox_dir=tmp_path / "sandbox", auto_scan_on_init=False)
     win.show()
     app.processEvents()
@@ -295,7 +295,7 @@ def test_tc05_background_qthread_pause_resume_stop_and_step_captions(tmp_path: P
 def test_tc07_auto_rollback_and_d_day_expiry_on_app(tmp_path: Path):
     """TC-07: Kiểm tra tự động Rollback khi ứng dụng cần lại file và tự động xóa sau D ngày an toàn."""
     app = QApplication.instance() or QApplication([])
-    db = DiskGuardDB(tmp_path / "tc07.db")
+    db = GreenCDB(tmp_path / "tc07.db")
     win = MainWindow(db=db, vault_dir=tmp_path / "vault", sandbox_dir=tmp_path / "sandbox", auto_scan_on_init=False)
 
     # Tạo 1 gói nén trong Safe Vault qua Sandbox Simulator

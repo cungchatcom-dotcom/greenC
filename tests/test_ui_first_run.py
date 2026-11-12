@@ -5,10 +5,10 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
-from diskguard.core.drives import DriveInfo
-from diskguard.core.settings import AppSettings
-from diskguard.storage.database import DiskGuardDB
-from diskguard.ui.data_location import FirstRunDialog, run_first_run
+from greenc.core.drives import DriveInfo
+from greenc.core.settings import AppSettings
+from greenc.storage.database import GreenCDB
+from greenc.ui.data_location import FirstRunDialog, run_first_run
 
 GB = 1024**3
 DRIVES = [
@@ -37,7 +37,7 @@ def test_dialog_preselects_recommended_and_disables_ineligible():
 
 def test_run_first_run_accept_saves_choice(tmp_path):
     _app()
-    settings = AppSettings(DiskGuardDB(tmp_path / "f.db"))
+    settings = AppSettings(GreenCDB(tmp_path / "f.db"))
     root = run_first_run(settings, DRIVES, exec_fn=lambda dlg: (dlg.location.retention_spin.setValue(14), True)[1])
     assert root == Path("D:\\Green C")
     assert settings.data_root == Path("D:\\Green C")
@@ -46,7 +46,7 @@ def test_run_first_run_accept_saves_choice(tmp_path):
 
 def test_run_first_run_later_uses_recommended(tmp_path):
     _app()
-    settings = AppSettings(DiskGuardDB(tmp_path / "f.db"))
+    settings = AppSettings(GreenCDB(tmp_path / "f.db"))
     assert run_first_run(settings, DRIVES, exec_fn=lambda dlg: False) == Path("D:\\Green C")
     assert settings.data_root == Path("D:\\Green C")
 

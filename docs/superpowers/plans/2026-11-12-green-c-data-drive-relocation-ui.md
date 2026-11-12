@@ -13,7 +13,7 @@ Spec: `docs/superpowers/specs/2026-11-12-green-c-data-drive-relocation-ui-design
 ## Global Constraints
 
 - Platform: Windows 10/11 only; data drive must be fixed + NTFS.
-- Python package name stays `diskguard`; user-visible name is `Green C:\` (`APP_NAME = "Green C:\\"`).
+- Python package name stays `greenc`; user-visible name is `Green C:\` (`APP_NAME = "Green C:\\"`).
 - Author block: `Tác giả: Cùng Chat` + link `https://cungchat.com` (label `cungchat.com`).
 - Retention default 7 days, allowed range 1–90.
 - Relocation candidate threshold: 200 MB, source on the system drive.
@@ -22,36 +22,36 @@ Spec: `docs/superpowers/specs/2026-11-12-green-c-data-drive-relocation-ui-design
 - Colors: accent `#0067C0`, brand green `#107C10` (brand + success only), danger `#C42B1C`.
 - New UI sizes use `format_size()` (`18,4 GB`); `format_bytes()` stays unchanged (it is covered by existing tests).
 - Tests never touch the real user profile, registry, npm/pip config or real app folders.
-- Run tests with `.venv/Scripts/python.exe -m pytest` from `C:\DiskGuard`.
+- Run tests with `.venv/Scripts/python.exe -m pytest` from `C:\Green C`.
 
 ## File map
 
 | File | Responsibility |
 |---|---|
-| `diskguard/config.py` | Branding constants, app-home paths, legacy paths, retention bounds |
-| `diskguard/core/settings.py` | `AppSettings` (data root, retention) over the DB |
-| `diskguard/core/drives.py` | Drive enumeration, eligibility, recommendation, path→drive helpers |
-| `diskguard/core/storage_migration.py` | Legacy DB copy, verified Vault move |
-| `diskguard/core/relocation/base.py` | `CheckResult`, `RelocationCandidate`, `RelocationStrategy`, suffixes |
-| `diskguard/core/relocation/fs_ops.py` | Verified copy, junction-safe delete, junction create/verify, fast size |
-| `diskguard/core/relocation/junction.py` | Move + junction strategy |
-| `diskguard/core/relocation/known_folders.py` | Windows known-folder strategy + shell API |
-| `diskguard/core/relocation/tool_config.py` | npm / pip cache strategies |
-| `diskguard/core/relocation/zalo.py` | Zalo guided strategy |
-| `diskguard/core/relocation/recovery.py` | Crash recovery of interrupted junction moves |
-| `diskguard/core/relocation/service.py` | Apply / undo / guided completion + record persistence |
-| `diskguard/core/relocation/catalog.py` | Candidate discovery |
-| `diskguard/models.py` | + `RelocationRecord`, status constants |
-| `diskguard/storage/database.py` | + `app_settings`, `relocations` tables, vault path update |
-| `diskguard/ui/theme.py` | Color tokens + the single QSS |
-| `diskguard/ui/icons.py` | SVG line icons → `QIcon` |
-| `diskguard/ui/widgets.py` | `PathCell`, `ExpandableTableCard`, `Toast`, table helpers |
-| `diskguard/ui/data_location.py` | `DataLocationWidget`, `FirstRunDialog`, `run_first_run` |
-| `diskguard/ui/overview_page.py` | Tổng quan page |
-| `diskguard/ui/vault_page.py` | Kho dự phòng page |
-| `diskguard/ui/relocation_page.py` | Di chuyển dữ liệu page |
-| `diskguard/ui/settings_tab.py` | Cài đặt page (rewritten) |
-| `diskguard/ui/main_window.py` | Shell, navigation, workers wiring |
+| `greenc/config.py` | Branding constants, app-home paths, legacy paths, retention bounds |
+| `greenc/core/settings.py` | `AppSettings` (data root, retention) over the DB |
+| `greenc/core/drives.py` | Drive enumeration, eligibility, recommendation, path→drive helpers |
+| `greenc/core/storage_migration.py` | Legacy DB copy, verified Vault move |
+| `greenc/core/relocation/base.py` | `CheckResult`, `RelocationCandidate`, `RelocationStrategy`, suffixes |
+| `greenc/core/relocation/fs_ops.py` | Verified copy, junction-safe delete, junction create/verify, fast size |
+| `greenc/core/relocation/junction.py` | Move + junction strategy |
+| `greenc/core/relocation/known_folders.py` | Windows known-folder strategy + shell API |
+| `greenc/core/relocation/tool_config.py` | npm / pip cache strategies |
+| `greenc/core/relocation/zalo.py` | Zalo guided strategy |
+| `greenc/core/relocation/recovery.py` | Crash recovery of interrupted junction moves |
+| `greenc/core/relocation/service.py` | Apply / undo / guided completion + record persistence |
+| `greenc/core/relocation/catalog.py` | Candidate discovery |
+| `greenc/models.py` | + `RelocationRecord`, status constants |
+| `greenc/storage/database.py` | + `app_settings`, `relocations` tables, vault path update |
+| `greenc/ui/theme.py` | Color tokens + the single QSS |
+| `greenc/ui/icons.py` | SVG line icons → `QIcon` |
+| `greenc/ui/widgets.py` | `PathCell`, `ExpandableTableCard`, `Toast`, table helpers |
+| `greenc/ui/data_location.py` | `DataLocationWidget`, `FirstRunDialog`, `run_first_run` |
+| `greenc/ui/overview_page.py` | Tổng quan page |
+| `greenc/ui/vault_page.py` | Kho dự phòng page |
+| `greenc/ui/relocation_page.py` | Di chuyển dữ liệu page |
+| `greenc/ui/settings_tab.py` | Cài đặt page (rewritten) |
+| `greenc/ui/main_window.py` | Shell, navigation, workers wiring |
 | `main.py` | Startup: migration, recovery, first run |
 
 ---
@@ -59,14 +59,14 @@ Spec: `docs/superpowers/specs/2026-11-12-green-c-data-drive-relocation-ui-design
 ### Task 1: Branding constants, settings store
 
 **Files:**
-- Modify: `diskguard/config.py` (whole file)
-- Modify: `diskguard/storage/database.py` (schema + 2 methods)
-- Create: `diskguard/core/settings.py`
+- Modify: `greenc/config.py` (whole file)
+- Modify: `greenc/storage/database.py` (schema + 2 methods)
+- Create: `greenc/core/settings.py`
 - Test: `tests/test_settings.py`
 
 **Interfaces:**
 - Produces: `config.APP_NAME, APP_VERSION, AUTHOR, WEBSITE_URL, WEBSITE_LABEL, DATA_FOLDER_NAME, APP_HOME, DEFAULT_DB_PATH, DEFAULT_VAULT_DIR, SANDBOX_DEMO_DIR, LEGACY_DB_PATH, LEGACY_VAULT_DIR, DEFAULT_RETENTION_DAYS, MIN_RETENTION_DAYS, MAX_RETENTION_DAYS, ensure_app_dirs()`.
-- Produces: `DiskGuardDB.get_setting(key: str, default: str | None = None) -> str | None`, `DiskGuardDB.set_setting(key: str, value: str) -> None`.
+- Produces: `GreenCDB.get_setting(key: str, default: str | None = None) -> str | None`, `GreenCDB.set_setting(key: str, value: str) -> None`.
 - Produces: `AppSettings(db)` with `.data_root -> Path | None`, `.set_data_root(path)`, `.retention_days_default -> int`, `.set_retention_days_default(days) -> int`, `.vault_dir() -> Path`, `.apps_dir() -> Path | None`.
 
 - [ ] **Step 1: Write the failing test** — `tests/test_settings.py`
@@ -74,13 +74,13 @@ Spec: `docs/superpowers/specs/2026-11-12-green-c-data-drive-relocation-ui-design
 ```python
 from pathlib import Path
 
-from diskguard.config import DEFAULT_RETENTION_DAYS, DEFAULT_VAULT_DIR
-from diskguard.core.settings import AppSettings
-from diskguard.storage.database import DiskGuardDB
+from greenc.config import DEFAULT_RETENTION_DAYS, DEFAULT_VAULT_DIR
+from greenc.core.settings import AppSettings
+from greenc.storage.database import GreenCDB
 
 
 def test_db_setting_roundtrip(tmp_path: Path):
-    db = DiskGuardDB(tmp_path / "s.db")
+    db = GreenCDB(tmp_path / "s.db")
     assert db.get_setting("x") is None
     assert db.get_setting("x", "d") == "d"
     db.set_setting("x", "1")
@@ -89,7 +89,7 @@ def test_db_setting_roundtrip(tmp_path: Path):
 
 
 def test_defaults(tmp_path: Path):
-    s = AppSettings(DiskGuardDB(tmp_path / "s.db"))
+    s = AppSettings(GreenCDB(tmp_path / "s.db"))
     assert s.data_root is None
     assert s.retention_days_default == DEFAULT_RETENTION_DAYS == 7
     assert s.vault_dir() == DEFAULT_VAULT_DIR
@@ -98,15 +98,15 @@ def test_defaults(tmp_path: Path):
 
 def test_data_root_persists_across_instances(tmp_path: Path):
     root = tmp_path / "D" / "Green C"
-    AppSettings(DiskGuardDB(tmp_path / "s.db")).set_data_root(root)
-    s2 = AppSettings(DiskGuardDB(tmp_path / "s.db"))
+    AppSettings(GreenCDB(tmp_path / "s.db")).set_data_root(root)
+    s2 = AppSettings(GreenCDB(tmp_path / "s.db"))
     assert s2.data_root == root
     assert s2.vault_dir() == root / "Vault"
     assert s2.apps_dir() == root / "Apps"
 
 
 def test_retention_clamped_and_tolerates_garbage(tmp_path: Path):
-    db = DiskGuardDB(tmp_path / "s.db")
+    db = GreenCDB(tmp_path / "s.db")
     s = AppSettings(db)
     assert s.set_retention_days_default(0) == 1
     assert s.set_retention_days_default(500) == 90
@@ -117,7 +117,7 @@ def test_retention_clamped_and_tolerates_garbage(tmp_path: Path):
 
 
 def test_branding_constants():
-    from diskguard import config
+    from greenc import config
 
     assert config.APP_NAME == "Green C:\\"
     assert config.AUTHOR == "Cùng Chat"
@@ -128,9 +128,9 @@ def test_branding_constants():
 - [ ] **Step 2: Run to verify it fails**
 
 Run: `.venv/Scripts/python.exe -m pytest tests/test_settings.py -q`
-Expected: FAIL — `ModuleNotFoundError: No module named 'diskguard.core.settings'`.
+Expected: FAIL — `ModuleNotFoundError: No module named 'greenc.core.settings'`.
 
-- [ ] **Step 3: Replace `diskguard/config.py`** (keep `DEFAULT_PROTECTED_PATTERNS` list exactly as it is today)
+- [ ] **Step 3: Replace `greenc/config.py`** (keep `DEFAULT_PROTECTED_PATTERNS` list exactly as it is today)
 
 ```python
 import os
@@ -157,9 +157,9 @@ DEFAULT_DB_PATH = APP_HOME / "greenc.db"
 DEFAULT_VAULT_DIR = APP_HOME / "Vault"
 SANDBOX_DEMO_DIR = APP_HOME / "sandbox"
 
-# Locations used by DiskGuard 0.1 — migrated on first launch.
-LEGACY_BASE_DIR = Path(r"C:\DiskGuard")
-LEGACY_DB_PATH = LEGACY_BASE_DIR / "data" / "diskguard.db"
+# Locations used by Green C 0.1 — migrated on first launch.
+LEGACY_BASE_DIR = Path(r"C:\Green C")
+LEGACY_DB_PATH = LEGACY_BASE_DIR / "data" / "greenc.db"
 LEGACY_VAULT_DIR = LEGACY_BASE_DIR / "vault"
 
 DEFAULT_WATERMARK_RATIO = 0.85
@@ -197,7 +197,7 @@ def ensure_app_dirs() -> None:
     APP_HOME.mkdir(parents=True, exist_ok=True)
 ```
 
-- [ ] **Step 4: Add the settings table and accessors to `diskguard/storage/database.py`**
+- [ ] **Step 4: Add the settings table and accessors to `greenc/storage/database.py`**
 
 Inside the `executescript` in `_init_schema`, append before the closing `"""`:
 
@@ -208,7 +208,7 @@ Inside the `executescript` in `_init_schema`, append before the closing `"""`:
                 );
 ```
 
-Add these methods to `DiskGuardDB` (after `_normalize_drive`):
+Add these methods to `GreenCDB` (after `_normalize_drive`):
 
 ```python
     def get_setting(self, key: str, default: str | None = None) -> str | None:
@@ -227,18 +227,18 @@ Add these methods to `DiskGuardDB` (after `_normalize_drive`):
             )
 ```
 
-- [ ] **Step 5: Create `diskguard/core/settings.py`**
+- [ ] **Step 5: Create `greenc/core/settings.py`**
 
 ```python
 from pathlib import Path
 
-from diskguard.config import (
+from greenc.config import (
     DEFAULT_RETENTION_DAYS,
     DEFAULT_VAULT_DIR,
     MAX_RETENTION_DAYS,
     MIN_RETENTION_DAYS,
 )
-from diskguard.storage.database import DiskGuardDB
+from greenc.storage.database import GreenCDB
 
 
 class AppSettings:
@@ -247,7 +247,7 @@ class AppSettings:
     KEY_DATA_ROOT = "data_root"
     KEY_RETENTION = "retention_days_default"
 
-    def __init__(self, db: DiskGuardDB):
+    def __init__(self, db: GreenCDB):
         self.db = db
 
     @property
@@ -294,7 +294,7 @@ Run: `.venv/Scripts/python.exe -m pytest -q -x` → all pass (MainWindow still i
 - [ ] **Step 7: Commit**
 
 ```bash
-git add diskguard/config.py diskguard/storage/database.py diskguard/core/settings.py tests/test_settings.py
+git add greenc/config.py greenc/storage/database.py greenc/core/settings.py tests/test_settings.py
 git commit -m "feat: Green C:\\ branding constants and persistent app settings"
 ```
 
@@ -303,7 +303,7 @@ git commit -m "feat: Green C:\\ branding constants and persistent app settings"
 ### Task 2: Drive discovery
 
 **Files:**
-- Create: `diskguard/core/drives.py`
+- Create: `greenc/core/drives.py`
 - Test: `tests/test_drives.py`
 
 **Interfaces:**
@@ -316,7 +316,7 @@ git commit -m "feat: Green C:\\ branding constants and persistent app settings"
 from collections import namedtuple
 from pathlib import Path
 
-from diskguard.core.drives import (
+from greenc.core.drives import (
     DRIVE_FIXED,
     data_root_for,
     drive_of,
@@ -393,7 +393,7 @@ def test_real_machine_lists_system_drive():
 
 - [ ] **Step 2: Run to verify it fails** — `pytest tests/test_drives.py -q` → `ModuleNotFoundError`.
 
-- [ ] **Step 3: Create `diskguard/core/drives.py`**
+- [ ] **Step 3: Create `greenc/core/drives.py`**
 
 ```python
 import ctypes
@@ -405,7 +405,7 @@ import shutil
 import string
 from typing import Callable
 
-from diskguard.config import DATA_FOLDER_NAME
+from greenc.config import DATA_FOLDER_NAME
 
 DRIVE_FIXED = 3
 _SEM_FAILCRITICALERRORS = 0x0001
@@ -534,7 +534,7 @@ def data_root_for(drive_root: str) -> Path:
 - [ ] **Step 5: Commit**
 
 ```bash
-git add diskguard/core/drives.py tests/test_drives.py
+git add greenc/core/drives.py tests/test_drives.py
 git commit -m "feat: fixed NTFS drive discovery and data drive recommendation"
 ```
 
@@ -543,25 +543,25 @@ git commit -m "feat: fixed NTFS drive discovery and data drive recommendation"
 ### Task 3: Legacy DB migration and verified Vault move
 
 **Files:**
-- Create: `diskguard/core/storage_migration.py`
-- Modify: `diskguard/storage/database.py` (add `update_vault_paths`)
+- Create: `greenc/core/storage_migration.py`
+- Modify: `greenc/storage/database.py` (add `update_vault_paths`)
 - Test: `tests/test_storage_migration.py`
 
 **Interfaces:**
-- Consumes: `DiskGuardDB.list_vault_archives(status=...)`, `create_vault_archive(archive, items)`, `TaskControl.report(pct, title, detail) -> bool`.
-- Produces: `migrate_legacy_db(legacy_db, new_db) -> bool`; `move_vault(db, new_dir, ctrl=None) -> dict` (`{"moved": int, "errors": list[str]}`); `remove_dir_if_empty(path) -> bool`; `DiskGuardDB.update_vault_paths(archive_id, zip_path, manifest_path)`.
+- Consumes: `GreenCDB.list_vault_archives(status=...)`, `create_vault_archive(archive, items)`, `TaskControl.report(pct, title, detail) -> bool`.
+- Produces: `migrate_legacy_db(legacy_db, new_db) -> bool`; `move_vault(db, new_dir, ctrl=None) -> dict` (`{"moved": int, "errors": list[str]}`); `remove_dir_if_empty(path) -> bool`; `GreenCDB.update_vault_paths(archive_id, zip_path, manifest_path)`.
 
 - [ ] **Step 1: Write the failing test** — `tests/test_storage_migration.py`
 
 ```python
 from pathlib import Path
 
-from diskguard.core import storage_migration as sm
-from diskguard.models import VaultArchive
-from diskguard.storage.database import DiskGuardDB
+from greenc.core import storage_migration as sm
+from greenc.models import VaultArchive
+from greenc.storage.database import GreenCDB
 
 
-def _archive(db: DiskGuardDB, vault: Path, name: str) -> VaultArchive:
+def _archive(db: GreenCDB, vault: Path, name: str) -> VaultArchive:
     vault.mkdir(parents=True, exist_ok=True)
     zip_p = vault / f"{name}.zip"
     man_p = vault / f"{name}.manifest.json"
@@ -578,12 +578,12 @@ def _archive(db: DiskGuardDB, vault: Path, name: str) -> VaultArchive:
 
 
 def test_migrate_legacy_db_copies_once(tmp_path: Path):
-    legacy = DiskGuardDB(tmp_path / "old" / "diskguard.db")
+    legacy = GreenCDB(tmp_path / "old" / "greenc.db")
     legacy.set_setting("k", "v")
     new_path = tmp_path / "new" / "greenc.db"
-    assert sm.migrate_legacy_db(tmp_path / "old" / "diskguard.db", new_path) is True
-    assert DiskGuardDB(new_path).get_setting("k") == "v"
-    assert sm.migrate_legacy_db(tmp_path / "old" / "diskguard.db", new_path) is False
+    assert sm.migrate_legacy_db(tmp_path / "old" / "greenc.db", new_path) is True
+    assert GreenCDB(new_path).get_setting("k") == "v"
+    assert sm.migrate_legacy_db(tmp_path / "old" / "greenc.db", new_path) is False
 
 
 def test_migrate_skips_without_legacy(tmp_path: Path):
@@ -592,7 +592,7 @@ def test_migrate_skips_without_legacy(tmp_path: Path):
 
 
 def test_move_vault_moves_files_and_rewrites_paths(tmp_path: Path):
-    db = DiskGuardDB(tmp_path / "v.db")
+    db = GreenCDB(tmp_path / "v.db")
     old, new = tmp_path / "old_vault", tmp_path / "D" / "Vault"
     a = _archive(db, old, "a")
     res = sm.move_vault(db, new)
@@ -605,14 +605,14 @@ def test_move_vault_moves_files_and_rewrites_paths(tmp_path: Path):
 
 
 def test_move_vault_skips_archives_already_there(tmp_path: Path):
-    db = DiskGuardDB(tmp_path / "v.db")
+    db = GreenCDB(tmp_path / "v.db")
     new = tmp_path / "Vault"
     _archive(db, new, "b")
     assert sm.move_vault(db, new)["moved"] == 0
 
 
 def test_failed_copy_keeps_source_and_db(tmp_path: Path, monkeypatch):
-    db = DiskGuardDB(tmp_path / "v.db")
+    db = GreenCDB(tmp_path / "v.db")
     old, new = tmp_path / "old_vault", tmp_path / "Vault"
     a = _archive(db, old, "c")
 
@@ -628,7 +628,7 @@ def test_failed_copy_keeps_source_and_db(tmp_path: Path, monkeypatch):
 
 - [ ] **Step 2: Run to verify it fails** — `pytest tests/test_storage_migration.py -q` → `ImportError`.
 
-- [ ] **Step 3: Add to `DiskGuardDB`** (after `update_vault_status`)
+- [ ] **Step 3: Add to `GreenCDB`** (after `update_vault_status`)
 
 ```python
     def update_vault_paths(self, archive_id: int, zip_path: str, manifest_path: str) -> None:
@@ -639,7 +639,7 @@ def test_failed_copy_keeps_source_and_db(tmp_path: Path, monkeypatch):
             )
 ```
 
-- [ ] **Step 4: Create `diskguard/core/storage_migration.py`**
+- [ ] **Step 4: Create `greenc/core/storage_migration.py`**
 
 ```python
 import os
@@ -647,12 +647,12 @@ from pathlib import Path
 import shutil
 import sqlite3
 
-from diskguard.core.task_controller import TaskControl
-from diskguard.storage.database import DiskGuardDB
+from greenc.core.task_controller import TaskControl
+from greenc.storage.database import GreenCDB
 
 
 def migrate_legacy_db(legacy_db: Path | str, new_db: Path | str) -> bool:
-    """Copy the DiskGuard 0.1 database to the new location once (SQLite online backup)."""
+    """Copy the Green C 0.1 database to the new location once (SQLite online backup)."""
     legacy_db, new_db = Path(legacy_db), Path(new_db)
     if not legacy_db.exists() or new_db.exists():
         return False
@@ -673,7 +673,7 @@ def _same_dir(a: Path, b: Path) -> bool:
     return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
 
 
-def move_vault(db: DiskGuardDB, new_dir: Path | str, ctrl: TaskControl | None = None) -> dict:
+def move_vault(db: GreenCDB, new_dir: Path | str, ctrl: TaskControl | None = None) -> dict:
     """
     Move every live archive (zip + manifest) into `new_dir`. For each archive both files
     are copied and size-checked first, then the DB is updated, then the sources deleted —
@@ -734,7 +734,7 @@ def remove_dir_if_empty(path: Path | str) -> bool:
 - [ ] **Step 6: Commit**
 
 ```bash
-git add diskguard/core/storage_migration.py diskguard/storage/database.py tests/test_storage_migration.py
+git add greenc/core/storage_migration.py greenc/storage/database.py tests/test_storage_migration.py
 git commit -m "feat: legacy DB migration and verified Vault move"
 ```
 
@@ -743,7 +743,7 @@ git commit -m "feat: legacy DB migration and verified Vault move"
 ### Task 4: Relocation filesystem operations
 
 **Files:**
-- Create: `diskguard/core/relocation/__init__.py`, `diskguard/core/relocation/fs_ops.py`
+- Create: `greenc/core/relocation/__init__.py`, `greenc/core/relocation/fs_ops.py`
 - Test: `tests/test_relocation_fs_ops.py`
 
 **Interfaces:**
@@ -759,8 +759,8 @@ import subprocess
 
 import pytest
 
-from diskguard.core.relocation import fs_ops
-from diskguard.core.task_controller import TaskControl
+from greenc.core.relocation import fs_ops
+from greenc.core.task_controller import TaskControl
 
 
 def _tree(root: Path) -> None:
@@ -848,13 +848,13 @@ def test_create_junction_and_verify(tmp_path: Path):
 
 - [ ] **Step 2: Run to verify it fails** — `pytest tests/test_relocation_fs_ops.py -q` → `ModuleNotFoundError`.
 
-- [ ] **Step 3: Create `diskguard/core/relocation/__init__.py`**
+- [ ] **Step 3: Create `greenc/core/relocation/__init__.py`**
 
 ```python
 """Moving app data off the system drive: strategies, safe filesystem ops, discovery."""
 ```
 
-- [ ] **Step 4: Create `diskguard/core/relocation/fs_ops.py`**
+- [ ] **Step 4: Create `greenc/core/relocation/fs_ops.py`**
 
 ```python
 import hashlib
@@ -865,7 +865,7 @@ import stat
 import subprocess
 from typing import Callable
 
-from diskguard.core.task_controller import TaskControl
+from greenc.core.task_controller import TaskControl
 
 FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 _CHUNK = 4 * 1024 * 1024
@@ -1078,7 +1078,7 @@ def junction_target_matches(link: str | Path, target: str | Path) -> bool:
 - [ ] **Step 6: Commit**
 
 ```bash
-git add diskguard/core/relocation tests/test_relocation_fs_ops.py
+git add greenc/core/relocation tests/test_relocation_fs_ops.py
 git commit -m "feat: verified copy and junction-safe filesystem ops for relocation"
 ```
 
@@ -1087,8 +1087,8 @@ git commit -m "feat: verified copy and junction-safe filesystem ops for relocati
 ### Task 5: Relocation records, junction strategy, crash recovery, service
 
 **Files:**
-- Modify: `diskguard/models.py` (append), `diskguard/storage/database.py` (table + 3 methods)
-- Create: `diskguard/core/relocation/base.py`, `junction.py`, `recovery.py`, `service.py`
+- Modify: `greenc/models.py` (append), `greenc/storage/database.py` (table + 3 methods)
+- Create: `greenc/core/relocation/base.py`, `junction.py`, `recovery.py`, `service.py`
 - Test: `tests/test_relocation_junction.py`
 
 **Interfaces:**
@@ -1107,15 +1107,15 @@ from pathlib import Path
 
 import pytest
 
-from diskguard.core.relocation import junction as jmod
-from diskguard.core.relocation.base import MOVING_SUFFIX, RelocationCandidate
-from diskguard.core.relocation.fs_ops import RelocationError, create_junction, is_reparse_point
-from diskguard.core.relocation.junction import JunctionStrategy
-from diskguard.core.relocation.recovery import recover_interrupted
-from diskguard.core.relocation.service import RelocationService
-from diskguard.core.settings import AppSettings
-from diskguard.models import RELOCATION_DONE, RELOCATION_FAILED, RELOCATION_MOVING, RELOCATION_UNDONE, RelocationRecord
-from diskguard.storage.database import DiskGuardDB
+from greenc.core.relocation import junction as jmod
+from greenc.core.relocation.base import MOVING_SUFFIX, RelocationCandidate
+from greenc.core.relocation.fs_ops import RelocationError, create_junction, is_reparse_point
+from greenc.core.relocation.junction import JunctionStrategy
+from greenc.core.relocation.recovery import recover_interrupted
+from greenc.core.relocation.service import RelocationService
+from greenc.core.settings import AppSettings
+from greenc.models import RELOCATION_DONE, RELOCATION_FAILED, RELOCATION_MOVING, RELOCATION_UNDONE, RelocationRecord
+from greenc.storage.database import GreenCDB
 
 Usage = namedtuple("Usage", "total used free")
 BIG = lambda _p: Usage(10**13, 0, 10**13)  # noqa: E731
@@ -1208,14 +1208,14 @@ def test_undo_restores_real_folder(tmp_path: Path):
     assert not (root / "Apps" / "telegram").exists()
 
 
-def _moving_record(db: DiskGuardDB, src: Path, target: Path) -> RelocationRecord:
+def _moving_record(db: GreenCDB, src: Path, target: Path) -> RelocationRecord:
     rec = RelocationRecord(None, "telegram", "Telegram Desktop", "junction", str(src), str(target), 5, RELOCATION_MOVING)
     rec.id = db.save_relocation(rec)
     return rec
 
 
 def test_recover_after_rename_without_junction(tmp_path: Path):
-    db = DiskGuardDB(tmp_path / "r.db")
+    db = GreenCDB(tmp_path / "r.db")
     src = _app(tmp_path)
     target = tmp_path / "D" / "Apps" / "telegram"
     target.mkdir(parents=True)
@@ -1229,7 +1229,7 @@ def test_recover_after_rename_without_junction(tmp_path: Path):
 
 
 def test_recover_after_junction_created(tmp_path: Path):
-    db = DiskGuardDB(tmp_path / "r.db")
+    db = GreenCDB(tmp_path / "r.db")
     src = _app(tmp_path)
     target = tmp_path / "D" / "Apps" / "telegram"
     target.mkdir(parents=True)
@@ -1244,7 +1244,7 @@ def test_recover_after_junction_created(tmp_path: Path):
 
 
 def test_service_persists_records_and_requires_data_root(tmp_path: Path):
-    db = DiskGuardDB(tmp_path / "s.db")
+    db = GreenCDB(tmp_path / "s.db")
     settings = AppSettings(db)
     svc = RelocationService(db, settings)
     src = _app(tmp_path)
@@ -1263,7 +1263,7 @@ def test_service_persists_records_and_requires_data_root(tmp_path: Path):
 
 - [ ] **Step 2: Run to verify it fails** — `pytest tests/test_relocation_junction.py -q` → `ImportError`.
 
-- [ ] **Step 3: Append to `diskguard/models.py`**
+- [ ] **Step 3: Append to `greenc/models.py`**
 
 ```python
 RELOCATION_MOVING = "moving"
@@ -1287,7 +1287,7 @@ class RelocationRecord:
     detail: str = ""
 ```
 
-- [ ] **Step 4: Database** — add `RelocationRecord` to the `from diskguard.models import (...)` list, append this to the `_init_schema` script:
+- [ ] **Step 4: Database** — add `RelocationRecord` to the `from greenc.models import (...)` list, append this to the `_init_schema` script:
 
 ```sql
                 CREATE TABLE IF NOT EXISTS relocations (
@@ -1354,7 +1354,7 @@ and add the methods:
         return self._row_to_relocation(row) if row else None
 ```
 
-- [ ] **Step 5: Create `diskguard/core/relocation/base.py`**
+- [ ] **Step 5: Create `greenc/core/relocation/base.py`**
 
 ```python
 from dataclasses import dataclass
@@ -1362,8 +1362,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from diskguard.core.task_controller import TaskControl
-from diskguard.models import RelocationRecord
+from greenc.core.task_controller import TaskControl
+from greenc.models import RelocationRecord
 
 MOVING_SUFFIX = ".greenc-moving"
 RESTORING_SUFFIX = ".greenc-restoring"
@@ -1408,7 +1408,7 @@ class RelocationCandidate:
     advanced: bool = False
 ```
 
-- [ ] **Step 6: Create `diskguard/core/relocation/junction.py`**
+- [ ] **Step 6: Create `greenc/core/relocation/junction.py`**
 
 ```python
 import os
@@ -1418,7 +1418,7 @@ from typing import Callable, Iterable
 
 import psutil
 
-from diskguard.core.relocation.base import (
+from greenc.core.relocation.base import (
     FREE_SPACE_RESERVE,
     MOVING_SUFFIX,
     RESTORING_SUFFIX,
@@ -1428,7 +1428,7 @@ from diskguard.core.relocation.base import (
     Saver,
     now_iso,
 )
-from diskguard.core.relocation.fs_ops import (
+from greenc.core.relocation.fs_ops import (
     RelocationError,
     create_junction,
     is_reparse_point,
@@ -1436,8 +1436,8 @@ from diskguard.core.relocation.fs_ops import (
     remove_tree,
     verified_copy_tree,
 )
-from diskguard.core.task_controller import TaskControl
-from diskguard.models import (
+from greenc.core.task_controller import TaskControl
+from greenc.models import (
     RELOCATION_DONE,
     RELOCATION_FAILED,
     RELOCATION_MOVING,
@@ -1575,19 +1575,19 @@ class JunctionStrategy(RelocationStrategy):
         return save(rec)
 ```
 
-- [ ] **Step 7: Create `diskguard/core/relocation/recovery.py`**
+- [ ] **Step 7: Create `greenc/core/relocation/recovery.py`**
 
 ```python
 import os
 from pathlib import Path
 
-from diskguard.core.relocation.base import MOVING_SUFFIX
-from diskguard.core.relocation.fs_ops import is_reparse_point, junction_target_matches, remove_tree
-from diskguard.models import RELOCATION_DONE, RELOCATION_FAILED, RELOCATION_MOVING, RelocationRecord
-from diskguard.storage.database import DiskGuardDB
+from greenc.core.relocation.base import MOVING_SUFFIX
+from greenc.core.relocation.fs_ops import is_reparse_point, junction_target_matches, remove_tree
+from greenc.models import RELOCATION_DONE, RELOCATION_FAILED, RELOCATION_MOVING, RelocationRecord
+from greenc.storage.database import GreenCDB
 
 
-def recover_interrupted(db: DiskGuardDB) -> list[RelocationRecord]:
+def recover_interrupted(db: GreenCDB) -> list[RelocationRecord]:
     """Finish or roll back junction moves interrupted by a crash or power loss."""
     fixed: list[RelocationRecord] = []
     for rec in db.list_relocations(status=RELOCATION_MOVING):
@@ -1612,19 +1612,19 @@ def recover_interrupted(db: DiskGuardDB) -> list[RelocationRecord]:
     return fixed
 ```
 
-- [ ] **Step 8: Create `diskguard/core/relocation/service.py`**
+- [ ] **Step 8: Create `greenc/core/relocation/service.py`**
 
 ```python
 from pathlib import Path
 from typing import Callable
 
-from diskguard.core.relocation.base import CheckResult, RelocationCandidate, RelocationStrategy
-from diskguard.core.relocation.fs_ops import RelocationError
-from diskguard.core.relocation.junction import JunctionStrategy
-from diskguard.core.settings import AppSettings
-from diskguard.core.task_controller import TaskControl
-from diskguard.models import RELOCATION_DONE, RelocationRecord
-from diskguard.storage.database import DiskGuardDB
+from greenc.core.relocation.base import CheckResult, RelocationCandidate, RelocationStrategy
+from greenc.core.relocation.fs_ops import RelocationError
+from greenc.core.relocation.junction import JunctionStrategy
+from greenc.core.settings import AppSettings
+from greenc.core.task_controller import TaskControl
+from greenc.models import RELOCATION_DONE, RelocationRecord
+from greenc.storage.database import GreenCDB
 
 
 def strategy_for_record(rec: RelocationRecord) -> RelocationStrategy:
@@ -1636,7 +1636,7 @@ def strategy_for_record(rec: RelocationRecord) -> RelocationStrategy:
 class RelocationService:
     def __init__(
         self,
-        db: DiskGuardDB,
+        db: GreenCDB,
         settings: AppSettings,
         strategy_factory: Callable[[RelocationRecord], RelocationStrategy] | None = None,
     ):
@@ -1672,7 +1672,7 @@ class RelocationService:
 - [ ] **Step 10: Commit**
 
 ```bash
-git add diskguard/models.py diskguard/storage/database.py diskguard/core/relocation tests/test_relocation_junction.py
+git add greenc/models.py greenc/storage/database.py greenc/core/relocation tests/test_relocation_junction.py
 git commit -m "feat: junction relocation strategy with crash recovery and undo"
 ```
 
@@ -1681,8 +1681,8 @@ git commit -m "feat: junction relocation strategy with crash recovery and undo"
 ### Task 6: Windows known-folder strategy
 
 **Files:**
-- Create: `diskguard/core/relocation/known_folders.py`
-- Modify: `diskguard/core/relocation/service.py` (`strategy_for_record`)
+- Create: `greenc/core/relocation/known_folders.py`
+- Modify: `greenc/core/relocation/service.py` (`strategy_for_record`)
 - Test: `tests/test_relocation_known_folders.py`
 
 **Interfaces:**
@@ -1698,16 +1698,16 @@ from pathlib import Path
 
 import pytest
 
-from diskguard.core.relocation.base import RelocationCandidate
-from diskguard.core.relocation.fs_ops import RelocationError
-from diskguard.core.relocation.known_folders import (
+from greenc.core.relocation.base import RelocationCandidate
+from greenc.core.relocation.fs_ops import RelocationError
+from greenc.core.relocation.known_folders import (
     KNOWN_FOLDERS,
     KnownFolderStrategy,
     WindowsShellFolders,
     is_onedrive_path,
 )
-from diskguard.core.relocation.service import strategy_for_record
-from diskguard.models import RELOCATION_DONE, RELOCATION_UNDONE
+from greenc.core.relocation.service import strategy_for_record
+from greenc.models import RELOCATION_DONE, RELOCATION_UNDONE
 
 Usage = namedtuple("Usage", "total used free")
 DL = KNOWN_FOLDERS["kf_downloads"]
@@ -1792,7 +1792,7 @@ def test_real_shell_reads_downloads():
 
 
 def test_factory_builds_known_folder_strategy():
-    from diskguard.models import RelocationRecord
+    from greenc.models import RelocationRecord
 
     rec = RelocationRecord(1, "kf_downloads", "Downloads", "known_folder", "a", "b", 0, "done")
     assert isinstance(strategy_for_record(rec), KnownFolderStrategy)
@@ -1800,7 +1800,7 @@ def test_factory_builds_known_folder_strategy():
 
 - [ ] **Step 2: Run to verify it fails** — `pytest tests/test_relocation_known_folders.py -q` → `ModuleNotFoundError`.
 
-- [ ] **Step 3: Create `diskguard/core/relocation/known_folders.py`**
+- [ ] **Step 3: Create `greenc/core/relocation/known_folders.py`**
 
 ```python
 import ctypes
@@ -1812,8 +1812,8 @@ import shutil
 from typing import Callable
 import uuid
 
-from diskguard.core.drives import is_on_system_drive
-from diskguard.core.relocation.base import (
+from greenc.core.drives import is_on_system_drive
+from greenc.core.relocation.base import (
     FREE_SPACE_RESERVE,
     CheckResult,
     RelocationCandidate,
@@ -1821,14 +1821,14 @@ from diskguard.core.relocation.base import (
     Saver,
     now_iso,
 )
-from diskguard.core.relocation.fs_ops import (
+from greenc.core.relocation.fs_ops import (
     RelocationError,
     clear_contents,
     remove_tree,
     verified_copy_tree,
 )
-from diskguard.core.task_controller import TaskControl
-from diskguard.models import RELOCATION_DONE, RELOCATION_UNDONE, RelocationRecord
+from greenc.core.task_controller import TaskControl
+from greenc.models import RELOCATION_DONE, RELOCATION_UNDONE, RelocationRecord
 
 
 @dataclass(frozen=True)
@@ -1982,7 +1982,7 @@ class KnownFolderStrategy(RelocationStrategy):
 
 - [ ] **Step 4: Extend `strategy_for_record` in `service.py`**
 
-Add import `from diskguard.core.relocation.known_folders import KNOWN_FOLDERS, KnownFolderStrategy` and, before the `raise`, insert:
+Add import `from greenc.core.relocation.known_folders import KNOWN_FOLDERS, KnownFolderStrategy` and, before the `raise`, insert:
 
 ```python
     if rec.strategy == "known_folder" and rec.app_id in KNOWN_FOLDERS:
@@ -1994,7 +1994,7 @@ Add import `from diskguard.core.relocation.known_folders import KNOWN_FOLDERS, K
 - [ ] **Step 6: Commit**
 
 ```bash
-git add diskguard/core/relocation tests/test_relocation_known_folders.py
+git add greenc/core/relocation tests/test_relocation_known_folders.py
 git commit -m "feat: relocate Windows known folders via SHSetKnownFolderPath"
 ```
 
@@ -2003,8 +2003,8 @@ git commit -m "feat: relocate Windows known folders via SHSetKnownFolderPath"
 ### Task 7: npm / pip cache strategies
 
 **Files:**
-- Create: `diskguard/core/relocation/tool_config.py`
-- Modify: `diskguard/core/relocation/service.py` (`strategy_for_record`)
+- Create: `greenc/core/relocation/tool_config.py`
+- Modify: `greenc/core/relocation/service.py` (`strategy_for_record`)
 - Test: `tests/test_relocation_tool_config.py`
 
 **Interfaces:**
@@ -2017,11 +2017,11 @@ from pathlib import Path
 
 import pytest
 
-from diskguard.core.relocation.base import RelocationCandidate
-from diskguard.core.relocation.fs_ops import RelocationError
-from diskguard.core.relocation.service import strategy_for_record
-from diskguard.core.relocation.tool_config import NpmCacheStrategy, PipCacheStrategy
-from diskguard.models import RELOCATION_DONE, RELOCATION_UNDONE, RelocationRecord
+from greenc.core.relocation.base import RelocationCandidate
+from greenc.core.relocation.fs_ops import RelocationError
+from greenc.core.relocation.service import strategy_for_record
+from greenc.core.relocation.tool_config import NpmCacheStrategy, PipCacheStrategy
+from greenc.models import RELOCATION_DONE, RELOCATION_UNDONE, RelocationRecord
 
 
 class FakeNpm:
@@ -2101,7 +2101,7 @@ def test_factory_builds_tool_strategy():
 
 - [ ] **Step 2: Run to verify it fails** — `pytest tests/test_relocation_tool_config.py -q` → `ModuleNotFoundError`.
 
-- [ ] **Step 3: Create `diskguard/core/relocation/tool_config.py`**
+- [ ] **Step 3: Create `greenc/core/relocation/tool_config.py`**
 
 ```python
 from pathlib import Path
@@ -2109,16 +2109,16 @@ import shutil
 import subprocess
 from typing import Callable
 
-from diskguard.core.relocation.base import (
+from greenc.core.relocation.base import (
     CheckResult,
     RelocationCandidate,
     RelocationStrategy,
     Saver,
     now_iso,
 )
-from diskguard.core.relocation.fs_ops import RelocationError, remove_tree, same_path
-from diskguard.core.task_controller import TaskControl
-from diskguard.models import RELOCATION_DONE, RELOCATION_UNDONE, RelocationRecord
+from greenc.core.relocation.fs_ops import RelocationError, remove_tree, same_path
+from greenc.core.task_controller import TaskControl
+from greenc.models import RELOCATION_DONE, RELOCATION_UNDONE, RelocationRecord
 
 Runner = Callable[[list[str]], tuple[int, str]]
 _CREATE_NO_WINDOW = 0x08000000
@@ -2255,7 +2255,7 @@ TOOL_STRATEGIES: dict[str, type[ToolCacheStrategy]] = {
 - [ ] **Step 6: Commit**
 
 ```bash
-git add diskguard/core/relocation tests/test_relocation_tool_config.py
+git add greenc/core/relocation tests/test_relocation_tool_config.py
 git commit -m "feat: move npm and pip caches to the data drive"
 ```
 
@@ -2264,8 +2264,8 @@ git commit -m "feat: move npm and pip caches to the data drive"
 ### Task 8: Zalo guided strategy and candidate discovery
 
 **Files:**
-- Create: `diskguard/core/relocation/zalo.py`, `diskguard/core/relocation/catalog.py`
-- Modify: `diskguard/core/relocation/service.py` (add `complete_guided`)
+- Create: `greenc/core/relocation/zalo.py`, `greenc/core/relocation/catalog.py`
+- Modify: `greenc/core/relocation/service.py` (add `complete_guided`)
 - Test: `tests/test_relocation_catalog.py`
 
 **Interfaces:**
@@ -2281,14 +2281,14 @@ import os
 from pathlib import Path
 import subprocess
 
-from diskguard.core.relocation.catalog import discover_candidates
-from diskguard.core.relocation.junction import JunctionStrategy
-from diskguard.core.relocation.known_folders import KNOWN_FOLDERS, KnownFolderStrategy
-from diskguard.core.relocation.service import RelocationService
-from diskguard.core.relocation.zalo import ZaloGuidedStrategy
-from diskguard.core.settings import AppSettings
-from diskguard.models import RELOCATION_DONE, RelocationRecord
-from diskguard.storage.database import DiskGuardDB
+from greenc.core.relocation.catalog import discover_candidates
+from greenc.core.relocation.junction import JunctionStrategy
+from greenc.core.relocation.known_folders import KNOWN_FOLDERS, KnownFolderStrategy
+from greenc.core.relocation.service import RelocationService
+from greenc.core.relocation.zalo import ZaloGuidedStrategy
+from greenc.core.settings import AppSettings
+from greenc.models import RELOCATION_DONE, RelocationRecord
+from greenc.storage.database import GreenCDB
 
 SYS = os.path.splitdrive(os.getcwd())[0].upper() + "\\"
 
@@ -2340,7 +2340,7 @@ def _discover(db, tmp_path, **kw):
 
 
 def test_discovers_each_strategy_and_orders_advanced_last(tmp_path: Path):
-    db = DiskGuardDB(tmp_path / "c.db")
+    db = GreenCDB(tmp_path / "c.db")
     cands, (appdata, *_rest) = _discover(db, tmp_path)
     by_id = {c.app_id: c for c in cands}
     assert isinstance(by_id["kf_downloads"].strategy, KnownFolderStrategy)
@@ -2354,7 +2354,7 @@ def test_discovers_each_strategy_and_orders_advanced_last(tmp_path: Path):
 
 
 def test_done_relocations_and_junctions_are_excluded(tmp_path: Path):
-    db = DiskGuardDB(tmp_path / "c.db")
+    db = GreenCDB(tmp_path / "c.db")
     appdata = tmp_path / "Roaming"
     db.save_relocation(
         RelocationRecord(None, "telegram", "Telegram Desktop", "junction",
@@ -2369,7 +2369,7 @@ def test_done_relocations_and_junctions_are_excluded(tmp_path: Path):
 
 
 def test_zalo_off_system_drive_is_not_a_candidate(tmp_path: Path):
-    db = DiskGuardDB(tmp_path / "c.db")
+    db = GreenCDB(tmp_path / "c.db")
     zcfg = tmp_path / "z.json"
     zcfg.write_text(json.dumps({"db_path": {"location": "Q:\\Zalo Data\\message"}}), encoding="utf-8")
     cands, _ = _discover(db, tmp_path, zalo_config=zcfg)
@@ -2379,7 +2379,7 @@ def test_zalo_off_system_drive_is_not_a_candidate(tmp_path: Path):
 
 
 def test_complete_guided_records_only_when_moved(tmp_path: Path):
-    db = DiskGuardDB(tmp_path / "c.db")
+    db = GreenCDB(tmp_path / "c.db")
     cands, (_a, _l, _s, zcfg, _dl, zalo_data) = _discover(db, tmp_path)
     zalo = next(c for c in cands if c.app_id == "zalo")
     svc = RelocationService(db, AppSettings(db))
@@ -2393,7 +2393,7 @@ def test_complete_guided_records_only_when_moved(tmp_path: Path):
 
 - [ ] **Step 2: Run to verify it fails** — `pytest tests/test_relocation_catalog.py -q` → `ModuleNotFoundError`.
 
-- [ ] **Step 3: Create `diskguard/core/relocation/zalo.py`**
+- [ ] **Step 3: Create `greenc/core/relocation/zalo.py`**
 
 ```python
 import json
@@ -2403,16 +2403,16 @@ import subprocess
 
 import psutil
 
-from diskguard.core.drives import is_on_system_drive
-from diskguard.core.relocation.base import (
+from greenc.core.drives import is_on_system_drive
+from greenc.core.relocation.base import (
     CheckResult,
     RelocationCandidate,
     RelocationStrategy,
     Saver,
 )
-from diskguard.core.relocation.fs_ops import RelocationError
-from diskguard.core.task_controller import TaskControl
-from diskguard.models import RelocationRecord
+from greenc.core.relocation.fs_ops import RelocationError
+from greenc.core.task_controller import TaskControl
+from greenc.models import RelocationRecord
 
 
 class ZaloGuidedStrategy(RelocationStrategy):
@@ -2493,7 +2493,7 @@ class ZaloGuidedStrategy(RelocationStrategy):
         raise RelocationError("Đổi lại vị trí lưu trong Cài đặt của Zalo")
 ```
 
-- [ ] **Step 4: Add `complete_guided` to `RelocationService`** (imports: `RELOCATION_DONE` already imported; add `from diskguard.core.relocation.base import now_iso`)
+- [ ] **Step 4: Add `complete_guided` to `RelocationService`** (imports: `RELOCATION_DONE` already imported; add `from greenc.core.relocation.base import now_iso`)
 
 ```python
     def complete_guided(self, cand: RelocationCandidate) -> RelocationRecord | None:
@@ -2509,7 +2509,7 @@ class ZaloGuidedStrategy(RelocationStrategy):
         )
 ```
 
-- [ ] **Step 5: Create `diskguard/core/relocation/catalog.py`**
+- [ ] **Step 5: Create `greenc/core/relocation/catalog.py`**
 
 ```python
 import os
@@ -2518,24 +2518,24 @@ import re
 import shutil
 from typing import Callable
 
-from diskguard.core.drives import is_on_system_drive, system_drive_root
-from diskguard.core.relocation.base import RelocationCandidate
-from diskguard.core.relocation.fs_ops import fast_dir_size, is_reparse_point
-from diskguard.core.relocation.junction import JunctionStrategy
-from diskguard.core.relocation.known_folders import (
+from greenc.core.drives import is_on_system_drive, system_drive_root
+from greenc.core.relocation.base import RelocationCandidate
+from greenc.core.relocation.fs_ops import fast_dir_size, is_reparse_point
+from greenc.core.relocation.junction import JunctionStrategy
+from greenc.core.relocation.known_folders import (
     KNOWN_FOLDERS,
     KnownFolderStrategy,
     WindowsShellFolders,
     is_onedrive_path,
 )
-from diskguard.core.relocation.tool_config import (
+from greenc.core.relocation.tool_config import (
     NpmCacheStrategy,
     PipCacheStrategy,
     subprocess_runner,
 )
-from diskguard.core.relocation.zalo import ZaloGuidedStrategy
-from diskguard.models import RELOCATION_DONE
-from diskguard.storage.database import DiskGuardDB
+from greenc.core.relocation.zalo import ZaloGuidedStrategy
+from greenc.models import RELOCATION_DONE
+from greenc.storage.database import GreenCDB
 
 MIN_CANDIDATE_BYTES = 200 * 1024**2
 
@@ -2556,7 +2556,7 @@ def _norm(p: str | Path) -> str:
 
 
 def discover_candidates(
-    db: DiskGuardDB,
+    db: GreenCDB,
     system_root: str | None = None,
     appdata: Path | str | None = None,
     localappdata: Path | str | None = None,
@@ -2669,7 +2669,7 @@ def discover_candidates(
 - [ ] **Step 7: Commit**
 
 ```bash
-git add diskguard/core/relocation tests/test_relocation_catalog.py
+git add greenc/core/relocation tests/test_relocation_catalog.py
 git commit -m "feat: Zalo guided relocation and relocation candidate discovery"
 ```
 
@@ -2678,8 +2678,8 @@ git commit -m "feat: Zalo guided relocation and relocation candidate discovery"
 ### Task 9: Theme, icons, reusable widgets
 
 **Files:**
-- Create: `diskguard/ui/theme.py`, `diskguard/ui/icons.py`, `diskguard/ui/widgets.py`
-- Modify: `diskguard/ui/__init__.py` (add `format_size`)
+- Create: `greenc/ui/theme.py`, `greenc/ui/icons.py`, `greenc/ui/widgets.py`
+- Modify: `greenc/ui/__init__.py` (add `format_size`)
 - Test: `tests/test_ui_widgets.py`
 
 **Interfaces:**
@@ -2698,9 +2698,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QApplication
 
-from diskguard.ui import format_size
-from diskguard.ui.icons import icon
-from diskguard.ui.widgets import ExpandableTableCard, PathCell, PathValue, TableRow, TagValue
+from greenc.ui import format_size
+from greenc.ui.icons import icon
+from greenc.ui.widgets import ExpandableTableCard, PathCell, PathValue, TableRow, TagValue
 
 
 def _app():
@@ -2763,7 +2763,7 @@ def test_empty_card_shows_hint():
 
 - [ ] **Step 2: Run to verify it fails** — `pytest tests/test_ui_widgets.py -q` → `ImportError`.
 
-- [ ] **Step 3: Add `format_size` to `diskguard/ui/__init__.py`** (keep `format_bytes` unchanged)
+- [ ] **Step 3: Add `format_size` to `greenc/ui/__init__.py`** (keep `format_bytes` unchanged)
 
 ```python
 def format_size(num_bytes: int | float) -> str:
@@ -2780,7 +2780,7 @@ def format_size(num_bytes: int | float) -> str:
     return f"{sign}{val:.1f} TB"
 ```
 
-- [ ] **Step 4: Create `diskguard/ui/theme.py`**
+- [ ] **Step 4: Create `greenc/ui/theme.py`**
 
 ```python
 from PySide6.QtWidgets import QWidget
@@ -2865,14 +2865,14 @@ def repolish(widget: QWidget) -> None:
     widget.update()
 ```
 
-- [ ] **Step 5: Create `diskguard/ui/icons.py`**
+- [ ] **Step 5: Create `greenc/ui/icons.py`**
 
 ```python
 from PySide6.QtCore import QByteArray, Qt
 from PySide6.QtGui import QIcon, QPainter, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 
-from diskguard.ui.theme import BRAND_GREEN, TEXT_MUTED
+from greenc.ui.theme import BRAND_GREEN, TEXT_MUTED
 
 _PATHS = {
     "eye": '<path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8s-2.4 4.5-6.5 4.5S1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/>',
@@ -2908,7 +2908,7 @@ def app_icon() -> QIcon:
     return icon("drive", BRAND_GREEN, 32)
 ```
 
-- [ ] **Step 6: Create `diskguard/ui/widgets.py`**
+- [ ] **Step 6: Create `greenc/ui/widgets.py`**
 
 ```python
 from dataclasses import dataclass, field
@@ -2932,7 +2932,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from diskguard.ui.icons import icon
+from greenc.ui.icons import icon
 
 
 def icon_button(name: str, tooltip: str, checkable: bool = False) -> QToolButton:
@@ -3194,7 +3194,7 @@ class ExpandableTableCard(QFrame):
 - [ ] **Step 8: Commit**
 
 ```bash
-git add diskguard/ui/theme.py diskguard/ui/icons.py diskguard/ui/widgets.py diskguard/ui/__init__.py tests/test_ui_widgets.py
+git add greenc/ui/theme.py greenc/ui/icons.py greenc/ui/widgets.py greenc/ui/__init__.py tests/test_ui_widgets.py
 git commit -m "feat: Fluent theme, line icons, PathCell and expandable table card"
 ```
 
@@ -3203,7 +3203,7 @@ git commit -m "feat: Fluent theme, line icons, PathCell and expandable table car
 ### Task 10: Data location widget and first-run dialog
 
 **Files:**
-- Create: `diskguard/ui/data_location.py`
+- Create: `greenc/ui/data_location.py`
 - Test: `tests/test_ui_first_run.py`
 
 **Interfaces:**
@@ -3220,10 +3220,10 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
-from diskguard.core.drives import DriveInfo
-from diskguard.core.settings import AppSettings
-from diskguard.storage.database import DiskGuardDB
-from diskguard.ui.data_location import FirstRunDialog, run_first_run
+from greenc.core.drives import DriveInfo
+from greenc.core.settings import AppSettings
+from greenc.storage.database import GreenCDB
+from greenc.ui.data_location import FirstRunDialog, run_first_run
 
 GB = 1024**3
 DRIVES = [
@@ -3252,7 +3252,7 @@ def test_dialog_preselects_recommended_and_disables_ineligible():
 
 def test_run_first_run_accept_saves_choice(tmp_path):
     _app()
-    settings = AppSettings(DiskGuardDB(tmp_path / "f.db"))
+    settings = AppSettings(GreenCDB(tmp_path / "f.db"))
     root = run_first_run(settings, DRIVES, exec_fn=lambda dlg: (dlg.location.retention_spin.setValue(14), True)[1])
     assert root == Path("D:\\Green C")
     assert settings.data_root == Path("D:\\Green C")
@@ -3261,7 +3261,7 @@ def test_run_first_run_accept_saves_choice(tmp_path):
 
 def test_run_first_run_later_uses_recommended(tmp_path):
     _app()
-    settings = AppSettings(DiskGuardDB(tmp_path / "f.db"))
+    settings = AppSettings(GreenCDB(tmp_path / "f.db"))
     assert run_first_run(settings, DRIVES, exec_fn=lambda dlg: False) == Path("D:\\Green C")
     assert settings.data_root == Path("D:\\Green C")
 
@@ -3275,7 +3275,7 @@ def test_current_root_is_preselected():
 
 - [ ] **Step 2: Run to verify it fails** — `pytest tests/test_ui_first_run.py -q` → `ModuleNotFoundError`.
 
-- [ ] **Step 3: Create `diskguard/ui/data_location.py`**
+- [ ] **Step 3: Create `greenc/ui/data_location.py`**
 
 ```python
 from pathlib import Path
@@ -3296,12 +3296,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from diskguard.config import APP_NAME, DEFAULT_RETENTION_DAYS, MAX_RETENTION_DAYS, MIN_RETENTION_DAYS
-from diskguard.core.drives import DriveInfo, data_root_for, drive_of, recommend_drive
-from diskguard.core.settings import AppSettings
-from diskguard.ui import format_size
-from diskguard.ui.theme import QSS, repolish
-from diskguard.ui.widgets import muted_label, page_title
+from greenc.config import APP_NAME, DEFAULT_RETENTION_DAYS, MAX_RETENTION_DAYS, MIN_RETENTION_DAYS
+from greenc.core.drives import DriveInfo, data_root_for, drive_of, recommend_drive
+from greenc.core.settings import AppSettings
+from greenc.ui import format_size
+from greenc.ui.theme import QSS, repolish
+from greenc.ui.widgets import muted_label, page_title
 
 
 class DriveOption(QFrame):
@@ -3520,7 +3520,7 @@ def run_first_run(
 - [ ] **Step 5: Commit**
 
 ```bash
-git add diskguard/ui/data_location.py tests/test_ui_first_run.py
+git add greenc/ui/data_location.py tests/test_ui_first_run.py
 git commit -m "feat: data drive picker and first-run dialog"
 ```
 
@@ -3529,7 +3529,7 @@ git commit -m "feat: data drive picker and first-run dialog"
 ### Task 11: Restyle existing pages and copy (daily, cleanup, dialogs, chart, analyzer)
 
 **Files:**
-- Modify: `diskguard/ui/daily_tab.py` (whole file), `diskguard/ui/smart_cleanup_tab.py` (whole file), `diskguard/ui/dialogs.py` (whole file), `diskguard/ui/chart_widget.py` (colors + background), `diskguard/ui/workers.py` (`TaskProgressCard` UI), `diskguard/core/smart_analyzer.py` (labels + `retention_days` param)
+- Modify: `greenc/ui/daily_tab.py` (whole file), `greenc/ui/smart_cleanup_tab.py` (whole file), `greenc/ui/dialogs.py` (whole file), `greenc/ui/chart_widget.py` (colors + background), `greenc/ui/workers.py` (`TaskProgressCard` UI), `greenc/core/smart_analyzer.py` (labels + `retention_days` param)
 - Modify tests: `tests/test_whitebox_internals.py` (one assertion), `tests/test_ui_headless.py` (probe_strategy sample text)
 - Test: `tests/test_ui_pages_restyled.py`
 
@@ -3546,10 +3546,10 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
-from diskguard.core.smart_analyzer import AppAnalysisProposal
-from diskguard.ui.dialogs import QuotaRuleDialog
-from diskguard.ui.smart_cleanup_tab import SmartCleanupTab
-from diskguard.ui.widgets import PathCell
+from greenc.core.smart_analyzer import AppAnalysisProposal
+from greenc.ui.dialogs import QuotaRuleDialog
+from greenc.ui.smart_cleanup_tab import SmartCleanupTab
+from greenc.ui.widgets import PathCell
 
 BANNED = ("(", "thông minh", "1-click", "Sandbox", "Rollback", "Verified")
 
@@ -3589,7 +3589,7 @@ def test_rule_dialog_uses_default_retention():
 
 - [ ] **Step 2: Run to verify it fails** — `pytest tests/test_ui_pages_restyled.py -q` → FAIL (`AttributeError: 'SmartCleanupTab' object has no attribute 'set_retention_days'`).
 
-- [ ] **Step 3: Analyzer copy + retention** — in `diskguard/core/smart_analyzer.py`:
+- [ ] **Step 3: Analyzer copy + retention** — in `greenc/core/smart_analyzer.py`:
 
 Replace the three probe return tuples / fallback:
 
@@ -3644,15 +3644,15 @@ use `retention_days=retention_days` in the `QuotaRule(...)` it builds, the per-a
 
 Update `tests/test_whitebox_internals.py` line with `assert "Phương án dự phòng" in strategy` → `assert strategy == "Chỉ dọn bộ đệm"`, and in `tests/test_ui_headless.py` replace `probe_strategy="Chu trình chuẩn (Verified Safe)"` with `probe_strategy="Đạt"`.
 
-- [ ] **Step 4: Replace `diskguard/ui/smart_cleanup_tab.py`**
+- [ ] **Step 4: Replace `greenc/ui/smart_cleanup_tab.py`**
 
 ```python
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QCheckBox, QHBoxLayout, QPushButton, QVBoxLayout, QWidget
 
-from diskguard.core.smart_analyzer import AppAnalysisProposal
-from diskguard.ui import format_size
-from diskguard.ui.widgets import (
+from greenc.core.smart_analyzer import AppAnalysisProposal
+from greenc.ui import format_size
+from greenc.ui.widgets import (
     PathValue,
     TagValue,
     card_title,
@@ -3753,7 +3753,7 @@ class SmartCleanupTab(QWidget):
             self.executeCleanupRequested.emit(selected)
 ```
 
-- [ ] **Step 5: Replace `diskguard/ui/daily_tab.py`**
+- [ ] **Step 5: Replace `greenc/ui/daily_tab.py`**
 
 ```python
 from datetime import date
@@ -3761,11 +3761,11 @@ from datetime import date
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QHBoxLayout, QPushButton, QVBoxLayout, QWidget
 
-from diskguard.models import DailySnapshot
-from diskguard.storage.database import DiskGuardDB
-from diskguard.ui import format_size
-from diskguard.ui.chart_widget import DailyBarChartWidget
-from diskguard.ui.widgets import PathValue, card_title, make_table, muted_label, set_cell
+from greenc.models import DailySnapshot
+from greenc.storage.database import GreenCDB
+from greenc.ui import format_size
+from greenc.ui.chart_widget import DailyBarChartWidget
+from greenc.ui.widgets import PathValue, card_title, make_table, muted_label, set_cell
 
 
 class DailyMonitorTab(QWidget):
@@ -3773,7 +3773,7 @@ class DailyMonitorTab(QWidget):
 
     requestCreateQuota = Signal(str, str, str, list)
 
-    def __init__(self, db: DiskGuardDB, parent: QWidget | None = None):
+    def __init__(self, db: GreenCDB, parent: QWidget | None = None):
         super().__init__(parent)
         self.db = db
         self._current_drive = "C:\\"
@@ -3863,7 +3863,7 @@ class DailyMonitorTab(QWidget):
 
 Note: `tests/test_e2e_app_testcases.py` asserts `"DingTalk" in win.daily_tab.folder_table.item(0, 0).text()` — `set_cell` with `PathValue` keeps the item text, so this still passes.
 
-- [ ] **Step 6: `diskguard/ui/chart_widget.py`** — replace the background block at the start of `paintEvent`:
+- [ ] **Step 6: `greenc/ui/chart_widget.py`** — replace the background block at the start of `paintEvent`:
 
 ```python
         rect = self.rect()
@@ -3872,7 +3872,7 @@ Note: `tests/test_e2e_app_testcases.py` asserts `"DingTalk" in win.daily_tab.fol
 
 replace the empty-state text with `"Chưa có dữ liệu. Bấm Làm mới để đọc lịch sử ổ đĩa."`, and map colors: `#0066CC`→`#0067C0`, `#4791FF`→`#2B88D8`, `#BFD9FF`→`#C7E0F4`, `#1D1D1F`→`#1B1B1B`, `#6E6E73`/`#8E8E93`→`#616161`, `#E5E5EA`/`#F0F0F5`→`#EDEDED`; spike colors `#D97706`→`#C42B1C`, `#F59E0B`→`#E0705E`, `#FDE68A`→`#F4CFC9`, `#B45309`→`#C42B1C`. Any title text drawn by the chart becomes `"Dung lượng theo ngày"`.
 
-- [ ] **Step 7: Replace `diskguard/ui/dialogs.py`**
+- [ ] **Step 7: Replace `greenc/ui/dialogs.py`**
 
 ```python
 from PySide6.QtCore import Qt
@@ -3891,11 +3891,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from diskguard.config import DEFAULT_PROTECTED_PATTERNS, DEFAULT_RETENTION_DAYS
-from diskguard.models import FileManifestItem, QuotaRule, VaultArchive
-from diskguard.ui import format_size
-from diskguard.ui.theme import QSS
-from diskguard.ui.widgets import PathValue, make_table, muted_label, set_cell
+from greenc.config import DEFAULT_PROTECTED_PATTERNS, DEFAULT_RETENTION_DAYS
+from greenc.models import FileManifestItem, QuotaRule, VaultArchive
+from greenc.ui import format_size
+from greenc.ui.theme import QSS
+from greenc.ui.widgets import PathValue, make_table, muted_label, set_cell
 
 
 class QuotaRuleDialog(QDialog):
@@ -4032,7 +4032,7 @@ class ArchiveDetailsDialog(QDialog):
         layout.addWidget(close)
 ```
 
-- [ ] **Step 8: Compact `TaskProgressCard` in `diskguard/ui/workers.py`** — replace the `TaskProgressCard.__init__` body and `_on_*` captions (keep `BackgroundTaskWorker` unchanged, keep all attribute names):
+- [ ] **Step 8: Compact `TaskProgressCard` in `greenc/ui/workers.py`** — replace the `TaskProgressCard.__init__` body and `_on_*` captions (keep `BackgroundTaskWorker` unchanged, keep all attribute names):
 
 ```python
 class TaskProgressCard(QFrame):
@@ -4151,7 +4151,7 @@ Add `QTimer` and `Qt` to the `PySide6.QtCore` import in `workers.py`.
 - [ ] **Step 10: Commit**
 
 ```bash
-git add diskguard/ui diskguard/core/smart_analyzer.py tests
+git add greenc/ui greenc/core/smart_analyzer.py tests
 git commit -m "feat: restyle cleanup, daily, dialogs and status bar with concise Vietnamese copy"
 ```
 
@@ -4160,8 +4160,8 @@ git commit -m "feat: restyle cleanup, daily, dialogs and status bar with concise
 ### Task 12: Vault page, Settings page, Overview page, new shell
 
 **Files:**
-- Create: `diskguard/ui/vault_page.py`, `diskguard/ui/overview_page.py`
-- Modify: `diskguard/ui/settings_tab.py` (whole file), `diskguard/ui/main_window.py` (shell, pages, wiring)
+- Create: `greenc/ui/vault_page.py`, `greenc/ui/overview_page.py`
+- Modify: `greenc/ui/settings_tab.py` (whole file), `greenc/ui/main_window.py` (shell, pages, wiring)
 - Modify tests: `tests/test_e2e_app_testcases.py` (settings index 2 → 4), `tests/test_ui_headless.py` (`stack.count() == 3` → `5`)
 - Test: `tests/test_ui_shell.py`
 
@@ -4179,15 +4179,15 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
-from diskguard.config import APP_NAME
-from diskguard.core.settings import AppSettings
-from diskguard.storage.database import DiskGuardDB
-from diskguard.ui.main_window import MainWindow
+from greenc.config import APP_NAME
+from greenc.core.settings import AppSettings
+from greenc.storage.database import GreenCDB
+from greenc.ui.main_window import MainWindow
 
 
 def _win(tmp_path: Path):
     app = QApplication.instance() or QApplication([])
-    db = DiskGuardDB(tmp_path / "ui.db")
+    db = GreenCDB(tmp_path / "ui.db")
     settings = AppSettings(db)
     win = MainWindow(db=db, vault_dir=tmp_path / "vault", sandbox_dir=tmp_path / "sb",
                      auto_scan_on_init=False, settings=settings)
@@ -4215,7 +4215,7 @@ def test_overview_freeable_card_has_eye_toggle(tmp_path: Path):
     app, win, _ = _win(tmp_path)
     card = win.overview_page.freeable_card
     assert not card.empty_label.isHidden()
-    from diskguard.core.smart_analyzer import AppAnalysisProposal
+    from greenc.core.smart_analyzer import AppAnalysisProposal
 
     prop = AppAnalysisProposal("Zalo", "Zalo.exe", "", False, "", [r"C:\Zalo"], 2 * 1024**3,
                                1024**3, 1024**3, True, "Đạt", "")
@@ -4245,7 +4245,7 @@ def test_vault_page_lists_archives(tmp_path: Path):
 
 - [ ] **Step 2: Run to verify it fails** — `pytest tests/test_ui_shell.py -q` → FAIL (`TypeError: MainWindow.__init__() got an unexpected keyword argument 'settings'`).
 
-- [ ] **Step 3: Create `diskguard/ui/vault_page.py`**
+- [ ] **Step 3: Create `greenc/ui/vault_page.py`**
 
 ```python
 from datetime import datetime
@@ -4255,12 +4255,12 @@ from typing import Callable
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QHBoxLayout, QMessageBox, QPushButton, QVBoxLayout, QWidget
 
-from diskguard.core.safety_watchdog import SafetyWatchdog
-from diskguard.models import VaultArchive
-from diskguard.storage.database import DiskGuardDB
-from diskguard.ui import format_size
-from diskguard.ui.dialogs import ArchiveDetailsDialog
-from diskguard.ui.widgets import PathValue, TagValue, make_card, make_table, muted_label, page_title, set_cell
+from greenc.core.safety_watchdog import SafetyWatchdog
+from greenc.models import VaultArchive
+from greenc.storage.database import GreenCDB
+from greenc.ui import format_size
+from greenc.ui.dialogs import ArchiveDetailsDialog
+from greenc.ui.widgets import PathValue, TagValue, make_card, make_table, muted_label, page_title, set_cell
 
 STATUS_TEXT = {"QUARANTINED": "Đang giữ", "ROLLED_BACK": "Đã khôi phục", "PURGED": "Đã xóa"}
 
@@ -4268,7 +4268,7 @@ STATUS_TEXT = {"QUARANTINED": "Đang giữ", "ROLLED_BACK": "Đã khôi phục",
 class VaultPage(QWidget):
     dataChanged = Signal()
 
-    def __init__(self, db: DiskGuardDB, watchdog: SafetyWatchdog, vault_dir_provider: Callable[[], Path], parent=None):
+    def __init__(self, db: GreenCDB, watchdog: SafetyWatchdog, vault_dir_provider: Callable[[], Path], parent=None):
         super().__init__(parent)
         self.db = db
         self.watchdog = watchdog
@@ -4365,7 +4365,7 @@ class VaultPage(QWidget):
         )
 ```
 
-- [ ] **Step 4: Replace `diskguard/ui/settings_tab.py`**
+- [ ] **Step 4: Replace `greenc/ui/settings_tab.py`**
 
 ```python
 from PySide6.QtCore import Qt, Signal
@@ -4380,16 +4380,16 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from diskguard.config import APP_NAME, APP_VERSION, AUTHOR, MAX_RETENTION_DAYS, MIN_RETENTION_DAYS, WEBSITE_LABEL, WEBSITE_URL
-from diskguard.core.quota_enforcer import QuotaEnforcer
-from diskguard.core.safety_watchdog import SafetyWatchdog
-from diskguard.core.settings import AppSettings
-from diskguard.core.simulator import SandboxSimulator
-from diskguard.models import QuotaRule
-from diskguard.storage.database import DiskGuardDB
-from diskguard.ui import format_size
-from diskguard.ui.dialogs import QuotaRuleDialog
-from diskguard.ui.widgets import (
+from greenc.config import APP_NAME, APP_VERSION, AUTHOR, MAX_RETENTION_DAYS, MIN_RETENTION_DAYS, WEBSITE_LABEL, WEBSITE_URL
+from greenc.core.quota_enforcer import QuotaEnforcer
+from greenc.core.safety_watchdog import SafetyWatchdog
+from greenc.core.settings import AppSettings
+from greenc.core.simulator import SandboxSimulator
+from greenc.models import QuotaRule
+from greenc.storage.database import GreenCDB
+from greenc.ui import format_size
+from greenc.ui.dialogs import QuotaRuleDialog
+from greenc.ui.widgets import (
     PathCell,
     PathValue,
     TagValue,
@@ -4408,7 +4408,7 @@ class SettingsTab(QWidget):
 
     def __init__(
         self,
-        db: DiskGuardDB,
+        db: GreenCDB,
         enforcer: QuotaEnforcer,
         watchdog: SafetyWatchdog,
         simulator: SandboxSimulator,
@@ -4592,7 +4592,7 @@ class SettingsTab(QWidget):
         self.settingsDataChanged.emit()
 ```
 
-- [ ] **Step 5: Create `diskguard/ui/overview_page.py`**
+- [ ] **Step 5: Create `greenc/ui/overview_page.py`**
 
 ```python
 import shutil
@@ -4608,11 +4608,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from diskguard.storage.database import DiskGuardDB
-from diskguard.ui import format_size
-from diskguard.ui.daily_tab import DailyMonitorTab
-from diskguard.ui.theme import repolish
-from diskguard.ui.widgets import (
+from greenc.storage.database import GreenCDB
+from greenc.ui import format_size
+from greenc.ui.daily_tab import DailyMonitorTab
+from greenc.ui.theme import repolish
+from greenc.ui.widgets import (
     ExpandableTableCard,
     PathValue,
     TableRow,
@@ -4630,7 +4630,7 @@ class OverviewPage(QWidget):
     refreshHistoryRequested = Signal()
     driveChanged = Signal(str)
 
-    def __init__(self, db: DiskGuardDB, drives: list[str], parent: QWidget | None = None):
+    def __init__(self, db: GreenCDB, drives: list[str], parent: QWidget | None = None):
         super().__init__(parent)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -4741,7 +4741,7 @@ class OverviewPage(QWidget):
         self.freeable_card.set_rows(rows)
 ```
 
-- [ ] **Step 6: Rebuild the shell in `diskguard/ui/main_window.py`**
+- [ ] **Step 6: Rebuild the shell in `greenc/ui/main_window.py`**
 
 Replace imports at the top with:
 
@@ -4765,25 +4765,25 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from diskguard.config import APP_NAME, AUTHOR, SANDBOX_DEMO_DIR, WEBSITE_LABEL, WEBSITE_URL, DEFAULT_DB_PATH
-from diskguard.core.app_profiles import discover_installed_heavy_apps
-from diskguard.core.disk_tracker import DiskTracker
-from diskguard.core.quota_enforcer import QuotaEnforcer
-from diskguard.core.safety_watchdog import SafetyWatchdog
-from diskguard.core.settings import AppSettings
-from diskguard.core.simulator import SandboxSimulator
-from diskguard.core.smart_analyzer import AppAnalysisProposal, SmartAppAnalyzer
-from diskguard.core.task_controller import TaskControl
-from diskguard.models import QuotaRule
-from diskguard.storage.database import DiskGuardDB
-from diskguard.ui import format_size
-from diskguard.ui.icons import app_icon
-from diskguard.ui.overview_page import OverviewPage
-from diskguard.ui.settings_tab import SettingsTab
-from diskguard.ui.smart_cleanup_tab import SmartCleanupTab
-from diskguard.ui.theme import QSS
-from diskguard.ui.vault_page import VaultPage
-from diskguard.ui.workers import BackgroundTaskWorker, TaskProgressCard
+from greenc.config import APP_NAME, AUTHOR, SANDBOX_DEMO_DIR, WEBSITE_LABEL, WEBSITE_URL, DEFAULT_DB_PATH
+from greenc.core.app_profiles import discover_installed_heavy_apps
+from greenc.core.disk_tracker import DiskTracker
+from greenc.core.quota_enforcer import QuotaEnforcer
+from greenc.core.safety_watchdog import SafetyWatchdog
+from greenc.core.settings import AppSettings
+from greenc.core.simulator import SandboxSimulator
+from greenc.core.smart_analyzer import AppAnalysisProposal, SmartAppAnalyzer
+from greenc.core.task_controller import TaskControl
+from greenc.models import QuotaRule
+from greenc.storage.database import GreenCDB
+from greenc.ui import format_size
+from greenc.ui.icons import app_icon
+from greenc.ui.overview_page import OverviewPage
+from greenc.ui.settings_tab import SettingsTab
+from greenc.ui.smart_cleanup_tab import SmartCleanupTab
+from greenc.ui.theme import QSS
+from greenc.ui.vault_page import VaultPage
+from greenc.ui.workers import BackgroundTaskWorker, TaskProgressCard
 ```
 
 Replace `__init__` from its signature down to (and including) the `if auto_scan_on_init: ... else: ...` block with:
@@ -4791,14 +4791,14 @@ Replace `__init__` from its signature down to (and including) the `if auto_scan_
 ```python
     def __init__(
         self,
-        db: DiskGuardDB | None = None,
+        db: GreenCDB | None = None,
         vault_dir: Path | str | None = None,
         sandbox_dir: Path | str | None = None,
         auto_scan_on_init: bool = True,
         settings: AppSettings | None = None,
     ):
         super().__init__()
-        self.db = db or DiskGuardDB(DEFAULT_DB_PATH)
+        self.db = db or GreenCDB(DEFAULT_DB_PATH)
         self.settings = settings or AppSettings(self.db)
         self.vault_dir = Path(vault_dir) if vault_dir else self.settings.vault_dir()
         self.sandbox_dir = Path(sandbox_dir) if sandbox_dir else SANDBOX_DEMO_DIR
@@ -5031,7 +5031,7 @@ Remove `shutil`, `QComboBox`, `QProgressBar`, `QStyle`, `DailyMonitorTab`, `DEFA
 - [ ] **Step 9: Commit**
 
 ```bash
-git add diskguard/ui tests
+git add greenc/ui tests
 git commit -m "feat: Green C:\\ shell with Overview, Vault and Settings pages"
 ```
 
@@ -5040,8 +5040,8 @@ git commit -m "feat: Green C:\\ shell with Overview, Vault and Settings pages"
 ### Task 13: Relocation page, guided dialog, data-root change, startup
 
 **Files:**
-- Create: `diskguard/ui/relocation_page.py`
-- Modify: `diskguard/ui/dialogs.py` (add `GuidedDialog`), `diskguard/ui/main_window.py` (relocation wiring, `_on_change_data_root`, analysis also discovers candidates), `main.py`
+- Create: `greenc/ui/relocation_page.py`
+- Modify: `greenc/ui/dialogs.py` (add `GuidedDialog`), `greenc/ui/main_window.py` (relocation wiring, `_on_change_data_root`, analysis also discovers candidates), `main.py`
 - Test: `tests/test_ui_relocation.py`
 
 **Interfaces:**
@@ -5059,16 +5059,16 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
-from diskguard.core.relocation.base import RelocationCandidate
-from diskguard.core.relocation.junction import JunctionStrategy
-from diskguard.core.relocation.service import RelocationService
-from diskguard.core.relocation.zalo import ZaloGuidedStrategy
-from diskguard.core.settings import AppSettings
-from diskguard.models import RELOCATION_DONE, RelocationRecord
-from diskguard.storage.database import DiskGuardDB
-from diskguard.ui.dialogs import GuidedDialog
-from diskguard.ui.relocation_page import RelocationPage
-from diskguard.ui.widgets import PathCell
+from greenc.core.relocation.base import RelocationCandidate
+from greenc.core.relocation.junction import JunctionStrategy
+from greenc.core.relocation.service import RelocationService
+from greenc.core.relocation.zalo import ZaloGuidedStrategy
+from greenc.core.settings import AppSettings
+from greenc.models import RELOCATION_DONE, RelocationRecord
+from greenc.storage.database import GreenCDB
+from greenc.ui.dialogs import GuidedDialog
+from greenc.ui.relocation_page import RelocationPage
+from greenc.ui.widgets import PathCell
 
 
 def _app():
@@ -5114,7 +5114,7 @@ def test_guided_dialog_verifies_zalo(tmp_path):
     _app()
     cfg = tmp_path / "config.json"
     cfg.write_text(json.dumps({"db_path": {"location": "C:\\ZaloPC\\Zalo Data\\message"}}), encoding="utf-8")
-    db = DiskGuardDB(tmp_path / "g.db")
+    db = GreenCDB(tmp_path / "g.db")
     svc = RelocationService(db, AppSettings(db))
     cand = RelocationCandidate("zalo", "Zalo", "C:\\ZaloPC\\Zalo Data", 10, ZaloGuidedStrategy(config_path=cfg, system_root="C:\\"), "how")
     dlg = GuidedDialog(cand, Path("D:\\Green C"), svc)
@@ -5128,9 +5128,9 @@ def test_guided_dialog_verifies_zalo(tmp_path):
 
 def test_main_window_shows_relocation_page(tmp_path):
     app = _app()
-    from diskguard.ui.main_window import MainWindow
+    from greenc.ui.main_window import MainWindow
 
-    db = DiskGuardDB(tmp_path / "w.db")
+    db = GreenCDB(tmp_path / "w.db")
     settings = AppSettings(db)
     win = MainWindow(db=db, vault_dir=tmp_path / "v", sandbox_dir=tmp_path / "s", auto_scan_on_init=False, settings=settings)
     win._bg_timer.stop()
@@ -5141,9 +5141,9 @@ def test_main_window_shows_relocation_page(tmp_path):
     win.close()
 ```
 
-- [ ] **Step 2: Run to verify it fails** — `pytest tests/test_ui_relocation.py -q` → `ModuleNotFoundError: diskguard.ui.relocation_page`.
+- [ ] **Step 2: Run to verify it fails** — `pytest tests/test_ui_relocation.py -q` → `ModuleNotFoundError: greenc.ui.relocation_page`.
 
-- [ ] **Step 3: Create `diskguard/ui/relocation_page.py`**
+- [ ] **Step 3: Create `greenc/ui/relocation_page.py`**
 
 ```python
 from pathlib import Path
@@ -5160,10 +5160,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from diskguard.core.relocation.base import RelocationCandidate
-from diskguard.models import RelocationRecord
-from diskguard.ui import format_size
-from diskguard.ui.widgets import (
+from greenc.core.relocation.base import RelocationCandidate
+from greenc.models import RelocationRecord
+from greenc.ui import format_size
+from greenc.ui.widgets import (
     PathValue,
     TagValue,
     card_title,
@@ -5333,9 +5333,9 @@ class RelocationPage(QWidget):
         fit_table_height(self.done_table, max_rows=10)
 ```
 
-- [ ] **Step 4: Add `GuidedDialog` to `diskguard/ui/dialogs.py`**
+- [ ] **Step 4: Add `GuidedDialog` to `greenc/ui/dialogs.py`**
 
-Imports to add: `from pathlib import Path`, `from PySide6.QtWidgets import QHBoxLayout, QLabel`, `from diskguard.core.drives import is_on_system_drive`, `from diskguard.core.relocation.base import RelocationCandidate`, `from diskguard.core.relocation.service import RelocationService`, `from diskguard.ui.widgets import page_title`.
+Imports to add: `from pathlib import Path`, `from PySide6.QtWidgets import QHBoxLayout, QLabel`, `from greenc.core.drives import is_on_system_drive`, `from greenc.core.relocation.base import RelocationCandidate`, `from greenc.core.relocation.service import RelocationService`, `from greenc.ui.widgets import page_title`.
 
 ```python
 class GuidedDialog(QDialog):
@@ -5401,14 +5401,14 @@ Imports to add:
 
 ```python
 from PySide6.QtWidgets import QMessageBox
-from diskguard.core.drives import is_on_system_drive, list_drives
-from diskguard.core.relocation.catalog import discover_candidates
-from diskguard.core.relocation.fs_ops import RelocationError, RelocationStopped
-from diskguard.core.relocation.service import RelocationService
-from diskguard.core.storage_migration import move_vault, remove_dir_if_empty
-from diskguard.ui.data_location import FirstRunDialog
-from diskguard.ui.dialogs import GuidedDialog
-from diskguard.ui.relocation_page import RelocationPage
+from greenc.core.drives import is_on_system_drive, list_drives
+from greenc.core.relocation.catalog import discover_candidates
+from greenc.core.relocation.fs_ops import RelocationError, RelocationStopped
+from greenc.core.relocation.service import RelocationService
+from greenc.core.storage_migration import move_vault, remove_dir_if_empty
+from greenc.ui.data_location import FirstRunDialog
+from greenc.ui.dialogs import GuidedDialog
+from greenc.ui.relocation_page import RelocationPage
 ```
 
 In `__init__`, right after `self.analyzer = ...`, add `self.relocation_service = RelocationService(self.db, self.settings)`. After the signal wiring block add:
@@ -5578,22 +5578,22 @@ import sys
 
 from PySide6.QtWidgets import QApplication
 
-from diskguard.config import (
+from greenc.config import (
     APP_NAME,
     DEFAULT_DB_PATH,
     LEGACY_DB_PATH,
     LEGACY_VAULT_DIR,
     ensure_app_dirs,
 )
-from diskguard.core.drives import list_drives
-from diskguard.core.relocation.recovery import recover_interrupted
-from diskguard.core.settings import AppSettings
-from diskguard.core.storage_migration import migrate_legacy_db, move_vault, remove_dir_if_empty
-from diskguard.storage.database import DiskGuardDB
-from diskguard.ui.data_location import run_first_run
-from diskguard.ui.icons import app_icon
-from diskguard.ui.main_window import MainWindow
-from diskguard.ui.theme import apply_theme
+from greenc.core.drives import list_drives
+from greenc.core.relocation.recovery import recover_interrupted
+from greenc.core.settings import AppSettings
+from greenc.core.storage_migration import migrate_legacy_db, move_vault, remove_dir_if_empty
+from greenc.storage.database import GreenCDB
+from greenc.ui.data_location import run_first_run
+from greenc.ui.icons import app_icon
+from greenc.ui.main_window import MainWindow
+from greenc.ui.theme import apply_theme
 
 
 def main() -> int:
@@ -5604,7 +5604,7 @@ def main() -> int:
 
     ensure_app_dirs()
     migrate_legacy_db(LEGACY_DB_PATH, DEFAULT_DB_PATH)
-    db = DiskGuardDB(DEFAULT_DB_PATH)
+    db = GreenCDB(DEFAULT_DB_PATH)
     settings = AppSettings(db)
     recover_interrupted(db)
 
@@ -5635,10 +5635,10 @@ import tempfile
 from pathlib import Path
 from PySide6.QtWidgets import QApplication
 app = QApplication([])
-from diskguard.storage.database import DiskGuardDB
-from diskguard.ui.main_window import MainWindow
+from greenc.storage.database import GreenCDB
+from greenc.ui.main_window import MainWindow
 tmp = Path(tempfile.mkdtemp())
-win = MainWindow(db=DiskGuardDB(tmp / "s.db"), vault_dir=tmp / "v", sandbox_dir=tmp / "sb", auto_scan_on_init=False)
+win = MainWindow(db=GreenCDB(tmp / "s.db"), vault_dir=tmp / "v", sandbox_dir=tmp / "sb", auto_scan_on_init=False)
 win._bg_timer.stop(); win.resize(1280, 820); win.show(); app.processEvents()
 for i in range(win.stack.count()):
     win.stack.setCurrentIndex(i); app.processEvents(); win.grab().save(str(tmp / f"page_{i}.png"))
@@ -5649,7 +5649,7 @@ EOF
 - [ ] **Step 9: Commit**
 
 ```bash
-git add diskguard/ui main.py tests/test_ui_relocation.py
+git add greenc/ui main.py tests/test_ui_relocation.py
 git commit -m "feat: data relocation page, Zalo guide, data drive change and first-run startup"
 ```
 

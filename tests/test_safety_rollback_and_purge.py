@@ -4,10 +4,10 @@ import os
 from pathlib import Path
 import time
 
-from diskguard.core.quota_enforcer import QuotaEnforcer
-from diskguard.core.safety_watchdog import SafetyWatchdog
-from diskguard.models import QuotaRule
-from diskguard.storage.database import DiskGuardDB
+from greenc.core.quota_enforcer import QuotaEnforcer
+from greenc.core.safety_watchdog import SafetyWatchdog
+from greenc.models import QuotaRule
+from greenc.storage.database import GreenCDB
 
 
 def _sha256(p: Path) -> str:
@@ -15,7 +15,7 @@ def _sha256(p: Path) -> str:
 
 
 def test_auto_rollback_on_missing_file_error_and_hardlink_restore(tmp_path: Path):
-    db = DiskGuardDB(tmp_path / "diskguard.db")
+    db = GreenCDB(tmp_path / "greenc.db")
     vault_dir = tmp_path / "vault"
     app_dir = tmp_path / "ZaloMedia"
     (app_dir / "fileNoise").mkdir(parents=True)
@@ -85,7 +85,7 @@ def test_auto_rollback_on_missing_file_error_and_hardlink_restore(tmp_path: Path
 
 
 def test_auto_purge_after_d_days_when_safe(tmp_path: Path):
-    db = DiskGuardDB(tmp_path / "diskguard.db")
+    db = GreenCDB(tmp_path / "greenc.db")
     vault_dir = tmp_path / "vault"
     app_dir = tmp_path / "DingTalkApp"
     app_dir.mkdir(parents=True)

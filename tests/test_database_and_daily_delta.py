@@ -1,10 +1,10 @@
 from pathlib import Path
-from diskguard.models import WriteEvent, QuotaRule, VaultArchive, FileManifestItem
-from diskguard.storage.database import DiskGuardDB
+from greenc.models import WriteEvent, QuotaRule, VaultArchive, FileManifestItem
+from greenc.storage.database import GreenCDB
 
 
 def test_daily_snapshots_and_net_change(tmp_path: Path):
-    db = DiskGuardDB(tmp_path / "test.db")
+    db = GreenCDB(tmp_path / "test.db")
     s1 = db.upsert_daily_snapshot("C:\\", "2026-11-07", total_bytes=100_000, used_bytes=50_000, free_bytes=50_000)
     assert s1.net_change_bytes == 0
 
@@ -22,7 +22,7 @@ def test_daily_snapshots_and_net_change(tmp_path: Path):
 
 
 def test_write_events_and_day_drilldown(tmp_path: Path):
-    db = DiskGuardDB(tmp_path / "test.db")
+    db = GreenCDB(tmp_path / "test.db")
     db.record_write_event(
         WriteEvent(
             event_date="2026-11-09",
@@ -69,7 +69,7 @@ def test_write_events_and_day_drilldown(tmp_path: Path):
 
 
 def test_quota_rules_and_vault_archives(tmp_path: Path):
-    db = DiskGuardDB(tmp_path / "test.db")
+    db = GreenCDB(tmp_path / "test.db")
     rule = QuotaRule(
         id=None,
         app_name="Zalo PC Media",

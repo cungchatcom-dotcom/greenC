@@ -5,9 +5,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QApplication
 
-from diskguard.ui import format_size
-from diskguard.ui.icons import icon
-from diskguard.ui.widgets import ExpandableTableCard, PathCell, PathValue, TableRow, TagValue
+from greenc.ui import format_size
+from greenc.ui.icons import icon
+from greenc.ui.widgets import ExpandableTableCard, PathCell, PathValue, TableRow, TagValue
 
 
 def _app():

@@ -4,9 +4,9 @@ import json
 import os
 from pathlib import Path
 
-from diskguard.core.win_locks import is_file_locked, compute_physical_usage
-from diskguard.core.attribution import classify_write_reason, AttributionEngine
-from diskguard.core.app_profiles import discover_zalo_profile_from_config, discover_dingtalk_profile_from_dirs
+from greenc.core.win_locks import is_file_locked, compute_physical_usage
+from greenc.core.attribution import classify_write_reason, AttributionEngine
+from greenc.core.app_profiles import discover_zalo_profile_from_config, discover_dingtalk_profile_from_dirs
 
 
 def test_win32_is_file_locked(tmp_path: Path):

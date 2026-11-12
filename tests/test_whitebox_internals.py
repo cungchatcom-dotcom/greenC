@@ -15,12 +15,12 @@ import time
 import zipfile
 import pytest
 
-from diskguard.core.disk_tracker import DiskTracker
-from diskguard.core.quota_enforcer import QuotaEnforcer
-from diskguard.core.safety_watchdog import SafetyWatchdog
-from diskguard.core.smart_analyzer import SmartAppAnalyzer
-from diskguard.models import QuotaRule, WriteEvent
-from diskguard.storage.database import DiskGuardDB
+from greenc.core.disk_tracker import DiskTracker
+from greenc.core.quota_enforcer import QuotaEnforcer
+from greenc.core.safety_watchdog import SafetyWatchdog
+from greenc.core.smart_analyzer import SmartAppAnalyzer
+from greenc.models import QuotaRule, WriteEvent
+from greenc.storage.database import GreenCDB
 
 
 def test_wb01_rollback_branch_coverage_on_existing_files(tmp_path: Path):
@@ -30,7 +30,7 @@ def test_wb01_rollback_branch_coverage_on_existing_files(tmp_path: Path):
     - Nhánh 1: File mới có kích thước > 0 byte -> Phải giữ nguyên file mới và khôi phục bản cũ ra `.restored_<timestamp>`.
     - Nhánh 2: File mới có kích thước == 0 byte (placeholder trống) -> Ghi đè khôi phục trực tiếp bản gốc.
     """
-    db = DiskGuardDB(tmp_path / "wb01.db")
+    db = GreenCDB(tmp_path / "wb01.db")
     app_dir = tmp_path / "app"
     app_dir.mkdir()
     now = time.time()
@@ -83,7 +83,7 @@ def test_wb02_fault_injection_sha256_tamper_and_missing_archive_detection(tmp_pa
     WB-02: Fault Injection — Giả lập gói .zip trong Vault bị sửa đổi nội dung bên trong
     làm lệch mã băm SHA-256. Hệ thống phải phát hiện và tung RuntimeError('SHA-256 mismatch').
     """
-    db = DiskGuardDB(tmp_path / "wb02.db")
+    db = GreenCDB(tmp_path / "wb02.db")
     app_dir = tmp_path / "app"
     app_dir.mkdir()
     now = time.time()
@@ -129,7 +129,7 @@ def test_wb03_three_way_hardlink_group_atomic_skip_when_one_sibling_protected(tm
     Nếu chỉ 1 trong 3 nhánh nằm trong `protected_files`, cả 3 nhánh của cùng Inode đó
     phải được bảo vệ nguyên vẹn (không được xóa 2 nhánh kia).
     """
-    db = DiskGuardDB(tmp_path / "wb03.db")
+    db = GreenCDB(tmp_path / "wb03.db")
     app_dir = tmp_path / "app"
     (app_dir / "dirA").mkdir(parents=True)
     (app_dir / "dirB").mkdir(parents=True)
@@ -172,7 +172,7 @@ def test_wb04_smart_analyzer_fallback_to_cache_subdirs_on_probe_failure(tmp_path
     Khi mẫu canary ở thư mục gốc gặp lỗi trong lúc thử nghiệm, hệ thống tự động tìm các thư mục con
     an toàn (`Cache`, `Temp`, `logs`, `dumps`) và chuyển sang 'Phương án dự phòng (Chỉ dọn vùng Cache/Temp)'.
     """
-    db = DiskGuardDB(tmp_path / "wb04.db")
+    db = GreenCDB(tmp_path / "wb04.db")
     app_dir = tmp_path / "SensitiveApp"
     (app_dir / "Cache").mkdir(parents=True)
     (app_dir / "logs").mkdir(parents=True)
@@ -197,7 +197,7 @@ def test_wb05_sqlite_wal_multithreaded_concurrency_stress(tmp_path: Path):
     WB-05: Chạy đồng thời 8 luồng (threads) thực hiện 160 thao tác đọc/ghi song song
     vào SQLite WAL database để kiểm chứng khóa RLock và tính toàn vẹn giao dịch.
     """
-    db = DiskGuardDB(tmp_path / "concurrency.db")
+    db = GreenCDB(tmp_path / "concurrency.db")
     errors: list[Exception] = []
 
     def _worker_task(thread_id: int) -> int:

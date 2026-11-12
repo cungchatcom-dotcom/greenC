@@ -4,10 +4,10 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
-from diskguard.core.smart_analyzer import AppAnalysisProposal
-from diskguard.ui.dialogs import QuotaRuleDialog
-from diskguard.ui.smart_cleanup_tab import SmartCleanupTab
-from diskguard.ui.widgets import PathCell
+from greenc.core.smart_analyzer import AppAnalysisProposal
+from greenc.ui.dialogs import QuotaRuleDialog
+from greenc.ui.smart_cleanup_tab import SmartCleanupTab
+from greenc.ui.widgets import PathCell
 
 BANNED = ("(", "thông minh", "1-click", "Sandbox", "Rollback", "Verified")
 

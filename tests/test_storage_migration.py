@@ -1,11 +1,11 @@
 from pathlib import Path
 
-from diskguard.core import storage_migration as sm
-from diskguard.models import VaultArchive
-from diskguard.storage.database import DiskGuardDB
+from greenc.core import storage_migration as sm
+from greenc.models import VaultArchive
+from greenc.storage.database import GreenCDB
 
 
-def _archive(db: DiskGuardDB, vault: Path, name: str) -> VaultArchive:
+def _archive(db: GreenCDB, vault: Path, name: str) -> VaultArchive:
     vault.mkdir(parents=True, exist_ok=True)
     zip_p = vault / f"{name}.zip"
     man_p = vault / f"{name}.manifest.json"
@@ -22,12 +22,12 @@ def _archive(db: DiskGuardDB, vault: Path, name: str) -> VaultArchive:
 
 
 def test_migrate_legacy_db_copies_once(tmp_path: Path):
-    legacy = DiskGuardDB(tmp_path / "old" / "diskguard.db")
+    legacy = GreenCDB(tmp_path / "old" / "greenc.db")
     legacy.set_setting("k", "v")
     new_path = tmp_path / "new" / "greenc.db"
-    assert sm.migrate_legacy_db(tmp_path / "old" / "diskguard.db", new_path) is True
-    assert DiskGuardDB(new_path).get_setting("k") == "v"
-    assert sm.migrate_legacy_db(tmp_path / "old" / "diskguard.db", new_path) is False
+    assert sm.migrate_legacy_db(tmp_path / "old" / "greenc.db", new_path) is True
+    assert GreenCDB(new_path).get_setting("k") == "v"
+    assert sm.migrate_legacy_db(tmp_path / "old" / "greenc.db", new_path) is False
 
 
 def test_migrate_skips_without_legacy(tmp_path: Path):
@@ -36,7 +36,7 @@ def test_migrate_skips_without_legacy(tmp_path: Path):
 
 
 def test_move_vault_moves_files_and_rewrites_paths(tmp_path: Path):
-    db = DiskGuardDB(tmp_path / "v.db")
+    db = GreenCDB(tmp_path / "v.db")
     old, new = tmp_path / "old_vault", tmp_path / "D" / "Vault"
     a = _archive(db, old, "a")
     res = sm.move_vault(db, new)
@@ -49,14 +49,14 @@ def test_move_vault_moves_files_and_rewrites_paths(tmp_path: Path):
 
 
 def test_move_vault_skips_archives_already_there(tmp_path: Path):
-    db = DiskGuardDB(tmp_path / "v.db")
+    db = GreenCDB(tmp_path / "v.db")
     new = tmp_path / "Vault"
     _archive(db, new, "b")
     assert sm.move_vault(db, new)["moved"] == 0
 
 
 def test_failed_copy_keeps_source_and_db(tmp_path: Path, monkeypatch):
-    db = DiskGuardDB(tmp_path / "v.db")
+    db = GreenCDB(tmp_path / "v.db")
     old, new = tmp_path / "old_vault", tmp_path / "Vault"
     a = _archive(db, old, "c")
 

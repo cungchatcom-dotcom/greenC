@@ -6,16 +6,16 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
-from diskguard.core.relocation.base import RelocationCandidate
-from diskguard.core.relocation.junction import JunctionStrategy
-from diskguard.core.relocation.service import RelocationService
-from diskguard.core.relocation.zalo import ZaloGuidedStrategy
-from diskguard.core.settings import AppSettings
-from diskguard.models import RELOCATION_DONE, RelocationRecord
-from diskguard.storage.database import DiskGuardDB
-from diskguard.ui.dialogs import GuidedDialog
-from diskguard.ui.relocation_page import RelocationPage
-from diskguard.ui.widgets import PathCell
+from greenc.core.relocation.base import RelocationCandidate
+from greenc.core.relocation.junction import JunctionStrategy
+from greenc.core.relocation.service import RelocationService
+from greenc.core.relocation.zalo import ZaloGuidedStrategy
+from greenc.core.settings import AppSettings
+from greenc.models import RELOCATION_DONE, RelocationRecord
+from greenc.storage.database import GreenCDB
+from greenc.ui.dialogs import GuidedDialog
+from greenc.ui.relocation_page import RelocationPage
+from greenc.ui.widgets import PathCell
 
 
 def _app():
@@ -61,7 +61,7 @@ def test_guided_dialog_verifies_zalo(tmp_path):
     _app()
     cfg = tmp_path / "config.json"
     cfg.write_text(json.dumps({"db_path": {"location": "C:\\ZaloPC\\Zalo Data\\message"}}), encoding="utf-8")
-    db = DiskGuardDB(tmp_path / "g.db")
+    db = GreenCDB(tmp_path / "g.db")
     svc = RelocationService(db, AppSettings(db))
     cand = RelocationCandidate("zalo", "Zalo", "C:\\ZaloPC\\Zalo Data", 10, ZaloGuidedStrategy(config_path=cfg, system_root="C:\\"), "how")
     dlg = GuidedDialog(cand, Path("D:\\Green C"), svc)
@@ -75,9 +75,9 @@ def test_guided_dialog_verifies_zalo(tmp_path):
 
 def test_main_window_shows_relocation_page(tmp_path):
     _app()
-    from diskguard.ui.main_window import MainWindow
+    from greenc.ui.main_window import MainWindow
 
-    db = DiskGuardDB(tmp_path / "w.db")
+    db = GreenCDB(tmp_path / "w.db")
     settings = AppSettings(db)
     win = MainWindow(db=db, vault_dir=tmp_path / "v", sandbox_dir=tmp_path / "s", auto_scan_on_init=False, settings=settings)
     win._bg_timer.stop()

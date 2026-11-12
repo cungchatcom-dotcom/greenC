@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from diskguard import __version__
-from diskguard.config import APP_VERSION
+from greenc import __version__
+from greenc.config import APP_VERSION
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -51,13 +51,13 @@ def test_release_changelog_moves_unreleased_notes():
 
 
 def test_write_version_updates_both_files(tmp_path):
-    (tmp_path / "diskguard").mkdir()
-    (tmp_path / "diskguard" / "__init__.py").write_text('"""doc"""\n__version__ = "2.0.0"\n', encoding="utf-8")
+    (tmp_path / "greenc").mkdir()
+    (tmp_path / "greenc" / "__init__.py").write_text('"""doc"""\n__version__ = "2.0.0"\n', encoding="utf-8")
     (tmp_path / "pyproject.toml").write_text(
         '[project]\nname = "x"\nversion = "2.0.0"\n\n[tool.other]\nversion = "9.9.9"\n', encoding="utf-8"
     )
     version_tool.write_version("2.1.0", tmp_path)
-    assert version_tool.read_versions(tmp_path) == {"diskguard/__init__.py": "2.1.0", "pyproject.toml": "2.1.0"}
+    assert version_tool.read_versions(tmp_path) == {"greenc/__init__.py": "2.1.0", "pyproject.toml": "2.1.0"}
     assert 'version = "9.9.9"' in (tmp_path / "pyproject.toml").read_text(encoding="utf-8")
 
 

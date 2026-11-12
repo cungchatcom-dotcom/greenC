@@ -5,15 +5,15 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
-from diskguard.config import APP_NAME
-from diskguard.core.settings import AppSettings
-from diskguard.storage.database import DiskGuardDB
-from diskguard.ui.main_window import MainWindow
+from greenc.config import APP_NAME
+from greenc.core.settings import AppSettings
+from greenc.storage.database import GreenCDB
+from greenc.ui.main_window import MainWindow
 
 
 def _win(tmp_path: Path):
     app = QApplication.instance() or QApplication([])
-    db = DiskGuardDB(tmp_path / "ui.db")
+    db = GreenCDB(tmp_path / "ui.db")
     settings = AppSettings(db)
     win = MainWindow(db=db, vault_dir=tmp_path / "vault", sandbox_dir=tmp_path / "sb",
                      auto_scan_on_init=False, settings=settings)
@@ -41,7 +41,7 @@ def test_overview_freeable_card_has_eye_toggle(tmp_path: Path):
     app, win, _ = _win(tmp_path)
     card = win.overview_page.freeable_card
     assert not card.empty_label.isHidden()
-    from diskguard.core.smart_analyzer import AppAnalysisProposal
+    from greenc.core.smart_analyzer import AppAnalysisProposal
 
     prop = AppAnalysisProposal("Zalo", "Zalo.exe", "", False, "", [r"C:\Zalo"], 2 * 1024**3,
                                1024**3, 1024**3, True, "Đạt", "")

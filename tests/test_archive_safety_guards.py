@@ -10,11 +10,11 @@ from pathlib import Path
 import subprocess
 import time
 
-from diskguard.core import quota_enforcer as qe_mod
-from diskguard.core.quota_enforcer import QuotaEnforcer
-from diskguard.core.win_locks import compute_physical_usage
-from diskguard.models import QuotaRule
-from diskguard.storage.database import DiskGuardDB
+from greenc.core import quota_enforcer as qe_mod
+from greenc.core.quota_enforcer import QuotaEnforcer
+from greenc.core.win_locks import compute_physical_usage
+from greenc.models import QuotaRule
+from greenc.storage.database import GreenCDB
 
 MB = 1024 * 1024
 
@@ -61,7 +61,7 @@ def test_nested_junction_is_not_followed_and_outside_files_survive(tmp_path: Pat
     assert not any("linked" in s for s in seen)
     assert phys == MB
 
-    db = DiskGuardDB(tmp_path / "j.db")
+    db = GreenCDB(tmp_path / "j.db")
     rule = _rule(app_dir)
     rule.id = db.save_quota_rule(rule)
     arch = QuotaEnforcer(db, tmp_path / "vault").enforce_rule(rule)
@@ -99,7 +99,7 @@ def test_file_modified_during_archiving_is_not_deleted(tmp_path: Path, monkeypat
 
     monkeypatch.setattr(qe_mod, "_make_zipinfo", _make_and_touch)
 
-    db = DiskGuardDB(tmp_path / "m.db")
+    db = GreenCDB(tmp_path / "m.db")
     rule = _rule(app_dir)
     rule.id = db.save_quota_rule(rule)
     arch = QuotaEnforcer(db, tmp_path / "vault").enforce_rule(rule)
@@ -115,7 +115,7 @@ def test_stop_request_finalizes_partial_archive_and_keeps_the_rest(tmp_path: Pat
     files = [
         _old_file(app_dir / f"f{i}.dat", b"X" * MB, 90_000 - i * 1000) for i in range(5)
     ]
-    db = DiskGuardDB(tmp_path / "s.db")
+    db = GreenCDB(tmp_path / "s.db")
     rule = _rule(app_dir)
     rule.id = db.save_quota_rule(rule)
 
@@ -134,7 +134,7 @@ def test_stop_request_finalizes_partial_archive_and_keeps_the_rest(tmp_path: Pat
 
 
 def test_enforce_all_rules_stops_between_rules(tmp_path: Path):
-    db = DiskGuardDB(tmp_path / "all.db")
+    db = GreenCDB(tmp_path / "all.db")
     for name in ("R1", "R2", "R3"):
         d = tmp_path / name
         _old_file(d / "old.dat", b"X" * MB, 50_000)

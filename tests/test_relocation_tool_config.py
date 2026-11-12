@@ -2,11 +2,11 @@ from pathlib import Path
 
 import pytest
 
-from diskguard.core.relocation.base import RelocationCandidate
-from diskguard.core.relocation.fs_ops import RelocationError
-from diskguard.core.relocation.service import strategy_for_record
-from diskguard.core.relocation.tool_config import NpmCacheStrategy, PipCacheStrategy
-from diskguard.models import RELOCATION_DONE, RELOCATION_UNDONE, RelocationRecord
+from greenc.core.relocation.base import RelocationCandidate
+from greenc.core.relocation.fs_ops import RelocationError
+from greenc.core.relocation.service import strategy_for_record
+from greenc.core.relocation.tool_config import NpmCacheStrategy, PipCacheStrategy
+from greenc.models import RELOCATION_DONE, RELOCATION_UNDONE, RelocationRecord
 
 
 class FakeNpm:

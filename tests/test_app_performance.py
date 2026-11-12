@@ -17,12 +17,12 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import psutil
 from PySide6.QtWidgets import QApplication
 
-from diskguard.core.quota_enforcer import QuotaEnforcer
-from diskguard.core.safety_watchdog import SafetyWatchdog
-from diskguard.core.win_locks import compute_physical_usage, is_file_locked
-from diskguard.models import QuotaRule
-from diskguard.storage.database import DiskGuardDB
-from diskguard.ui.main_window import MainWindow
+from greenc.core.quota_enforcer import QuotaEnforcer
+from greenc.core.safety_watchdog import SafetyWatchdog
+from greenc.core.win_locks import compute_physical_usage, is_file_locked
+from greenc.models import QuotaRule
+from greenc.storage.database import GreenCDB
+from greenc.ui.main_window import MainWindow
 
 
 def test_perf01_high_volume_hardlink_deduplication_throughput(tmp_path: Path):
@@ -64,7 +64,7 @@ def test_perf02_bulk_quota_zip_and_rollback_throughput(tmp_path: Path):
     Đo tốc độ nén vào Safe Vault (kèm kiểm tra khóa Win32 + SHA-256 + kiểm tra Central Directory)
     và tốc độ Rollback khôi phục toàn bộ file: tổng thời gian < 3.5 giây.
     """
-    db = DiskGuardDB(tmp_path / "perf02.db")
+    db = GreenCDB(tmp_path / "perf02.db")
     app_dir = tmp_path / "BulkApp"
     app_dir.mkdir()
     now = time.time()
@@ -113,7 +113,7 @@ def test_perf03_ui_frame_latency_under_heavy_background_qthread_load(tmp_path: P
     Yêu cầu: P95 UI event-loop frame latency < 16.0 ms (đảm bảo tốc độ khung hình >= 60 FPS, không bị 'quay quay').
     """
     app = QApplication.instance() or QApplication([])
-    db = DiskGuardDB(tmp_path / "perf03.db")
+    db = GreenCDB(tmp_path / "perf03.db")
     win = MainWindow(
         db=db,
         vault_dir=tmp_path / "vault",
@@ -126,7 +126,7 @@ def test_perf03_ui_frame_latency_under_heavy_background_qthread_load(tmp_path: P
     def _heavy_bg_job(ctrl):
         import hashlib
 
-        payload = b"DISKGUARD_BENCHMARK_BLOCK_" * 10_000  # ~260 KB block
+        payload = b"GREENC_BENCHMARK_BLOCK_" * 10_000  # ~260 KB block
         # Simulate heavy I/O + SHA-256 hashing with 60 progress updates
         for step in range(1, 61):
             if not ctrl.report(
@@ -173,7 +173,7 @@ def test_perf04_pause_and_stop_signal_reaction_latency():
     PERF-04: Đo thời gian phản ứng từ khi người dùng bấm Pause / Resume / Stop
     tới khi trạng thái TaskControl hiệu lực: yêu cầu < 20ms.
     """
-    from diskguard.core.task_controller import TaskControl
+    from greenc.core.task_controller import TaskControl
 
     ctrl = TaskControl()
     t0 = time.perf_counter()
@@ -194,7 +194,7 @@ def test_perf05_zero_windows_handle_leak_and_memory_stability(tmp_path: Path):
     để chứng minh không rò rỉ File Handle hay rò rỉ bộ nhớ.
     """
     proc = psutil.Process(os.getpid())
-    db = DiskGuardDB(tmp_path / "perf05.db")
+    db = GreenCDB(tmp_path / "perf05.db")
     app_dir = tmp_path / "LeakCheckApp"
     app_dir.mkdir()
     enforcer = QuotaEnforcer(db, tmp_path / "vault")

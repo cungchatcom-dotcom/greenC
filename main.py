@@ -2,7 +2,7 @@ import sys
 
 from PySide6.QtWidgets import QApplication, QMessageBox
 
-from diskguard.config import (
+from greenc.config import (
     APP_NAME,
     APP_VERSION,
     DEFAULT_DB_PATH,
@@ -10,15 +10,15 @@ from diskguard.config import (
     LEGACY_VAULT_DIR,
     ensure_app_dirs,
 )
-from diskguard.core.drives import list_drives
-from diskguard.core.relocation.recovery import recover_interrupted
-from diskguard.core.settings import AppSettings
-from diskguard.core.storage_migration import migrate_legacy_db, move_vault, remove_dir_if_empty
-from diskguard.storage.database import DiskGuardDB
-from diskguard.ui.data_location import run_first_run
-from diskguard.ui.icons import app_icon
-from diskguard.ui.main_window import MainWindow
-from diskguard.ui.theme import apply_theme
+from greenc.core.drives import list_drives
+from greenc.core.relocation.recovery import recover_interrupted
+from greenc.core.settings import AppSettings
+from greenc.core.storage_migration import migrate_legacy_db, move_vault, remove_dir_if_empty
+from greenc.storage.database import GreenCDB
+from greenc.ui.data_location import run_first_run
+from greenc.ui.icons import app_icon
+from greenc.ui.main_window import MainWindow
+from greenc.ui.theme import apply_theme
 
 
 SINGLE_INSTANCE_MUTEX = "GreenCAppMutex"  # also listed as AppMutex in packaging/greenc.iss
@@ -56,7 +56,7 @@ def main() -> int:
 
     ensure_app_dirs()
     migrate_legacy_db(LEGACY_DB_PATH, DEFAULT_DB_PATH)
-    db = DiskGuardDB(DEFAULT_DB_PATH)
+    db = GreenCDB(DEFAULT_DB_PATH)
     settings = AppSettings(db)
     recover_interrupted(db)
 

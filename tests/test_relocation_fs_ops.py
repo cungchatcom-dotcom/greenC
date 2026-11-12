@@ -4,8 +4,8 @@ import subprocess
 
 import pytest
 
-from diskguard.core.relocation import fs_ops
-from diskguard.core.task_controller import TaskControl
+from greenc.core.relocation import fs_ops
+from greenc.core.task_controller import TaskControl
 
 
 def _tree(root: Path) -> None:

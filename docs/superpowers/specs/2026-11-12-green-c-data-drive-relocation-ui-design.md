@@ -11,7 +11,7 @@ Date: 2026-11-12 · Status: approved in brainstorming (visual mockups in `.super
 3. Rebrand to **Green C:\** (author **Cùng Chat**, **cungchat.com**) and redesign the UI: clean,
    professional, Windows 11 (Fluent) look, terse Vietnamese copy.
 
-Non-goals: renaming the Python package `diskguard`, cloud sync, moving apps installed in
+Non-goals: renaming the Python package `greenc`, cloud sync, moving apps installed in
 `Program Files`, moving relocated apps again when the data drive changes.
 
 ## 1. Branding
@@ -20,7 +20,7 @@ Non-goals: renaming the Python package `diskguard`, cloud sync, moving apps inst
   `#107C10`).
 - Sidebar footer: `Tác giả: Cùng Chat` and a `cungchat.com` link (opens `https://cungchat.com`
   with `QDesktopServices.openUrl`). Same block in Settings → Giới thiệu, with the version.
-- Internal package name stays `diskguard`.
+- Internal package name stays `greenc`.
 
 ## 2. Storage layout and settings
 
@@ -32,26 +32,26 @@ Non-goals: renaming the Python package `diskguard`, cloud sync, moving apps inst
 | Relocated known folders | `<data drive>:\Green C\<Downloads/Documents/…>\` |
 | Sandbox probes | `%LOCALAPPDATA%\Green C\sandbox\canary_probes\` |
 
-`diskguard/config.py` stops hard-coding `C:\DiskGuard`; it exposes `app_home()` (LOCALAPPDATA
+`greenc/config.py` stops hard-coding `C:\Green C`; it exposes `app_home()` (LOCALAPPDATA
 path) and default retention. Paths that depend on the data drive come from the settings store.
 
 **Settings store** — new table `app_settings(key TEXT PRIMARY KEY, value TEXT)` in the DB,
-wrapped by `diskguard/core/settings.py` (`AppSettings`):
+wrapped by `greenc/core/settings.py` (`AppSettings`):
 
 - `data_root` — e.g. `D:\Green C` (empty = not chosen yet → first-run dialog).
 - `retention_days_default` — int, default **7**, range 1–90. Used for new rules and for the
   1-click cleanup (replaces the hard-coded `retention_days=7`). Existing rules keep their own
   value.
 
-**Drive eligibility** (`diskguard/core/drives.py`): fixed (`GetDriveTypeW == DRIVE_FIXED`),
+**Drive eligibility** (`greenc/core/drives.py`): fixed (`GetDriveTypeW == DRIVE_FIXED`),
 file system NTFS (`GetVolumeInformationW`), writable. Removable, network, FAT/exFAT excluded
 (junctions need NTFS; FAT32 cannot hold >4 GB archives). Recommended = non-system eligible
 drive with most free space. If only the system drive is eligible: allowed, relocation features
 disabled with an explanation.
 
-**Legacy migration** (first run of the new version): if `C:\DiskGuard\data\diskguard.db`
+**Legacy migration** (first run of the new version): if `C:\Green C\data\greenc.db`
 exists and the new DB does not, copy the DB; after the user picks the drive, move
-`C:\DiskGuard\vault\*` into the new Vault and rewrite `zip_path`/`manifest_path` in
+`C:\Green C\vault\*` into the new Vault and rewrite `zip_path`/`manifest_path` in
 `vault_archives`. The old folder is removed only after every archive moved and verified (size).
 
 **Changing the data drive later** (Settings): moves the Vault (same procedure as legacy
@@ -73,7 +73,7 @@ Settings → `Vị trí lưu dữ liệu` reuses the same widget.
 
 ## 4. App data relocation
 
-`diskguard/core/relocation.py`. Each candidate is a `RelocationCandidate(app_id, name,
+`greenc/core/relocation.py`. Each candidate is a `RelocationCandidate(app_id, name,
 source_path, size_bytes, strategy, process_names, note)`; each strategy implements
 `check() -> Ready | Blocked(reason)`, `apply(target_root, ctrl) -> RelocationRecord`,
 `undo(record, ctrl)`. Every applied relocation is stored in a new table `relocations(id, app_id,
@@ -139,11 +139,11 @@ mockup `combined-v2.html`.
   Cài đặt`, brand on top, author block at the bottom. Content area `#FAFAFA`, white cards with
   `#E5E5E5` border, radius 6, one accent `#0067C0`, green `#107C10` only for brand/success,
   red `#C42B1C` only for critical. Font: Segoe UI Variable / Segoe UI; numbers tabular.
-- **Theme** in one place: `diskguard/ui/theme.py` (tokens + a single QSS). Inline
+- **Theme** in one place: `greenc/ui/theme.py` (tokens + a single QSS). Inline
   `setStyleSheet` strings in widgets are removed in favour of object names / properties.
-- **Icons**: `diskguard/ui/icons.py` — small line SVGs (eye, copy, folder-open, check, warning)
+- **Icons**: `greenc/ui/icons.py` — small line SVGs (eye, copy, folder-open, check, warning)
   rendered via `QSvgRenderer` to `QIcon`, tinted from theme tokens.
-- **Reusable widgets** (`diskguard/ui/widgets.py`):
+- **Reusable widgets** (`greenc/ui/widgets.py`):
   - `ExpandableTableCard` — title + eye button; collapsed = simple 3-column list (name · action
     · size), expanded = detailed table (Ứng dụng · Vị trí · Dung lượng · Giải phóng · Đề xuất).
     The eye state is remembered per card for the session.

@@ -1,7 +1,7 @@
 from collections import namedtuple
 from pathlib import Path
 
-from diskguard.core.drives import (
+from greenc.core.drives import (
     DRIVE_FIXED,
     data_root_for,
     drive_of,

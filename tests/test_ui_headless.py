@@ -4,14 +4,14 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
-from diskguard.core.smart_analyzer import AppAnalysisProposal
-from diskguard.storage.database import DiskGuardDB
-from diskguard.ui.main_window import MainWindow
+from greenc.core.smart_analyzer import AppAnalysisProposal
+from greenc.storage.database import GreenCDB
+from greenc.ui.main_window import MainWindow
 
 
 def test_main_window_initializes_and_runs_sandbox_flow(tmp_path: Path):
     app = QApplication.instance() or QApplication([])
-    db = DiskGuardDB(tmp_path / "ui_test.db")
+    db = GreenCDB(tmp_path / "ui_test.db")
     vault_dir = tmp_path / "vault"
     sandbox_dir = tmp_path / "sandbox"
 

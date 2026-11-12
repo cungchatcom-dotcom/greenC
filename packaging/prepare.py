@@ -21,12 +21,12 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QBuffer, QByteArray, QIODevice  # noqa: E402
 from PySide6.QtGui import QGuiApplication  # noqa: E402
 
-from diskguard import __version__  # noqa: E402
-from diskguard.config import APP_NAME, AUTHOR, WEBSITE_URL  # noqa: E402
+from greenc import __version__  # noqa: E402
+from greenc.config import APP_NAME, AUTHOR, WEBSITE_URL  # noqa: E402
 
 
 def png_bytes(size: int) -> bytes:
-    from diskguard.ui.icons import render_app_icon
+    from greenc.ui.icons import render_app_icon
 
     data = QByteArray()
     buffer = QBuffer(data)

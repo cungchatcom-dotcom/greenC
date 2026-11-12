@@ -1,5 +1,5 @@
 ﻿; Inno Setup script for Green C:\
-; Built by scripts\build.ps1, which passes /DAppVersion=X.Y.Z (read from diskguard/__init__.py).
+; Built by scripts\build.ps1, which passes /DAppVersion=X.Y.Z (read from greenc/__init__.py).
 
 #ifndef AppVersion
   #error AppVersion is not defined. Build with scripts\build.ps1.

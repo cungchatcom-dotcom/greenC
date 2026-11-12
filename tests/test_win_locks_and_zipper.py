@@ -4,14 +4,14 @@ import os
 from pathlib import Path
 import time
 
-from diskguard.core.quota_enforcer import QuotaEnforcer
-from diskguard.core.win_locks import compute_physical_usage
-from diskguard.models import QuotaRule
-from diskguard.storage.database import DiskGuardDB
+from greenc.core.quota_enforcer import QuotaEnforcer
+from greenc.core.win_locks import compute_physical_usage
+from greenc.models import QuotaRule
+from greenc.storage.database import GreenCDB
 
 
 def test_quota_enforcer_skips_locked_and_protected_and_zips_hardlink_groups(tmp_path: Path):
-    db = DiskGuardDB(tmp_path / "diskguard.db")
+    db = GreenCDB(tmp_path / "greenc.db")
     vault_dir = tmp_path / "vault"
     app_dir = tmp_path / "ZaloMedia"
     (app_dir / "fileNoise").mkdir(parents=True)

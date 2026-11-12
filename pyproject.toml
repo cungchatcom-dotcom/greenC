@@ -1,5 +1,5 @@
 [project]
-name = "diskguard"
+name = "greenc"
 version = "2.0.0"
 description = "Green C:\\ - keeps the Windows system drive free by cleaning and relocating app data"
 readme = "README.md"

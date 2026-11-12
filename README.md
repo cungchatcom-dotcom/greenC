@@ -1,4 +1,4 @@
-# DiskGuard — Ứng dụng Theo Dõi Biến Động Ổ Cứng, Truy Vết Tác Nhân (Zalo/DingTalk) & Quản Lý Quota An Toàn
+# Green C — Ứng dụng Theo Dõi Biến Động Ổ Cứng, Truy Vết Tác Nhân (Zalo/DingTalk) & Quản Lý Quota An Toàn
 
 Ứng dụng Desktop Windows (`PySide6` + `SQLite` + `Win32 API`) giải quyết trọn vẹn 5 bài toán:
 1. **Biểu đồ cột sử dụng & biến động ổ đĩa theo từng ngày:** Bấm vào bất kỳ cột ngày nào để xem chi tiết ngày đó.
@@ -16,14 +16,14 @@
 ## Cách chạy ứng dụng
 
 ```powershell
-cd C:\DiskGuard
+cd C:\Green C
 uv run python main.py
 ```
 
 ## Cách chạy bộ kiểm thử tự động
 
 ```powershell
-cd C:\DiskGuard
+cd C:\Green C
 uv run pytest -v
 ```
 

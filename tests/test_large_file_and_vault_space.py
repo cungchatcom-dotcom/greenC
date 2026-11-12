@@ -15,11 +15,11 @@ import zipfile
 
 import pytest
 
-from diskguard.core import quota_enforcer as qe_mod
-from diskguard.core.quota_enforcer import InsufficientVaultSpaceError, QuotaEnforcer
-from diskguard.core.smart_analyzer import AppAnalysisProposal, SmartAppAnalyzer
-from diskguard.models import QuotaRule
-from diskguard.storage.database import DiskGuardDB
+from greenc.core import quota_enforcer as qe_mod
+from greenc.core.quota_enforcer import InsufficientVaultSpaceError, QuotaEnforcer
+from greenc.core.smart_analyzer import AppAnalysisProposal, SmartAppAnalyzer
+from greenc.models import QuotaRule
+from greenc.storage.database import GreenCDB
 
 MB = 1024 * 1024
 GB = 1024 * MB
@@ -61,7 +61,7 @@ def _rule(app_dir: Path, max_bytes: int, name: str = "Big App") -> QuotaRule:
 
 
 def test_file_larger_than_2gib_is_archived_with_zip64(tmp_path: Path):
-    db = DiskGuardDB(tmp_path / "big.db")
+    db = GreenCDB(tmp_path / "big.db")
     app_dir = tmp_path / "app"
     app_dir.mkdir()
     now = time.time()
@@ -87,7 +87,7 @@ def test_file_larger_than_2gib_is_archived_with_zip64(tmp_path: Path):
 
 
 def test_media_is_stored_and_text_is_deflated(tmp_path: Path):
-    db = DiskGuardDB(tmp_path / "media.db")
+    db = GreenCDB(tmp_path / "media.db")
     app_dir = tmp_path / "app"
     app_dir.mkdir()
     now = time.time()
@@ -117,7 +117,7 @@ def _fake_disk_usage(free: int):
 
 
 def test_selection_is_trimmed_to_fit_vault_free_space(tmp_path: Path, monkeypatch):
-    db = DiskGuardDB(tmp_path / "trim.db")
+    db = GreenCDB(tmp_path / "trim.db")
     app_dir = tmp_path / "app"
     app_dir.mkdir()
     now = time.time()
@@ -145,7 +145,7 @@ def test_selection_is_trimmed_to_fit_vault_free_space(tmp_path: Path, monkeypatc
 
 
 def test_no_vault_space_raises_clear_error_and_keeps_originals(tmp_path: Path, monkeypatch):
-    db = DiskGuardDB(tmp_path / "full.db")
+    db = GreenCDB(tmp_path / "full.db")
     app_dir = tmp_path / "app"
     app_dir.mkdir()
     now = time.time()
@@ -168,7 +168,7 @@ def test_no_vault_space_raises_clear_error_and_keeps_originals(tmp_path: Path, m
 def test_disk_full_during_write_removes_partial_zip_and_keeps_originals(
     tmp_path: Path, monkeypatch
 ):
-    db = DiskGuardDB(tmp_path / "enospc.db")
+    db = GreenCDB(tmp_path / "enospc.db")
     app_dir = tmp_path / "app"
     app_dir.mkdir()
     now = time.time()
@@ -200,7 +200,7 @@ def test_disk_full_during_write_removes_partial_zip_and_keeps_originals(
 
 
 def test_one_failing_app_does_not_abort_other_apps(tmp_path: Path, monkeypatch):
-    db = DiskGuardDB(tmp_path / "multi.db")
+    db = GreenCDB(tmp_path / "multi.db")
     now = time.time()
     proposals = []
     for name in ("App Fails", "App Works"):

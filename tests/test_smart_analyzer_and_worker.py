@@ -6,9 +6,9 @@ from pathlib import Path
 import threading
 import time
 
-from diskguard.core.smart_analyzer import SmartAppAnalyzer
-from diskguard.core.task_controller import TaskControl
-from diskguard.storage.database import DiskGuardDB
+from greenc.core.smart_analyzer import SmartAppAnalyzer
+from greenc.core.task_controller import TaskControl
+from greenc.storage.database import GreenCDB
 
 
 def test_task_control_pause_resume_stop():
@@ -45,7 +45,7 @@ def test_task_control_pause_resume_stop():
 
 
 def test_smart_analyzer_sandbox_probe_and_one_click_cleanup(tmp_path: Path):
-    db = DiskGuardDB(tmp_path / "smart.db")
+    db = GreenCDB(tmp_path / "smart.db")
     vault_dir = tmp_path / "vault"
     probe_dir = tmp_path / "probe_sandbox"
 

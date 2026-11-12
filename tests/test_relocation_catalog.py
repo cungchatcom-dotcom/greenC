@@ -3,14 +3,14 @@ import os
 from pathlib import Path
 import subprocess
 
-from diskguard.core.relocation.catalog import discover_candidates
-from diskguard.core.relocation.junction import JunctionStrategy
-from diskguard.core.relocation.known_folders import KNOWN_FOLDERS, KnownFolderStrategy
-from diskguard.core.relocation.service import RelocationService
-from diskguard.core.relocation.zalo import ZaloGuidedStrategy
-from diskguard.core.settings import AppSettings
-from diskguard.models import RELOCATION_DONE, RelocationRecord
-from diskguard.storage.database import DiskGuardDB
+from greenc.core.relocation.catalog import discover_candidates
+from greenc.core.relocation.junction import JunctionStrategy
+from greenc.core.relocation.known_folders import KNOWN_FOLDERS, KnownFolderStrategy
+from greenc.core.relocation.service import RelocationService
+from greenc.core.relocation.zalo import ZaloGuidedStrategy
+from greenc.core.settings import AppSettings
+from greenc.models import RELOCATION_DONE, RelocationRecord
+from greenc.storage.database import GreenCDB
 
 SYS = os.path.splitdrive(os.getcwd())[0].upper() + "\\"
 
@@ -62,7 +62,7 @@ def _discover(db, tmp_path, **kw):
 
 
 def test_discovers_each_strategy_and_orders_advanced_last(tmp_path: Path):
-    db = DiskGuardDB(tmp_path / "c.db")
+    db = GreenCDB(tmp_path / "c.db")
     cands, (appdata, *_rest) = _discover(db, tmp_path)
     by_id = {c.app_id: c for c in cands}
     assert isinstance(by_id["kf_downloads"].strategy, KnownFolderStrategy)
@@ -76,7 +76,7 @@ def test_discovers_each_strategy_and_orders_advanced_last(tmp_path: Path):
 
 
 def test_done_relocations_and_junctions_are_excluded(tmp_path: Path):
-    db = DiskGuardDB(tmp_path / "c.db")
+    db = GreenCDB(tmp_path / "c.db")
     appdata = tmp_path / "Roaming"
     db.save_relocation(
         RelocationRecord(None, "telegram", "Telegram Desktop", "junction",
@@ -91,7 +91,7 @@ def test_done_relocations_and_junctions_are_excluded(tmp_path: Path):
 
 
 def test_zalo_off_system_drive_is_not_a_candidate(tmp_path: Path):
-    db = DiskGuardDB(tmp_path / "c.db")
+    db = GreenCDB(tmp_path / "c.db")
     zcfg = tmp_path / "z.json"
     zcfg.write_text(json.dumps({"db_path": {"location": "Q:\\Zalo Data\\message"}}), encoding="utf-8")
     cands, _ = _discover(db, tmp_path, zalo_config=zcfg)
@@ -101,7 +101,7 @@ def test_zalo_off_system_drive_is_not_a_candidate(tmp_path: Path):
 
 
 def test_complete_guided_records_only_when_moved(tmp_path: Path):
-    db = DiskGuardDB(tmp_path / "c.db")
+    db = GreenCDB(tmp_path / "c.db")
     cands, (_a, _l, _s, zcfg, _dl, zalo_data) = _discover(db, tmp_path)
     zalo = next(c for c in cands if c.app_id == "zalo")
     svc = RelocationService(db, AppSettings(db))
@@ -114,7 +114,7 @@ def test_complete_guided_records_only_when_moved(tmp_path: Path):
 
 
 def test_advanced_skips_parent_of_tool_cache(tmp_path: Path):
-    db = DiskGuardDB(tmp_path / "c.db")
+    db = GreenCDB(tmp_path / "c.db")
     local = tmp_path / "Local"
     cache = _fill(local / "pip" / "cache", 5000)
 

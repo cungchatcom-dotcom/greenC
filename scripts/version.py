@@ -1,6 +1,6 @@
 """Version management for Green C:\\.
 
-The version lives in ``diskguard/__init__.py`` (``__version__``) and is mirrored in
+The version lives in ``greenc/__init__.py`` (``__version__``) and is mirrored in
 ``pyproject.toml``. Releases are recorded in ``CHANGELOG.md`` and tagged ``vX.Y.Z``.
 
 Usage (from the repo root):
@@ -24,7 +24,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-INIT_FILE = ROOT / "diskguard" / "__init__.py"
+INIT_FILE = ROOT / "greenc" / "__init__.py"
 PYPROJECT = ROOT / "pyproject.toml"
 CHANGELOG = ROOT / "CHANGELOG.md"
 
@@ -55,10 +55,10 @@ def next_version(current: str, part: str) -> str:
 
 
 def read_versions(root: Path = ROOT) -> dict[str, str | None]:
-    init = _INIT_RE.search((root / "diskguard" / "__init__.py").read_text(encoding="utf-8"))
+    init = _INIT_RE.search((root / "greenc" / "__init__.py").read_text(encoding="utf-8"))
     project = _PYPROJECT_RE.search((root / "pyproject.toml").read_text(encoding="utf-8"))
     return {
-        "diskguard/__init__.py": init.group(1) if init else None,
+        "greenc/__init__.py": init.group(1) if init else None,
         "pyproject.toml": project.group(2) if project else None,
     }
 
@@ -81,7 +81,7 @@ def release_changelog(text: str, version: str, date: str) -> str:
 
 
 def write_version(version: str, root: Path = ROOT) -> None:
-    init = root / "diskguard" / "__init__.py"
+    init = root / "greenc" / "__init__.py"
     init.write_text(_INIT_RE.sub(f'__version__ = "{version}"', init.read_text(encoding="utf-8"), count=1), encoding="utf-8")
     pyproject = root / "pyproject.toml"
     pyproject.write_text(
@@ -106,7 +106,7 @@ def cmd_bump(part: str, commit: bool, tag: bool) -> None:
         subprocess.run(["uv", "lock", "--quiet"], cwd=ROOT, check=True)
     print(f"{old} -> {new}")
     if commit:
-        _git("add", "diskguard/__init__.py", "pyproject.toml", "CHANGELOG.md", "uv.lock")
+        _git("add", "greenc/__init__.py", "pyproject.toml", "CHANGELOG.md", "uv.lock")
         _git("commit", "-m", f"chore: release v{new}")
     if tag:
         _git("tag", "-a", f"v{new}", "-m", f"Green C:\\ v{new}")

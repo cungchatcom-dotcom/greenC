@@ -11,8 +11,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
-from diskguard.storage.database import DiskGuardDB
-from diskguard.ui.main_window import MainWindow
+from greenc.storage.database import GreenCDB
+from greenc.ui.main_window import MainWindow
 
 
 def _pump_until(app, cond, timeout=10.0):
@@ -28,7 +28,7 @@ def _pump_until(app, cond, timeout=10.0):
 def _make_window(tmp_path: Path) -> tuple[QApplication, MainWindow]:
     app = QApplication.instance() or QApplication([])
     win = MainWindow(
-        db=DiskGuardDB(tmp_path / "ui.db"),
+        db=GreenCDB(tmp_path / "ui.db"),
         vault_dir=tmp_path / "vault",
         sandbox_dir=tmp_path / "sandbox",
         auto_scan_on_init=False,

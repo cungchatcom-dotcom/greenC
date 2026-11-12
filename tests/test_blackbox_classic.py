@@ -14,13 +14,13 @@ from pathlib import Path
 import time
 import pytest
 
-from diskguard.core.attribution import AttributionEngine, classify_write_reason
-from diskguard.core.quota_enforcer import QuotaEnforcer
-from diskguard.core.safety_watchdog import SafetyWatchdog
-from diskguard.core.task_controller import TaskControl
-from diskguard.models import QuotaRule
-from diskguard.storage.database import DiskGuardDB
-from diskguard.ui import format_bytes
+from greenc.core.attribution import AttributionEngine, classify_write_reason
+from greenc.core.quota_enforcer import QuotaEnforcer
+from greenc.core.safety_watchdog import SafetyWatchdog
+from greenc.core.task_controller import TaskControl
+from greenc.models import QuotaRule
+from greenc.storage.database import GreenCDB
+from greenc.ui import format_bytes
 
 
 # ==============================================================================
@@ -156,7 +156,7 @@ def test_bb_bva_quota_threshold_exact_byte_boundaries(
     tmp_path: Path, file_size_bytes: int, should_trigger_zip: bool
 ):
     """BB-BVA-01: Phân tích giá trị biên quanh ngưỡng Quota (max_bytes - 1, max_bytes, max_bytes + 1)."""
-    db = DiskGuardDB(tmp_path / "bva_quota.db")
+    db = GreenCDB(tmp_path / "bva_quota.db")
     app_dir = tmp_path / "app"
     app_dir.mkdir()
     now = time.time()
@@ -200,7 +200,7 @@ def test_bb_bva_min_file_age_seconds_boundaries(
     tmp_path: Path, file_age_seconds: int, should_be_eligible: bool
 ):
     """BB-BVA-02: Phân tích giá trị biên cho tuổi file tối thiểu (59s, 60s, 61s với ngưỡng 60s)."""
-    db = DiskGuardDB(tmp_path / "bva_age.db")
+    db = GreenCDB(tmp_path / "bva_age.db")
     app_dir = tmp_path / "app"
     app_dir.mkdir()
     now = 1_800_000_000.0
@@ -234,7 +234,7 @@ def test_bb_bva_min_file_age_seconds_boundaries(
 
 def test_bb_bva_d_day_expiration_exact_second_boundaries(tmp_path: Path):
     """BB-BVA-03: Phân tích giá trị biên thời điểm hết hạn D ngày (expires_at - 1s, expires_at, expires_at + 1s)."""
-    db = DiskGuardDB(tmp_path / "bva_expiry.db")
+    db = GreenCDB(tmp_path / "bva_expiry.db")
     app_dir = tmp_path / "app"
     app_dir.mkdir()
     now = time.time()
@@ -302,7 +302,7 @@ def test_bb_dt_quota_candidate_decision_table(
     expected_archived: bool,
 ):
     """BB-DT-01: Kiểm thử bảng quyết định 5 điều kiện lọc file của QuotaEnforcer."""
-    db = DiskGuardDB(tmp_path / "dt.db")
+    db = GreenCDB(tmp_path / "dt.db")
     app_dir = tmp_path / "app"
     app_dir.mkdir()
     now = time.time()
