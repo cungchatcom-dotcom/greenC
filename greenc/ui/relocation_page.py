@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 from greenc.core.relocation.base import RelocationCandidate
+from greenc.i18n import N_, tr
 from greenc.models import RelocationRecord
 from greenc.ui import format_size
 from greenc.ui.widgets import (
@@ -29,10 +30,10 @@ from greenc.ui.widgets import (
 )
 
 STRATEGY_TEXT = {
-    "known_folder": "Vị trí của Windows",
-    "tool_config": "Cấu hình công cụ",
-    "guided": "Tùy chọn của ứng dụng",
-    "junction": "Liên kết thư mục",
+    "known_folder": N_("Vị trí của Windows"),
+    "tool_config": N_("Cấu hình công cụ"),
+    "guided": N_("Tùy chọn của ứng dụng"),
+    "junction": N_("Liên kết thư mục"),
 }
 
 
@@ -44,7 +45,7 @@ def _name_cell(name: str, how: str) -> QWidget:
     title = QLabel(name)
     title.setStyleSheet("font-weight: 600;")
     v.addWidget(title)
-    v.addWidget(muted_label(how, wrap=False))
+    v.addWidget(muted_label(tr(how), wrap=False))
     return w
 
 
@@ -72,11 +73,11 @@ class RelocationPage(QWidget):
         lay.setSpacing(12)
 
         head = QHBoxLayout()
-        head.addWidget(page_title("Di chuyển dữ liệu"))
+        head.addWidget(page_title(tr("Di chuyển dữ liệu")))
         head.addStretch(1)
         self.target_label = muted_label("", wrap=False)
         head.addWidget(self.target_label)
-        self.btn_refresh = QPushButton("Phân tích")
+        self.btn_refresh = QPushButton(tr("Phân tích"))
         self.btn_refresh.clicked.connect(self.refreshRequested.emit)
         head.addWidget(self.btn_refresh)
         lay.addLayout(head)
@@ -94,18 +95,18 @@ class RelocationPage(QWidget):
         card = make_card()
         cl = QVBoxLayout(card)
         cl.setContentsMargins(14, 10, 14, 10)
-        cl.addWidget(card_title("Có thể chuyển"))
-        self.empty_label = muted_label("Bấm Phân tích để tìm dữ liệu ứng dụng đang nằm trên ổ C:.")
+        cl.addWidget(card_title(tr("Có thể chuyển")))
+        self.empty_label = muted_label(tr("Bấm Phân tích để tìm dữ liệu ứng dụng đang nằm trên ổ C:."))
         cl.addWidget(self.empty_label)
-        self.table = make_table(["Ứng dụng", "Vị trí", "Dung lượng", ""], stretch_col=1, right_cols=(2,))
+        self.table = make_table([tr("Ứng dụng"), tr("Vị trí"), tr("Dung lượng"), ""], stretch_col=1, right_cols=(2,))
         self.table.verticalHeader().setDefaultSectionSize(48)
         self.table.hide()
         cl.addWidget(self.table)
-        self.advanced_toggle = QCheckBox("Hiện thư mục nâng cao")
+        self.advanced_toggle = QCheckBox(tr("Hiện thư mục nâng cao"))
         self.advanced_toggle.toggled.connect(lambda on: self.advanced_table.setHidden(not on))
         self.advanced_toggle.hide()
         cl.addWidget(self.advanced_toggle)
-        self.advanced_table = make_table(["Thư mục", "Vị trí", "Dung lượng", ""], stretch_col=1, right_cols=(2,))
+        self.advanced_table = make_table([tr("Thư mục"), tr("Vị trí"), tr("Dung lượng"), ""], stretch_col=1, right_cols=(2,))
         self.advanced_table.verticalHeader().setDefaultSectionSize(48)
         self.advanced_table.hide()
         cl.addWidget(self.advanced_table)
@@ -114,10 +115,10 @@ class RelocationPage(QWidget):
         done = make_card()
         dl = QVBoxLayout(done)
         dl.setContentsMargins(14, 10, 14, 10)
-        dl.addWidget(card_title("Đã chuyển"))
-        self.done_empty = muted_label("Chưa chuyển mục nào.")
+        dl.addWidget(card_title(tr("Đã chuyển")))
+        self.done_empty = muted_label(tr("Chưa chuyển mục nào."))
         dl.addWidget(self.done_empty)
-        self.done_table = make_table(["Ứng dụng", "Vị trí mới", "Cách chuyển", "Trạng thái", ""], stretch_col=1)
+        self.done_table = make_table([tr("Ứng dụng"), tr("Vị trí mới"), tr("Cách chuyển"), tr("Trạng thái"), ""], stretch_col=1)
         self.done_table.hide()
         dl.addWidget(self.done_table)
         lay.addWidget(done)
@@ -127,8 +128,12 @@ class RelocationPage(QWidget):
         if root is None:
             self.target_label.setText("")
         else:
-            free = f" · Còn trống {format_size(free_bytes)}" if free_bytes is not None else ""
-            self.target_label.setText(f"Đích: {root}\\{free}")
+            target = f"{root}\\"
+            if free_bytes is not None:
+                text = tr("Đích: {target} · Còn trống {free}", target=target, free=format_size(free_bytes))
+            else:
+                text = tr("Đích: {target}", target=target)
+            self.target_label.setText(text)
 
     def set_disabled_reason(self, text: str | None) -> None:
         self.banner_label.setText(text or "")
@@ -143,7 +148,7 @@ class RelocationPage(QWidget):
             set_cell(table, row, 1, PathValue(cand.source_path))
             set_cell(table, row, 2, format_size(cand.size_bytes), right=True)
             guided = cand.strategy.kind == "guided"
-            btn = QPushButton("Hướng dẫn" if guided else "Chuyển")
+            btn = QPushButton(tr("Hướng dẫn") if guided else tr("Chuyển"))
             btn.setObjectName("PrimaryButton")
             btn.setEnabled(self.banner.isHidden())
             signal = self.guideRequested if guided else self.relocateRequested
@@ -163,7 +168,7 @@ class RelocationPage(QWidget):
         adv = [c for c in cands if c.advanced]
         self._fill(self.table, main)
         self._fill(self.advanced_table, adv)
-        self.empty_label.setText("Không có dữ liệu ứng dụng lớn nào trên ổ C:.")
+        self.empty_label.setText(tr("Không có dữ liệu ứng dụng lớn nào trên ổ C:."))
         self.empty_label.setHidden(bool(cands))
         self.table.setHidden(not main)
         self.advanced_toggle.setHidden(not adv)
@@ -175,12 +180,12 @@ class RelocationPage(QWidget):
         for row, rec in enumerate(records):
             set_cell(self.done_table, row, 0, rec.app_name)
             set_cell(self.done_table, row, 1, PathValue(rec.target_path))
-            set_cell(self.done_table, row, 2, STRATEGY_TEXT.get(rec.strategy, rec.strategy))
-            set_cell(self.done_table, row, 3, TagValue(rec.detail or "Hoạt động bình thường", warning=bool(rec.detail)))
-            btn = QPushButton("Hoàn tác")
+            set_cell(self.done_table, row, 2, tr(STRATEGY_TEXT.get(rec.strategy, rec.strategy)))
+            set_cell(self.done_table, row, 3, TagValue(tr(rec.detail) if rec.detail else tr("Hoạt động bình thường"), warning=bool(rec.detail)))
+            btn = QPushButton(tr("Hoàn tác"))
             btn.setEnabled(rec.strategy != "guided")
             if rec.strategy == "guided":
-                btn.setToolTip("Đổi lại vị trí lưu trong Cài đặt của ứng dụng")
+                btn.setToolTip(tr("Đổi lại vị trí lưu trong Cài đặt của ứng dụng"))
             btn.clicked.connect(lambda _=False, r=rec: self.undoRequested.emit(r))
             self.undo_buttons.append(btn)
             wrap = QWidget()

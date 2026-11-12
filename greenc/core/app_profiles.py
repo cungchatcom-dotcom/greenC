@@ -6,6 +6,7 @@ import psutil
 
 from greenc.config import DEFAULT_PROTECTED_PATTERNS
 from greenc.core.win_locks import compute_physical_usage
+from greenc.i18n import tr
 
 
 @dataclass
@@ -106,7 +107,7 @@ def discover_zalo_profile_from_config(
         app_name="Zalo Desktop (Media, Cache & Old Versions)",
         process_name="Zalo.exe",
         service_name="",
-        description=(
+        description=tr(
             "Quản lý kho Media Zalo (ZaloDownloads/resource, fileNoise hỗ trợ NTFS HardLink), "
             "Zalo Cache và các bản cài đặt Zalo cũ bị bỏ quên."
         ),
@@ -177,7 +178,7 @@ def discover_dingtalk_profile_from_dirs(
         app_name="DingTalk Desktop (EApp Bundles, Resource Cache & Dumps)",
         process_name="DingTalk.exe",
         service_name="",
-        description=(
+        description=tr(
             "Quản lý các gói Mini-App (.amr) trong EAppFiles/download, EAppFiles/unziped, "
             "kho ảnh resource_cache và Crash Dumps của DingTalk."
         ),

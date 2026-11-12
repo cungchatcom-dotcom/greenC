@@ -1,14 +1,40 @@
+import re
 from datetime import date
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QHBoxLayout, QPushButton, QVBoxLayout, QWidget
 
+from greenc.i18n import tr
 from greenc.models import DailySnapshot
 from greenc.storage.database import GreenCDB
 from greenc.ui import format_size
 from greenc.ui.chart_widget import DailyBarChartWidget
 from greenc.ui.widgets import PathValue, card_title, fit_widget_columns, make_table, muted_label, set_cell
 
+
+
+_REASON_COUNT = re.compile(r"^(?P<reason>.*) \((?P<count>\d+) files\)$")
+
+
+def localize_reason(stored: str) -> str:
+    """write_events.reason_detail is stored as '<Vietnamese label> (<n> files)'."""
+    if not stored:
+        return stored
+    match = _REASON_COUNT.match(stored)
+    if not match:
+        return tr(stored)
+    return tr("{reason} ({count} tệp)", reason=tr(match["reason"]), count=int(match["count"]))
+
+
+def localize_actor(stored: str) -> str:
+    """service_display_name may be a fixed label or 'Ứng dụng <x>' / 'Thư mục <x>' (see core/attribution.py)."""
+    if not stored:
+        return stored
+    if stored.startswith("Ứng dụng "):
+        return tr("Ứng dụng {app}", app=stored[len("Ứng dụng "):])
+    if stored.startswith("Thư mục "):
+        return tr("Thư mục {folder}", folder=stored[len("Thư mục "):])
+    return tr(stored)
 
 class DailyMonitorTab(QWidget):
     """Daily growth chart + what grew and who wrote it on the selected day."""
@@ -28,19 +54,19 @@ class DailyMonitorTab(QWidget):
         self.chart.daySelected.connect(self._on_day_selected)
         lay.addWidget(self.chart)
 
-        self.day_banner = muted_label("Chọn một cột để xem chi tiết ngày đó.")
+        self.day_banner = muted_label(tr("Chọn một cột để xem chi tiết ngày đó."))
         lay.addWidget(self.day_banner)
 
         cols = QHBoxLayout()
         cols.setSpacing(16)
         left = QVBoxLayout()
-        left.addWidget(card_title("Thư mục tăng dung lượng"))
-        self.folder_table = make_table(["Thư mục", "Tăng", "Nguyên nhân"], stretch_col=0, right_cols=(1,))
+        left.addWidget(card_title(tr("Thư mục tăng dung lượng")))
+        self.folder_table = make_table([tr("Thư mục"), tr("Tăng"), tr("Nguyên nhân")], stretch_col=0, right_cols=(1,))
         self.folder_table.setMinimumHeight(220)
         left.addWidget(self.folder_table)
         right = QVBoxLayout()
-        right.addWidget(card_title("Ứng dụng và dịch vụ"))
-        self.actor_table = make_table(["Ứng dụng", "Tiến trình", "Đã ghi", ""], stretch_col=0, right_cols=(2,))
+        right.addWidget(card_title(tr("Ứng dụng và dịch vụ")))
+        self.actor_table = make_table([tr("Ứng dụng"), tr("Tiến trình"), tr("Đã ghi"), ""], stretch_col=0, right_cols=(2,))
         self.actor_table.setMinimumHeight(220)
         right.addWidget(self.actor_table)
         cols.addLayout(left, 11)
@@ -72,27 +98,30 @@ class DailyMonitorTab(QWidget):
         except ValueError:
             day_label = date_str
         self.day_banner.setText(
-            f"{day_label} · ổ {self._current_drive[:2]} · tăng {format_size(total)} · "
-            f"{len(folders)} thư mục · {len(actors)} ứng dụng"
+            tr(
+                "{day} · ổ {drive} · tăng {size} · {folders} thư mục · {apps} ứng dụng",
+                day=day_label, drive=self._current_drive[:2], size=format_size(total),
+                folders=len(folders), apps=len(actors),
+            )
         )
 
         self.folder_table.setRowCount(len(folders))
         for row, f in enumerate(folders):
             set_cell(self.folder_table, row, 0, PathValue(f["folder_path"]))
             set_cell(self.folder_table, row, 1, f"+{format_size(f['total_delta_bytes'])}", right=True)
-            set_cell(self.folder_table, row, 2, f["reason_detail"])
+            set_cell(self.folder_table, row, 2, localize_reason(f["reason_detail"]))
 
         self.actor_table.setRowCount(len(actors))
         for row, a in enumerate(actors):
-            proc = a["process_name"] or "Không rõ"
+            proc = a["process_name"] or tr("Không rõ")
             svc = a["service_name"] or ""
-            display = a["service_display_name"] or proc
+            display = localize_actor(a["service_display_name"]) or proc
             label = f"{display} · {svc}" if svc else display
             folders_list = [p.strip() for p in (a.get("folders") or "").split(",") if p.strip()]
             set_cell(self.actor_table, row, 0, label)
             set_cell(self.actor_table, row, 1, proc)
             set_cell(self.actor_table, row, 2, f"+{format_size(a['total_delta_bytes'])}", right=True)
-            btn = QPushButton("Tạo quy tắc")
+            btn = QPushButton(tr("Tạo quy tắc"))
             btn.clicked.connect(
                 lambda _=False, n=display, p=proc, s=svc, fl=folders_list: self.requestCreateQuota.emit(n, p, s, fl)
             )

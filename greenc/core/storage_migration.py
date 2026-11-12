@@ -4,6 +4,7 @@ import shutil
 import sqlite3
 
 from greenc.core.task_controller import TaskControl
+from greenc.i18n import tr
 from greenc.storage.database import GreenCDB
 
 
@@ -49,7 +50,7 @@ def move_vault(db: GreenCDB, new_dir: Path | str, ctrl: TaskControl | None = Non
         zip_src = Path(arch.zip_path)
         man_src = Path(arch.manifest_path)
         if ctrl is not None and not ctrl.report(
-            int(idx * 100 / total), "Đang chuyển Kho dự phòng", f"{idx}/{len(archives)}: {zip_src.name}"
+            int(idx * 100 / total), tr("Đang chuyển Kho dự phòng"), f"{idx}/{len(archives)}: {zip_src.name}"
         ):
             break
         pairs = [(zip_src, new_dir / zip_src.name), (man_src, new_dir / man_src.name)]
@@ -60,7 +61,7 @@ def move_vault(db: GreenCDB, new_dir: Path | str, ctrl: TaskControl | None = Non
                     continue
                 shutil.copy2(src, dst)
                 if dst.stat().st_size != src.stat().st_size:
-                    raise OSError(f"Sao chép không đầy đủ: {src.name}")
+                    raise OSError(tr("Sao chép không đầy đủ: {name}", name=src.name))
                 copied.append((src, dst))
         except OSError as err:
             for _, dst in copied:

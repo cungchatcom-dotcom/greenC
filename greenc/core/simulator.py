@@ -5,6 +5,7 @@ import time
 
 from greenc.core.quota_enforcer import QuotaEnforcer
 from greenc.core.safety_watchdog import SafetyWatchdog
+from greenc.i18n import N_, tr
 from greenc.models import QuotaRule, WriteEvent
 from greenc.storage.database import GreenCDB
 
@@ -62,9 +63,9 @@ class SandboxSimulator:
                 process_name="Zalo.exe (Sandbox Demo)",
                 pid=os.getpid(),
                 service_name="",
-                service_display_name="Mô phỏng Zalo HardLink Media",
+                service_display_name=N_("Mô phỏng Zalo HardLink Media"),
                 reason_code="MEDIA_CHAT",
-                reason_detail="Mô phỏng Zalo sinh file Media HardLink vượt ngưỡng Quota",
+                reason_detail=N_("Mô phỏng Zalo sinh file Media HardLink vượt ngưỡng Quota"),
             )
         )
 
@@ -107,11 +108,11 @@ class SandboxSimulator:
         """
         archive = self.db.get_vault_archive(archive_id)
         if not archive:
-            raise ValueError("Không tìm thấy gói nén để giả lập sự cố.")
+            raise ValueError(tr("Không tìm thấy gói nén để giả lập sự cố."))
         rule = self.db.get_quota_rule(archive.rule_id)
         vault_files = self.db.get_vault_files(archive_id)
         if not rule or not vault_files:
-            raise ValueError("Không tìm thấy thông tin Rule hoặc danh sách file.")
+            raise ValueError(tr("Không tìm thấy thông tin Rule hoặc danh sách file."))
 
         missing_sample = Path(vault_files[0].original_path).name
         target_dir = Path(rule.target_paths[0])

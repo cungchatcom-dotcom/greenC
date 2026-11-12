@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from greenc.i18n import tr
 from greenc.ui.icons import icon
 
 _ITEM_PAD_X = 16  # left + right padding of QTableWidget::item in theme.QSS
@@ -166,9 +167,9 @@ class PathCell(QWidget):
         self.label.setToolTip(path)
         self.label.setMinimumWidth(40)
         self.label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        self.copy_button = icon_button("copy", "Sao chép đường dẫn")
+        self.copy_button = icon_button("copy", tr("Sao chép đường dẫn"))
         self.copy_button.clicked.connect(self.copy_to_clipboard)
-        self.open_button = icon_button("folder", "Mở trong Explorer")
+        self.open_button = icon_button("folder", tr("Mở trong Explorer"))
         self.open_button.clicked.connect(lambda: open_in_explorer(self.path))
         lay.addWidget(self.label, 1)
         lay.addWidget(self.copy_button)
@@ -177,7 +178,7 @@ class PathCell(QWidget):
 
     def copy_to_clipboard(self) -> None:
         QGuiApplication.clipboard().setText(self.path)
-        Toast.show_message(self, "Đã sao chép đường dẫn")
+        Toast.show_message(self, tr("Đã sao chép đường dẫn"))
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
@@ -256,7 +257,7 @@ class ExpandableTableCard(QFrame):
         self.header_actions = QHBoxLayout()
         self.header_actions.setSpacing(6)
         head.addLayout(self.header_actions)
-        self.eye_button = icon_button("eye", "Xem chi tiết", checkable=True)
+        self.eye_button = icon_button("eye", tr("Xem chi tiết"), checkable=True)
         self.eye_button.toggled.connect(self.set_expanded)
         head.addWidget(self.eye_button)
         lay.addLayout(head)
@@ -304,4 +305,4 @@ class ExpandableTableCard(QFrame):
             self.eye_button.blockSignals(True)
             self.eye_button.setChecked(on)
             self.eye_button.blockSignals(False)
-        self.eye_button.setToolTip("Ẩn chi tiết" if on else "Xem chi tiết")
+        self.eye_button.setToolTip(tr("Ẩn chi tiết") if on else tr("Xem chi tiết"))

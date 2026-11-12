@@ -9,6 +9,7 @@ import psutil
 from greenc.core.app_profiles import discover_installed_heavy_apps
 from greenc.core.attribution import AttributionEngine
 from greenc.core.task_controller import TaskControl
+from greenc.i18n import tr
 from greenc.models import DailySnapshot, WriteEvent
 from greenc.storage.database import GreenCDB
 
@@ -62,8 +63,8 @@ class DiskTracker:
 
         if not ctrl.report(
             5,
-            f"Bước 1/3: Khởi tạo quét biến động ổ đĩa {drive_norm}",
-            "Đang làm mới bảng ánh xạ Tiến trình (.exe) và Windows Services...",
+            tr("Bước 1/3: Khởi tạo quét biến động ổ đĩa {drive}", drive=drive_norm),
+            tr("Đang làm mới bảng ánh xạ Tiến trình (.exe) và Windows Services..."),
         ):
             return self.db.get_daily_snapshots(drive_norm, limit_days=days_back)
 
@@ -88,8 +89,13 @@ class DiskTracker:
             pct = 10 + int((r_idx / total_roots) * 65)
             if not ctrl.report(
                 pct,
-                f"Bước 2/3: Đang quét thư mục ({r_idx}/{total_roots}) trên {drive_norm}",
-                f"Đang phân tích lịch sử ghi đĩa tại: {root}",
+                tr(
+                    "Bước 2/3: Đang quét thư mục ({index}/{total}) trên {drive}",
+                    index=r_idx,
+                    total=total_roots,
+                    drive=drive_norm,
+                ),
+                tr("Đang phân tích lịch sử ghi đĩa tại: {path}", path=root),
             ):
                 return self.db.get_daily_snapshots(drive_norm, limit_days=days_back)
 
@@ -145,8 +151,8 @@ class DiskTracker:
 
         if not ctrl.report(
             82,
-            f"Bước 3/3: Đang tổng hợp nguyên nhân và cập nhật biểu đồ ngày cho {drive_norm}",
-            "Đang ghi nhận lịch sử biến động vào cơ sở dữ liệu...",
+            tr("Bước 3/3: Đang tổng hợp nguyên nhân và cập nhật biểu đồ ngày cho {drive}", drive=drive_norm),
+            tr("Đang ghi nhận lịch sử biến động vào cơ sở dữ liệu..."),
         ):
             return self.db.get_daily_snapshots(drive_norm, limit_days=days_back)
 
@@ -199,8 +205,8 @@ class DiskTracker:
 
         ctrl.report(
             100,
-            f"Hoàn tất phân tích biến động ổ đĩa {drive_norm}",
-            "Biểu đồ ngày và bảng truy vết nguyên nhân đã sẵn sàng.",
+            tr("Hoàn tất phân tích biến động ổ đĩa {drive}", drive=drive_norm),
+            tr("Biểu đồ ngày và bảng truy vết nguyên nhân đã sẵn sàng."),
         )
         return self.db.get_daily_snapshots(drive_norm, limit_days=days_back)
 

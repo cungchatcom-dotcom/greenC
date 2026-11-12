@@ -24,6 +24,7 @@ from greenc.core.relocation.fs_ops import (
     verified_copy_tree,
 )
 from greenc.core.task_controller import TaskControl
+from greenc.i18n import tr
 from greenc.models import (
     RELOCATION_DONE,
     RELOCATION_FAILED,
@@ -72,17 +73,17 @@ class JunctionStrategy(RelocationStrategy):
     def check(self, cand: RelocationCandidate, target_root: Path) -> CheckResult:
         src = Path(cand.source_path)
         if not src.is_dir():
-            return CheckResult(False, "Thư mục nguồn không còn tồn tại")
+            return CheckResult(False, tr("Thư mục nguồn không còn tồn tại"))
         if is_reparse_point(src):
-            return CheckResult(False, "Thư mục này đã được chuyển trước đó")
+            return CheckResult(False, tr("Thư mục này đã được chuyển trước đó"))
         if self._is_running(self.process_names, str(src)):
-            return CheckResult(False, f"Cần đóng {cand.name}")
+            return CheckResult(False, tr("Cần đóng {app}", app=cand.name))
         target = self.target_for(cand, target_root)
         if target.exists() and any(target.iterdir()):
-            return CheckResult(False, f"Thư mục đích đã có dữ liệu: {target}")
+            return CheckResult(False, tr("Thư mục đích đã có dữ liệu: {path}", path=target))
         anchor = Path(target_root).anchor or str(target_root)
         if self._disk_usage(anchor).free < cand.size_bytes + FREE_SPACE_RESERVE:
-            return CheckResult(False, "Ổ đích không đủ dung lượng trống")
+            return CheckResult(False, tr("Ổ đích không đủ dung lượng trống"))
         return CheckResult(True)
 
     def apply(
@@ -96,7 +97,7 @@ class JunctionStrategy(RelocationStrategy):
         moving = Path(str(src) + MOVING_SUFFIX)
 
         try:
-            verified_copy_tree(src, target, ctrl, cand.size_bytes, f"Đang chuyển {cand.name}")
+            verified_copy_tree(src, target, ctrl, cand.size_bytes, tr("Đang chuyển {app}", app=cand.name))
         except BaseException:
             remove_tree(target)
             raise
@@ -115,16 +116,19 @@ class JunctionStrategy(RelocationStrategy):
         except OSError as err:
             remove_tree(target)
             rec.status = RELOCATION_FAILED
-            rec.detail = f"Thư mục đang được sử dụng: {err.strerror or err}"
+            rec.detail = tr("Thư mục đang được sử dụng: {error}", error=err.strerror or err)
             save(rec)
             raise RelocationError(
-                f"Không thể chuyển: thư mục đang được sử dụng. Hãy đóng {cand.name} rồi thử lại."
+                tr(
+                    "Không thể chuyển: thư mục đang được sử dụng. Hãy đóng {app} rồi thử lại.",
+                    app=cand.name,
+                )
             ) from err
 
         try:
             create_junction(src, target)
             if not junction_target_matches(src, target):
-                raise RelocationError("Liên kết tạo ra không trỏ đúng thư mục đích")
+                raise RelocationError(tr("Liên kết tạo ra không trỏ đúng thư mục đích"))
         except BaseException as err:
             if is_reparse_point(src):
                 os.rmdir(src)
@@ -138,19 +142,23 @@ class JunctionStrategy(RelocationStrategy):
         leftovers = remove_tree(moving)
         rec.status = RELOCATION_DONE
         rec.detail = (
-            f"Còn {len(leftovers)} mục cũ chưa xóa được trong {moving}" if leftovers else ""
+            tr("Còn {count} mục cũ chưa xóa được trong {path}", count=len(leftovers), path=moving)
+            if leftovers
+            else ""
         )
         return save(rec)
 
     def undo(self, rec: RelocationRecord, ctrl: TaskControl | None, save: Saver) -> RelocationRecord:
         src, target = Path(rec.source_path), Path(rec.target_path)
         if self._is_running(self.process_names, str(target)):
-            raise RelocationError(f"Cần đóng {rec.app_name}")
+            raise RelocationError(tr("Cần đóng {app}", app=rec.app_name))
         if not junction_target_matches(src, target):
-            raise RelocationError("Liên kết không còn hợp lệ, không thể hoàn tác tự động")
+            raise RelocationError(tr("Liên kết không còn hợp lệ, không thể hoàn tác tự động"))
         restoring = Path(str(src) + RESTORING_SUFFIX)
         try:
-            verified_copy_tree(target, restoring, ctrl, rec.size_bytes, f"Đang trả {rec.app_name} về ổ C:")
+            verified_copy_tree(
+                target, restoring, ctrl, rec.size_bytes, tr("Đang trả {app} về ổ C:", app=rec.app_name)
+            )
         except BaseException:
             remove_tree(restoring)
             raise
@@ -158,5 +166,9 @@ class JunctionStrategy(RelocationStrategy):
         os.rename(restoring, src)
         leftovers = remove_tree(target)
         rec.status = RELOCATION_UNDONE
-        rec.detail = f"Còn {len(leftovers)} mục chưa xóa được ở {target}" if leftovers else ""
+        rec.detail = (
+            tr("Còn {count} mục chưa xóa được ở {path}", count=len(leftovers), path=target)
+            if leftovers
+            else ""
+        )
         return save(rec)

@@ -3,6 +3,7 @@ from pathlib import Path
 
 from greenc.core.relocation.base import MOVING_SUFFIX
 from greenc.core.relocation.fs_ops import is_reparse_point, junction_target_matches, remove_tree
+from greenc.i18n import tr
 from greenc.models import RELOCATION_DONE, RELOCATION_FAILED, RELOCATION_MOVING, RelocationRecord
 from greenc.storage.database import GreenCDB
 
@@ -17,7 +18,7 @@ def recover_interrupted(db: GreenCDB) -> list[RelocationRecord]:
             if moving.exists():
                 remove_tree(moving)
             rec.status = RELOCATION_DONE
-            rec.detail = "Đã hoàn tất sau khi ứng dụng khởi động lại"
+            rec.detail = tr("Đã hoàn tất sau khi ứng dụng khởi động lại")
         else:
             if is_reparse_point(src):
                 os.rmdir(src)
@@ -26,7 +27,7 @@ def recover_interrupted(db: GreenCDB) -> list[RelocationRecord]:
             if src.is_dir() and target.exists():
                 remove_tree(target)
             rec.status = RELOCATION_FAILED
-            rec.detail = "Bị gián đoạn, đã khôi phục về vị trí cũ"
+            rec.detail = tr("Bị gián đoạn, đã khôi phục về vị trí cũ")
         db.save_relocation(rec)
         fixed.append(rec)
     return fixed

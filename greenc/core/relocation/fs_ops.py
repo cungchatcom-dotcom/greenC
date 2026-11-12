@@ -7,6 +7,7 @@ import subprocess
 from typing import Callable
 
 from greenc.core.task_controller import TaskControl
+from greenc.i18n import tr
 
 FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 _CHUNK = 4 * 1024 * 1024
@@ -99,7 +100,7 @@ def verified_copy_tree(
             entries = list(it)
         for entry in entries:
             if ctrl is not None and not ctrl.wait_if_paused():
-                raise RelocationStopped("Đã dừng theo yêu cầu")
+                raise RelocationStopped(tr("Đã dừng theo yêu cầu"))
             st = entry.stat(follow_symlinks=False)
             if st.st_file_attributes & FILE_ATTRIBUTE_REPARSE_POINT:
                 continue
@@ -110,14 +111,14 @@ def verified_copy_tree(
                 continue
             src_hash = _copy_with_hash(entry.path, target)
             if _hash_file(target) != src_hash:
-                raise RelocationError(f"Dữ liệu sao chép không khớp: {entry.path}")
+                raise RelocationError(tr("Dữ liệu sao chép không khớp: {path}", path=entry.path))
             shutil.copystat(entry.path, target)
             files += 1
             copied += st.st_size
             if ctrl is not None and total_bytes > 0:
                 pct = min(99, int(copied * 100 / total_bytes))
-                if not ctrl.report(pct, title or "Đang sao chép dữ liệu", entry.name):
-                    raise RelocationStopped("Đã dừng theo yêu cầu")
+                if not ctrl.report(pct, title or tr("Đang sao chép dữ liệu"), entry.name):
+                    raise RelocationStopped(tr("Đã dừng theo yêu cầu"))
     return files, copied
 
 

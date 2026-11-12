@@ -8,6 +8,7 @@ import string
 from typing import Callable
 
 from greenc.config import DATA_FOLDER_NAME
+from greenc.i18n import tr
 
 DRIVE_FIXED = 3
 # A drive is only *recommended* when it has at least this much free space.
@@ -105,11 +106,15 @@ def list_drives(
             continue
         reason = ""
         if drive_type != DRIVE_FIXED:
-            reason = "Ổ di động hoặc ổ mạng"
+            reason = tr("Ổ di động hoặc ổ mạng")
         elif (fs or "").upper() != "NTFS":
-            reason = f"Định dạng {fs or 'không rõ'} không được hỗ trợ"
+            reason = (
+                tr("Định dạng {fs} không được hỗ trợ", fs=fs)
+                if fs
+                else tr("Định dạng không rõ không được hỗ trợ")
+            )
         elif "recovery" in (label or "").lower():
-            reason = "Phân vùng khôi phục của hệ thống"
+            reason = tr("Phân vùng khôi phục của hệ thống")
         drives.append(
             DriveInfo(
                 root=root.upper(),

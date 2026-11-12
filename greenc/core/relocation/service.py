@@ -8,6 +8,7 @@ from greenc.core.relocation.known_folders import KNOWN_FOLDERS, KnownFolderStrat
 from greenc.core.relocation.tool_config import TOOL_STRATEGIES
 from greenc.core.settings import AppSettings
 from greenc.core.task_controller import TaskControl
+from greenc.i18n import tr
 from greenc.models import RELOCATION_DONE, RelocationRecord
 from greenc.storage.database import GreenCDB
 
@@ -19,7 +20,7 @@ def strategy_for_record(rec: RelocationRecord) -> RelocationStrategy:
         return KnownFolderStrategy(KNOWN_FOLDERS[rec.app_id])
     if rec.strategy == "tool_config" and rec.app_id in TOOL_STRATEGIES:
         return TOOL_STRATEGIES[rec.app_id]()
-    raise RelocationError("Không thể hoàn tác mục này tự động")
+    raise RelocationError(tr("Không thể hoàn tác mục này tự động"))
 
 
 class RelocationService:
@@ -36,7 +37,7 @@ class RelocationService:
     def target_root(self) -> Path:
         root = self.settings.data_root
         if root is None:
-            raise RelocationError("Chưa chọn ổ lưu dữ liệu. Chọn trong Cài đặt.")
+            raise RelocationError(tr("Chưa chọn ổ lưu dữ liệu. Chọn trong Cài đặt."))
         return root
 
     def _save(self, rec: RelocationRecord) -> RelocationRecord:

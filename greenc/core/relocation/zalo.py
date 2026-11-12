@@ -14,6 +14,7 @@ from greenc.core.relocation.base import (
 )
 from greenc.core.relocation.fs_ops import RelocationError
 from greenc.core.task_controller import TaskControl
+from greenc.i18n import tr
 from greenc.models import RelocationRecord
 
 
@@ -61,11 +62,11 @@ class ZaloGuidedStrategy(RelocationStrategy):
 
     def steps(self, target_root: Path) -> list[str]:
         return [
-            "Mở Zalo trên máy tính.",
-            "Bấm biểu tượng Cài đặt ở góc dưới bên trái, chọn Dữ liệu.",
-            "Chọn Quản lý dữ liệu, bấm Thay đổi ở phần vị trí lưu.",
-            f"Chọn thư mục {Path(target_root) / 'Zalo'} rồi bấm Di chuyển.",
-            "Đợi Zalo chuyển xong, quay lại đây và bấm Kiểm tra lại.",
+            tr("Mở Zalo trên máy tính."),
+            tr("Bấm biểu tượng Cài đặt ở góc dưới bên trái, chọn Dữ liệu."),
+            tr("Chọn Quản lý dữ liệu, bấm Thay đổi ở phần vị trí lưu."),
+            tr("Chọn thư mục {path} rồi bấm Di chuyển.", path=Path(target_root) / "Zalo"),
+            tr("Đợi Zalo chuyển xong, quay lại đây và bấm Kiểm tra lại."),
         ]
 
     def find_exe(self) -> str | None:
@@ -89,7 +90,7 @@ class ZaloGuidedStrategy(RelocationStrategy):
         return CheckResult(True)
 
     def apply(self, cand, target_root, ctrl: TaskControl | None, save: Saver) -> RelocationRecord:
-        raise RelocationError("Zalo cần được chuyển bằng tùy chọn trong ứng dụng Zalo")
+        raise RelocationError(tr("Zalo cần được chuyển bằng tùy chọn trong ứng dụng Zalo"))
 
     def undo(self, rec, ctrl: TaskControl | None, save: Saver) -> RelocationRecord:
-        raise RelocationError("Đổi lại vị trí lưu trong Cài đặt của Zalo")
+        raise RelocationError(tr("Đổi lại vị trí lưu trong Cài đặt của Zalo"))

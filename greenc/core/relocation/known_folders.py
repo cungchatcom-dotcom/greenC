@@ -23,6 +23,7 @@ from greenc.core.relocation.fs_ops import (
     verified_copy_tree,
 )
 from greenc.core.task_controller import TaskControl
+from greenc.i18n import tr
 from greenc.models import RELOCATION_DONE, RELOCATION_UNDONE, RelocationRecord
 
 
@@ -122,17 +123,19 @@ class KnownFolderStrategy(RelocationStrategy):
         try:
             current = Path(self.shell.get(self.folder.guid))
         except OSError as err:
-            return CheckResult(False, f"Không đọc được vị trí {self.folder.name}: {err}")
+            return CheckResult(
+                False, tr("Không đọc được vị trí {folder}: {error}", folder=self.folder.name, error=err)
+            )
         if is_onedrive_path(current):
-            return CheckResult(False, "Thư mục đang đồng bộ OneDrive")
+            return CheckResult(False, tr("Thư mục đang đồng bộ OneDrive"))
         if not is_on_system_drive(current, self._system_root):
-            return CheckResult(False, "Thư mục đã nằm ngoài ổ hệ thống")
+            return CheckResult(False, tr("Thư mục đã nằm ngoài ổ hệ thống"))
         target = Path(target_root) / self.folder.name
         if target.exists() and any(target.iterdir()):
-            return CheckResult(False, f"Thư mục đích đã có dữ liệu: {target}")
+            return CheckResult(False, tr("Thư mục đích đã có dữ liệu: {path}", path=target))
         anchor = Path(target_root).anchor or str(target_root)
         if self._disk_usage(anchor).free < cand.size_bytes + FREE_SPACE_RESERVE:
-            return CheckResult(False, "Ổ đích không đủ dung lượng trống")
+            return CheckResult(False, tr("Ổ đích không đủ dung lượng trống"))
         return CheckResult(True)
 
     def apply(
@@ -144,7 +147,9 @@ class KnownFolderStrategy(RelocationStrategy):
         current = Path(self.shell.get(self.folder.guid))
         target = Path(target_root) / self.folder.name
         try:
-            verified_copy_tree(current, target, ctrl, cand.size_bytes, f"Đang chuyển {self.folder.name}")
+            verified_copy_tree(
+                current, target, ctrl, cand.size_bytes, tr("Đang chuyển {app}", app=self.folder.name)
+            )
         except BaseException:
             remove_tree(target)
             raise
@@ -152,24 +157,38 @@ class KnownFolderStrategy(RelocationStrategy):
             self.shell.set(self.folder.guid, str(target))
         except OSError as err:
             remove_tree(target)
-            raise RelocationError(f"Windows không cho đổi vị trí {self.folder.name}: {err}") from err
+            raise RelocationError(
+                tr("Windows không cho đổi vị trí {folder}: {error}", folder=self.folder.name, error=err)
+            ) from err
         leftovers = clear_contents(current)
         rec = RelocationRecord(
             id=None, app_id=self.folder.app_id, app_name=self.folder.name, strategy=self.kind,
             source_path=str(current), target_path=str(target), size_bytes=cand.size_bytes,
             status=RELOCATION_DONE, created_at=now_iso(),
-            detail=(f"Còn {len(leftovers)} mục đang mở chưa xóa ở vị trí cũ" if leftovers else ""),
+            detail=(
+                tr("Còn {count} mục đang mở chưa xóa ở vị trí cũ", count=len(leftovers))
+                if leftovers
+                else ""
+            ),
         )
         return save(rec)
 
     def undo(self, rec: RelocationRecord, ctrl: TaskControl | None, save: Saver) -> RelocationRecord:
         source, target = Path(rec.source_path), Path(rec.target_path)
-        verified_copy_tree(target, source, ctrl, rec.size_bytes, f"Đang trả {rec.app_name} về ổ C:")
+        verified_copy_tree(
+            target, source, ctrl, rec.size_bytes, tr("Đang trả {app} về ổ C:", app=rec.app_name)
+        )
         try:
             self.shell.set(self.folder.guid, str(source))
         except OSError as err:
-            raise RelocationError(f"Windows không cho đổi vị trí {rec.app_name}: {err}") from err
+            raise RelocationError(
+                tr("Windows không cho đổi vị trí {folder}: {error}", folder=rec.app_name, error=err)
+            ) from err
         leftovers = remove_tree(target)
         rec.status = RELOCATION_UNDONE
-        rec.detail = f"Còn {len(leftovers)} mục chưa xóa được ở {target}" if leftovers else ""
+        rec.detail = (
+            tr("Còn {count} mục chưa xóa được ở {path}", count=len(leftovers), path=target)
+            if leftovers
+            else ""
+        )
         return save(rec)

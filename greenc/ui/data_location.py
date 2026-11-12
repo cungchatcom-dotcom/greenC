@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 from greenc.config import APP_NAME, DEFAULT_RETENTION_DAYS, MAX_RETENTION_DAYS, MIN_RETENTION_DAYS
 from greenc.core.drives import DriveInfo, data_root_for, drive_of, recommend_drive
 from greenc.core.settings import AppSettings
+from greenc.i18n import N_, tr
 from greenc.ui import format_size
 from greenc.ui.theme import apply_theme, repolish
 from greenc.ui.widgets import muted_label, page_title
@@ -40,16 +41,18 @@ class DriveOption(QFrame):
         col = QVBoxLayout()
         col.setSpacing(4)
         top = QHBoxLayout()
-        name = QLabel(f"<b>{drive.letter}</b>&nbsp;&nbsp;{drive.label or 'Ổ đĩa cục bộ'}")
+        name = QLabel(tr(
+            "<b>{letter}</b>&nbsp;&nbsp;{label}", letter=drive.letter, label=drive.label or tr("Ổ đĩa cục bộ")
+        ))
         top.addWidget(name)
         top.addStretch(1)
         tag_text, tag_name = "", "Tag"
         if not drive.eligible:
-            tag_text, tag_name = "Không dùng được", "TagNeutral"
+            tag_text, tag_name = tr("Không dùng được"), "TagNeutral"
         elif recommended:
-            tag_text = "Đề xuất"
+            tag_text = tr("Đề xuất")
         elif drive.is_system:
-            tag_text, tag_name = "Ổ hệ thống", "TagNeutral"
+            tag_text, tag_name = tr("Ổ hệ thống"), "TagNeutral"
         if tag_text:
             tag = QLabel(tag_text)
             tag.setObjectName(tag_name)
@@ -65,9 +68,9 @@ class DriveOption(QFrame):
             bar.setObjectName("DangerBar")
         col.addWidget(bar)
         detail = (
-            f"Còn trống {format_size(drive.free)} / {format_size(drive.total)}"
+            tr("Còn trống {free} / {total}", free=format_size(drive.free), total=format_size(drive.total))
             if drive.eligible
-            else drive.reason
+            else tr(drive.reason)
         )
         col.addWidget(muted_label(detail))
         lay.addLayout(col, 1)
@@ -113,14 +116,15 @@ class DataLocationWidget(QWidget):
 
         row = QHBoxLayout()
         row.setSpacing(8)
-        row.addWidget(QLabel("Giữ bản dự phòng trong"))
+        row.addWidget(QLabel(tr("Giữ bản dự phòng trong")))
         self.retention_spin = QSpinBox()
+        self.retention_spin.setLayoutDirection(Qt.LayoutDirection.LeftToRight)  # numbers stay LTR in RTL UIs
         self.retention_spin.setRange(MIN_RETENTION_DAYS, MAX_RETENTION_DAYS)
         self.retention_spin.setValue(retention_days)
         self.retention_spin.setFixedWidth(70)
         self.retention_spin.valueChanged.connect(lambda _v: self.changed.emit())
         row.addWidget(self.retention_spin)
-        row.addWidget(QLabel("ngày trước khi xóa vĩnh viễn"))
+        row.addWidget(QLabel(tr("ngày trước khi xóa vĩnh viễn")))
         row.addStretch(1)
         lay.addSpacing(6)
         lay.addLayout(row)
@@ -151,7 +155,7 @@ class DataLocationWidget(QWidget):
 
     def _refresh_path(self) -> None:
         root = self.data_root()
-        self.path_label.setText(f"Thư mục: {root}\\" if root else "Chưa chọn ổ đĩa")
+        self.path_label.setText(tr("Thư mục: {path}", path=f"{root}\\") if root else tr("Chưa chọn ổ đĩa"))
         self.changed.emit()
 
 
@@ -162,7 +166,7 @@ class FirstRunDialog(QDialog):
         current_root: Path | None = None,
         retention_days: int = DEFAULT_RETENTION_DAYS,
         parent: QWidget | None = None,
-        title: str = "Chọn nơi lưu dữ liệu",
+        title: str = N_("Chọn nơi lưu dữ liệu"),
         allow_later: bool = True,
     ):
         super().__init__(parent)
@@ -177,11 +181,12 @@ class FirstRunDialog(QDialog):
         lay = QVBoxLayout(body)
         lay.setContentsMargins(24, 22, 24, 18)
         lay.setSpacing(8)
-        lay.addWidget(page_title(title))
-        lay.addWidget(muted_label(
-            "Green C:\\ chuyển dữ liệu ứng dụng và Kho dự phòng sang ổ này để giải phóng ổ C:. "
-            "Có thể đổi lại trong Cài đặt."
-        ))
+        lay.addWidget(page_title(tr(title)))
+        lay.addWidget(muted_label(tr(
+            "{app} chuyển dữ liệu ứng dụng và Kho dự phòng sang ổ này để giải phóng ổ C:. "
+            "Có thể đổi lại trong Cài đặt.",
+            app=APP_NAME,
+        )))
         lay.addSpacing(4)
         self.location = DataLocationWidget(drives, current_root, retention_days)
         lay.addWidget(self.location)
@@ -192,9 +197,9 @@ class FirstRunDialog(QDialog):
         f = QHBoxLayout(footer)
         f.setContentsMargins(24, 12, 24, 12)
         f.addStretch(1)
-        self.btn_later = QPushButton("Để sau" if allow_later else "Hủy")
+        self.btn_later = QPushButton(tr("Để sau") if allow_later else tr("Hủy"))
         self.btn_later.clicked.connect(self.reject)
-        self.btn_ok = QPushButton("Tiếp tục" if allow_later else "Lưu")
+        self.btn_ok = QPushButton(tr("Tiếp tục") if allow_later else tr("Lưu"))
         self.btn_ok.setObjectName("PrimaryButton")
         self.btn_ok.setDefault(True)
         self.btn_ok.clicked.connect(self.accept)

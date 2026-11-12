@@ -13,6 +13,7 @@ import zipfile
 
 from greenc.config import DEFAULT_PROTECTED_PATTERNS
 from greenc.core.win_locks import compute_physical_usage, is_file_locked
+from greenc.i18n import tr
 from greenc.models import FileManifestItem, QuotaRule, VaultArchive
 from greenc.storage.database import GreenCDB
 
@@ -214,9 +215,14 @@ class QuotaEnforcer:
             planned += item[1]
         if not fitting:
             raise InsufficientVaultSpaceError(
-                f"Ổ chứa Kho dự phòng ({self.vault_dir}) không đủ dung lượng trống để nén "
-                f"'{selected[0][2][0].name}' ({selected[0][1] / (1024 * 1024):.0f} MB). "
-                "Hãy giải phóng ổ đĩa hoặc chuyển Kho dự phòng sang ổ khác."
+                tr(
+                    "Ổ chứa Kho dự phòng ({path}) không đủ dung lượng trống để nén "
+                    "'{name}' ({size_mb:.0f} MB). "
+                    "Hãy giải phóng ổ đĩa hoặc chuyển Kho dự phòng sang ổ khác.",
+                    path=self.vault_dir,
+                    name=selected[0][2][0].name,
+                    size_mb=selected[0][1] / (1024 * 1024),
+                )
             )
         selected = fitting
 
@@ -293,8 +299,11 @@ class QuotaEnforcer:
             zip_path.unlink(missing_ok=True)
             if _is_disk_full(err):
                 raise InsufficientVaultSpaceError(
-                    f"Ổ chứa Kho dự phòng ({self.vault_dir}) bị đầy trong lúc nén. "
-                    "Đã hủy gói nén dở dang, file gốc được giữ nguyên."
+                    tr(
+                        "Ổ chứa Kho dự phòng ({path}) bị đầy trong lúc nén. "
+                        "Đã hủy gói nén dở dang, file gốc được giữ nguyên.",
+                        path=self.vault_dir,
+                    )
                 ) from err
             raise
         except BaseException:
@@ -364,7 +373,10 @@ class QuotaEnforcer:
             created_at=created_dt.isoformat(timespec="seconds"),
             expires_at=expires_dt.isoformat(timespec="seconds"),
             status="QUARANTINED",
-            status_reason=f"Đang theo dõi an toàn {rule.retention_days} ngày trước khi xóa vĩnh viễn",
+            status_reason=tr(
+                "Đang theo dõi an toàn {days} ngày trước khi xóa vĩnh viễn",
+                days=rule.retention_days,
+            ),
         )
         archive.id = self.db.create_vault_archive(archive, manifest_items)
         return archive

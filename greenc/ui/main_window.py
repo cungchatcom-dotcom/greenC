@@ -33,6 +33,7 @@ from greenc.core.simulator import SandboxSimulator
 from greenc.core.smart_analyzer import AppAnalysisProposal, SmartAppAnalyzer
 from greenc.core.storage_migration import move_vault, remove_dir_if_empty
 from greenc.core.task_controller import TaskControl
+from greenc.i18n import tr
 from greenc.models import QuotaRule
 from greenc.storage.database import GreenCDB
 from greenc.ui import format_size
@@ -104,16 +105,19 @@ class MainWindow(QMainWindow):
 
         self.nav_group = QButtonGroup(self)
         self.nav_group.setExclusive(True)
-        self.btn_nav_overview = self._create_nav_button("Tổng quan", 0, checked=True)
-        self.btn_nav_cleanup = self._create_nav_button("Dọn dẹp", 1)
-        self.btn_nav_relocation = self._create_nav_button("Di chuyển dữ liệu", 2)
-        self.btn_nav_vault = self._create_nav_button("Kho dự phòng", 3)
-        self.btn_nav_settings = self._create_nav_button("Cài đặt", 4)
+        self.btn_nav_overview = self._create_nav_button(tr("Tổng quan"), 0, checked=True)
+        self.btn_nav_cleanup = self._create_nav_button(tr("Dọn dẹp"), 1)
+        self.btn_nav_relocation = self._create_nav_button(tr("Di chuyển dữ liệu"), 2)
+        self.btn_nav_vault = self._create_nav_button(tr("Kho dự phòng"), 3)
+        self.btn_nav_settings = self._create_nav_button(tr("Cài đặt"), 4)
         for btn in (self.btn_nav_overview, self.btn_nav_cleanup, self.btn_nav_relocation,
                     self.btn_nav_vault, self.btn_nav_settings):
             sb.addWidget(btn)
         sb.addStretch(1)
-        self.author_label = QLabel(f'Tác giả: <b>{AUTHOR}</b><br><a href="{WEBSITE_URL}">{WEBSITE_LABEL}</a>')
+        self.author_label = QLabel(tr(
+            'Tác giả: <b>{author}</b><br><a href="{url}">{site}</a>',
+            author=AUTHOR, url=WEBSITE_URL, site=WEBSITE_LABEL,
+        ))
         self.author_label.setObjectName("AuthorBlock")
         self.author_label.setTextFormat(Qt.TextFormat.RichText)
         self.author_label.setOpenExternalLinks(True)
@@ -208,11 +212,11 @@ class MainWindow(QMainWindow):
         self.relocation_page.set_target(root, free)
         if root is None:
             self.relocation_page.set_disabled_reason(
-                "Chưa chọn ổ lưu dữ liệu. Chọn trong Cài đặt → Vị trí lưu dữ liệu."
+                tr("Chưa chọn ổ lưu dữ liệu. Chọn trong Cài đặt → Vị trí lưu dữ liệu.")
             )
         elif is_on_system_drive(root):
             self.relocation_page.set_disabled_reason(
-                "Ổ lưu dữ liệu đang là ổ C:. Chọn một ổ khác trong Cài đặt để chuyển dữ liệu ứng dụng."
+                tr("Ổ lưu dữ liệu đang là ổ C:. Chọn một ổ khác trong Cài đặt để chuyển dữ liệu ứng dụng.")
             )
         else:
             self.relocation_page.set_disabled_reason(None)
@@ -220,11 +224,11 @@ class MainWindow(QMainWindow):
     def _setup_system_tray(self) -> None:
         self.tray_icon = QSystemTrayIcon(self)
         self.tray_icon.setIcon(app_icon())
-        self.tray_icon.setToolTip(f"{APP_NAME} — đang chạy nền")
+        self.tray_icon.setToolTip(tr("{app} — đang chạy nền", app=APP_NAME))
         menu = QMenu(self)
-        act_show = QAction(f"Mở {APP_NAME}", self)
+        act_show = QAction(tr("Mở {app}", app=APP_NAME), self)
         act_show.triggered.connect(self.showNormal)
-        act_quit = QAction("Thoát", self)
+        act_quit = QAction(tr("Thoát"), self)
         act_quit.triggered.connect(QApplication.instance().quit)
         menu.addAction(act_show)
         menu.addSeparator()
@@ -238,7 +242,7 @@ class MainWindow(QMainWindow):
 
     def _target_label(self) -> str:
         root = self.settings.data_root
-        return root.drive if root else "ổ khác"
+        return root.drive if root else tr("ổ khác")
 
     def _apply_vault_dir(self, vault_dir: Path) -> None:
         self.vault_dir = vault_dir
@@ -249,7 +253,7 @@ class MainWindow(QMainWindow):
     def _on_change_data_root(self) -> None:
         dlg = FirstRunDialog(
             list_drives(), self.settings.data_root, self.settings.retention_days_default, self,
-            title="Đổi nơi lưu dữ liệu", allow_later=False,
+            title=tr("Đổi nơi lưu dữ liệu"), allow_later=False,
         )
         if not dlg.exec():
             return
@@ -267,7 +271,7 @@ class MainWindow(QMainWindow):
         def _done(res, stopped: bool):
             res = res or {"moved": 0, "errors": []}
             if res["errors"]:
-                QMessageBox.warning(self, "Chưa chuyển hết Kho dự phòng", "\n".join(res["errors"]))
+                QMessageBox.warning(self, tr("Chưa chuyển hết Kho dự phòng"), "\n".join(res["errors"]))
                 return
             self.settings.set_data_root(new_root)
             self._apply_vault_dir(new_vault)
@@ -275,21 +279,24 @@ class MainWindow(QMainWindow):
             self.refresh_data_views()
             self._refresh_relocation_target()
 
-        self._launch_background_worker("Đang chuyển Kho dự phòng", _work, _done)
+        self._launch_background_worker(tr("Đang chuyển Kho dự phòng"), _work, _done)
 
     def _on_relocate(self, cand) -> None:
         try:
             check = self.relocation_service.check(cand)
         except RelocationError as err:
-            QMessageBox.warning(self, "Chưa thể chuyển", str(err))
+            QMessageBox.warning(self, tr("Chưa thể chuyển"), str(err))
             return
         if not check.ok:
-            QMessageBox.warning(self, "Chưa thể chuyển", check.reason)
+            QMessageBox.warning(self, tr("Chưa thể chuyển"), tr(check.reason))
             return
         answer = QMessageBox.question(
-            self, f"Chuyển {cand.name}",
-            f"Chuyển {cand.name} ({format_size(cand.size_bytes)}) sang {self.settings.data_root}?\n\n"
-            "Dữ liệu được sao chép và kiểm tra trước, sau đó mới xóa ở ổ C:. Có thể hoàn tác.",
+            self, tr("Chuyển {name}", name=cand.name),
+            tr(
+                "Chuyển {name} ({size}) sang {target}?\n\n"
+                "Dữ liệu được sao chép và kiểm tra trước, sau đó mới xóa ở ổ C:. Có thể hoàn tác.",
+                name=cand.name, size=format_size(cand.size_bytes), target=self.settings.data_root,
+            ),
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
@@ -298,30 +305,30 @@ class MainWindow(QMainWindow):
             try:
                 return {"record": self.relocation_service.apply(cand, ctrl)}
             except RelocationStopped:
-                return {"error": "Đã dừng. Dữ liệu vẫn ở vị trí cũ."}
+                return {"error": tr("Đã dừng. Dữ liệu vẫn ở vị trí cũ.")}
             except RelocationError as err:
                 return {"error": str(err)}
 
         def _done(res, stopped: bool):
             res = res or {}
             if res.get("error"):
-                QMessageBox.warning(self, f"Không chuyển được {cand.name}", res["error"])
+                QMessageBox.warning(self, tr("Không chuyển được {name}", name=cand.name), res["error"])
             elif res.get("record") is not None:
                 self._last_candidates = [c for c in self._last_candidates if c is not cand]
                 self.relocation_page.set_candidates(self._last_candidates)
                 self.overview_page.set_freeable(self._last_proposals, self._last_candidates, self._target_label())
-                self.progress_card.update_progress(100, f"Đã chuyển {cand.name}", res["record"].target_path)
+                self.progress_card.update_progress(100, tr("Đã chuyển {name}", name=cand.name), res["record"].target_path)
             self.relocation_page.set_records(self.relocation_service.records())
             self.overview_page.update_drive_usage(self.drive_combo.currentText())
             self._refresh_relocation_target()
 
-        self._launch_background_worker(f"Đang chuyển {cand.name}", _work, _done)
+        self._launch_background_worker(tr("Đang chuyển {name}", name=cand.name), _work, _done)
 
     def _on_guide(self, cand) -> None:
         try:
             root = self.relocation_service.target_root()
         except RelocationError as err:
-            QMessageBox.warning(self, "Chưa thể chuyển", str(err))
+            QMessageBox.warning(self, tr("Chưa thể chuyển"), str(err))
             return
         try:
             (root / "Zalo").mkdir(parents=True, exist_ok=True)
@@ -337,8 +344,8 @@ class MainWindow(QMainWindow):
 
     def _on_undo_relocation(self, rec) -> None:
         answer = QMessageBox.question(
-            self, f"Hoàn tác {rec.app_name}",
-            f"Trả {rec.app_name} về vị trí cũ trên ổ C: ({format_size(rec.size_bytes)})?",
+            self, tr("Hoàn tác {name}", name=rec.app_name),
+            tr("Trả {name} về vị trí cũ trên ổ C: ({size})?", name=rec.app_name, size=format_size(rec.size_bytes)),
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
@@ -352,11 +359,11 @@ class MainWindow(QMainWindow):
 
         def _done(res, stopped: bool):
             if (res or {}).get("error"):
-                QMessageBox.warning(self, f"Không hoàn tác được {rec.app_name}", res["error"])
+                QMessageBox.warning(self, tr("Không hoàn tác được {name}", name=rec.app_name), res["error"])
             self.relocation_page.set_records(self.relocation_service.records())
             self.overview_page.update_drive_usage(self.drive_combo.currentText())
 
-        self._launch_background_worker(f"Đang hoàn tác {rec.app_name}", _work, _done)
+        self._launch_background_worker(tr("Đang hoàn tác {name}", name=rec.app_name), _work, _done)
 
     def _seed_default_silent_rules(self) -> None:
         """Register rules for Zalo, DingTalk and other detected heavy apps; they run in the background."""
@@ -396,7 +403,7 @@ class MainWindow(QMainWindow):
             self._pending_launch = (initial_title, fn, on_done)
             self._silent_worker.control.stop()
             self.progress_card.setVisible(True)
-            self.progress_card.update_progress(0, initial_title, "Đang chờ tác vụ nền dừng…")
+            self.progress_card.update_progress(0, initial_title, tr("Đang chờ tác vụ nền dừng…"))
             return
         worker = BackgroundTaskWorker(fn, self)
         self._active_worker = worker
@@ -425,14 +432,14 @@ class MainWindow(QMainWindow):
                 self.daily_tab.load_drive_data(drive, snaps)
             self.refresh_data_views()
 
-        self._launch_background_worker(f"Đang đọc lịch sử ổ {drive[:2]}", _work, _done)
+        self._launch_background_worker(tr("Đang đọc lịch sử ổ {drive}", drive=drive[:2]), _work, _done)
 
     def start_smart_app_analysis_async(self) -> None:
         def _work(ctrl: TaskControl):
             proposals = self.analyzer.scan_and_probe_apps(task_control=ctrl)
             candidates = []
             if not ctrl.is_stopped:
-                ctrl.report(97, "Đang tìm dữ liệu có thể chuyển", "")
+                ctrl.report(97, tr("Đang tìm dữ liệu có thể chuyển"), "")
                 candidates = discover_candidates(self.db, should_stop=lambda: ctrl.is_stopped)
             return {"proposals": proposals, "candidates": candidates}
 
@@ -445,7 +452,7 @@ class MainWindow(QMainWindow):
             self._refresh_relocation_target()
             self.overview_page.set_freeable(self._last_proposals, self._last_candidates, self._target_label())
 
-        self._launch_background_worker("Đang phân tích ứng dụng", _work, _done)
+        self._launch_background_worker(tr("Đang phân tích ứng dụng"), _work, _done)
 
     def start_one_click_cleanup_async(self, proposals: list[AppAnalysisProposal]) -> None:
         retention = self.settings.retention_days_default
@@ -457,13 +464,20 @@ class MainWindow(QMainWindow):
             self.overview_page.update_drive_usage(self.drive_combo.currentText())
             self.refresh_data_views()
             if res and not stopped:
-                msg = f"Đã giải phóng {format_size(res['freed_bytes'])}, giữ dự phòng {retention} ngày."
                 if res.get("errors"):
-                    msg += " Lỗi: " + "; ".join(res["errors"])
-                self.progress_card.update_progress(100, "Đã dọn xong", msg)
+                    msg = tr(
+                        "Đã giải phóng {size}, giữ dự phòng {days} ngày. Lỗi: {errors}",
+                        size=format_size(res["freed_bytes"]), days=retention, errors="; ".join(res["errors"]),
+                    )
+                else:
+                    msg = tr(
+                        "Đã giải phóng {size}, giữ dự phòng {days} ngày.",
+                        size=format_size(res["freed_bytes"]), days=retention,
+                    )
+                self.progress_card.update_progress(100, tr("Đã dọn xong"), msg)
                 self.cleanup_tab.proposal_summary_label.setText(msg)
 
-        self._launch_background_worker("Đang dọn dẹp", _work, _done)
+        self._launch_background_worker(tr("Đang dọn dẹp"), _work, _done)
 
     def _on_request_create_quota(self, app_name: str, process_name: str, service_name: str, paths: list[str]) -> None:
         self.btn_nav_settings.click()
@@ -520,14 +534,14 @@ class MainWindow(QMainWindow):
         if safety.get("auto_rolled_back") and tray_ok:
             self.tray_icon.showMessage(
                 APP_NAME,
-                f"Đã tự khôi phục {len(safety['auto_rolled_back'])} gói dữ liệu cho ứng dụng.",
+                tr("Đã tự khôi phục {count} gói dữ liệu cho ứng dụng.", count=len(safety["auto_rolled_back"])),
                 QSystemTrayIcon.MessageIcon.Information,
                 5000,
             )
         if res.get("errors") and tray_ok:
             self.tray_icon.showMessage(
                 APP_NAME,
-                ("Không dọn được: " + "; ".join(res["errors"]))[:300],
+                tr("Không dọn được: {errors}", errors="; ".join(res["errors"]))[:300],
                 QSystemTrayIcon.MessageIcon.Warning,
                 8000,
             )

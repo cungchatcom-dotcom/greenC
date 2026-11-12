@@ -12,6 +12,7 @@ from greenc.core.relocation.base import (
 )
 from greenc.core.relocation.fs_ops import RelocationError, remove_tree, same_path
 from greenc.core.task_controller import TaskControl
+from greenc.i18n import tr
 from greenc.models import RELOCATION_DONE, RELOCATION_UNDONE, RelocationRecord
 
 Runner = Callable[[list[str]], tuple[int, str]]
@@ -55,12 +56,12 @@ class ToolCacheStrategy(RelocationStrategy):
     def _call(self, *args: str) -> tuple[int, str]:
         exe = self.exe()
         if not exe:
-            raise RelocationError(f"Không tìm thấy {self.exe_name}")
+            raise RelocationError(tr("Không tìm thấy {tool}", tool=self.exe_name))
         return self._run([exe, *args])
 
     def check(self, cand: RelocationCandidate, target_root: Path) -> CheckResult:
         if not self.exe():
-            return CheckResult(False, f"Không tìm thấy {self.exe_name}")
+            return CheckResult(False, tr("Không tìm thấy {tool}", tool=self.exe_name))
         return CheckResult(True)
 
     def apply(
@@ -75,7 +76,7 @@ class ToolCacheStrategy(RelocationStrategy):
         self._set(new)
         now = self.current_cache()
         if now is None or not same_path(now, new):
-            raise RelocationError(f"{self.exe_name} không nhận cấu hình mới")
+            raise RelocationError(tr("{tool} không nhận cấu hình mới", tool=self.exe_name))
         leftovers: list[str] = []
         if old is not None and old.exists() and not same_path(old, new):
             leftovers = remove_tree(old)
@@ -84,7 +85,7 @@ class ToolCacheStrategy(RelocationStrategy):
                 id=None, app_id=self.app_id, app_name=self.name, strategy=self.kind,
                 source_path=str(old or cand.source_path), target_path=str(new),
                 size_bytes=cand.size_bytes, status=RELOCATION_DONE, created_at=now_iso(),
-                detail=f"Còn {len(leftovers)} mục chưa xóa được" if leftovers else "",
+                detail=tr("Còn {count} mục chưa xóa được", count=len(leftovers)) if leftovers else "",
             )
         )
 
@@ -107,7 +108,7 @@ class NpmCacheStrategy(ToolCacheStrategy):
     def _set(self, path: Path) -> None:
         rc, _ = self._call("config", "set", "cache", str(path))
         if rc != 0:
-            raise RelocationError("npm từ chối đổi thư mục cache")
+            raise RelocationError(tr("npm từ chối đổi thư mục cache"))
 
     def _unset(self) -> None:
         self._call("config", "delete", "cache")
@@ -125,7 +126,7 @@ class PipCacheStrategy(ToolCacheStrategy):
     def _set(self, path: Path) -> None:
         rc, _ = self._call("config", "--user", "set", "global.cache-dir", str(path))
         if rc != 0:
-            raise RelocationError("pip từ chối đổi thư mục cache")
+            raise RelocationError(tr("pip từ chối đổi thư mục cache"))
 
     def _unset(self) -> None:
         self._call("config", "--user", "unset", "global.cache-dir")

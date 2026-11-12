@@ -6,6 +6,7 @@ import zipfile
 
 import psutil
 
+from greenc.i18n import tr
 from greenc.models import VaultArchive
 from greenc.storage.database import GreenCDB
 
@@ -63,7 +64,10 @@ class SafetyWatchdog:
                 if info.get("status") == "stopped":
                     return (
                         False,
-                        f"Phát hiện Windows Service '{rule.service_name}' dừng bất thường sau khi nén file",
+                        tr(
+                            "Phát hiện Windows Service '{service}' dừng bất thường sau khi nén file",
+                            service=rule.service_name,
+                        ),
                     )
             except Exception:
                 pass
@@ -110,7 +114,11 @@ class SafetyWatchdog:
                             if archived_name and archived_name in content_lower:
                                 return (
                                     False,
-                                    f"Ứng dụng báo lỗi thiếu file '{Path(full_orig).name}' trong '{fp.name}' — kích hoạt Tự động Rollback",
+                                    tr(
+                                        "Ứng dụng báo lỗi thiếu file '{name}' trong '{log}' — kích hoạt Tự động Rollback",
+                                        name=Path(full_orig).name,
+                                        log=fp.name,
+                                    ),
                                 )
 
         return True, ""
@@ -124,7 +132,7 @@ class SafetyWatchdog:
 
         zip_path = Path(archive.zip_path)
         if not zip_path.exists():
-            raise FileNotFoundError(f"File nén không còn tồn tại: {zip_path}")
+            raise FileNotFoundError(tr("File nén không còn tồn tại: {path}", path=zip_path))
 
         vault_files = self.db.get_vault_files(archive_id)
         restored_paths: list[str] = []
@@ -216,7 +224,10 @@ class SafetyWatchdog:
             if now >= expires_dt:
                 self.purge_archive_now(
                     arch.id or 0,
-                    f"Đã qua hạn an toàn ({arch.expires_at[:10]}) không phát sinh lỗi — tự động xóa vĩnh viễn",
+                    tr(
+                        "Đã qua hạn an toàn ({date}) không phát sinh lỗi — tự động xóa vĩnh viễn",
+                        date=arch.expires_at[:10],
+                    ),
                 )
                 if arch.id is not None:
                     purged_ids.append(arch.id)

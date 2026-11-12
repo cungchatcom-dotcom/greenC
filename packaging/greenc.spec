@@ -25,6 +25,8 @@ a = Analysis(
     [str(ROOT / "main.py")],
     pathex=[str(ROOT)],
     hiddenimports=["PySide6.QtSvg"],
+    # Translation catalogs are loaded from greenc/i18n/locales next to the package.
+    datas=[(str(ROOT / "greenc" / "i18n" / "locales" / "*.json"), "greenc/i18n/locales")],
     excludes=EXCLUDES,
     noarchive=False,
 )

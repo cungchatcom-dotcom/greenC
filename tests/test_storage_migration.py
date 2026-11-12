@@ -68,3 +68,13 @@ def test_failed_copy_keeps_source_and_db(tmp_path: Path, monkeypatch):
     assert res["moved"] == 0 and len(res["errors"]) == 1
     assert Path(db.get_vault_archive(a.id).zip_path) == old / "c.zip"
     assert (old / "c.zip").exists()
+
+
+def test_legacy_base_dir_follows_renamed_source_folder(tmp_path):
+    from greenc.config import legacy_base_dir
+
+    old, renamed = tmp_path / "DiskGuard", tmp_path / "GreenC"
+    assert legacy_base_dir((old, renamed)) == old  # nothing anywhere -> first candidate
+    (renamed / "data").mkdir(parents=True)
+    (renamed / "data" / "diskguard.db").write_bytes(b"")
+    assert legacy_base_dir((old, renamed)) == renamed

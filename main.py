@@ -1,7 +1,10 @@
 import sys
+import time
 
+from PySide6.QtCore import QLocale, Qt
 from PySide6.QtWidgets import QApplication, QMessageBox
 
+from greenc import i18n
 from greenc.config import (
     APP_NAME,
     APP_VERSION,
@@ -10,18 +13,12 @@ from greenc.config import (
     LEGACY_VAULT_DIR,
     ensure_app_dirs,
 )
-from greenc.core.drives import list_drives
-from greenc.core.relocation.recovery import recover_interrupted
 from greenc.core.settings import AppSettings
-from greenc.core.storage_migration import migrate_legacy_db, move_vault, remove_dir_if_empty
+from greenc.core.storage_migration import migrate_legacy_db
 from greenc.storage.database import GreenCDB
-from greenc.ui.data_location import run_first_run
-from greenc.ui.icons import app_icon
-from greenc.ui.main_window import MainWindow
-from greenc.ui.theme import apply_theme
-
 
 SINGLE_INSTANCE_MUTEX = "GreenCAppMutex"  # also listed as AppMutex in packaging/greenc.iss
+RESTARTED_FLAG = "--restarted"
 
 
 def acquire_single_instance(name: str = SINGLE_INSTANCE_MUTEX):
@@ -42,22 +39,51 @@ def acquire_single_instance(name: str = SINGLE_INSTANCE_MUTEX):
     return handle
 
 
+def wait_for_single_instance(timeout: float, name: str = SINGLE_INSTANCE_MUTEX):
+    """After a restart the previous process may still be exiting; retry for a moment."""
+    deadline = time.monotonic() + timeout
+    while True:
+        handle = acquire_single_instance(name)
+        if handle is not None or time.monotonic() >= deadline:
+            return handle
+        time.sleep(0.2)
+
+
+def startup_language(settings: AppSettings) -> str:
+    return settings.language or i18n.match_system_language(QLocale.system().name())
+
+
 def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)
-    app.setWindowIcon(app_icon())
-    apply_theme(app)
 
-    instance = acquire_single_instance()
+    instance = wait_for_single_instance(10.0 if RESTARTED_FLAG in sys.argv else 0.0)
     if instance is None:
-        QMessageBox.information(None, APP_NAME, f"{APP_NAME} đang chạy.")
+        QMessageBox.information(None, APP_NAME, i18n.tr("{app} đang chạy.", app=APP_NAME))
         return 0
 
     ensure_app_dirs()
     migrate_legacy_db(LEGACY_DB_PATH, DEFAULT_DB_PATH)
     db = GreenCDB(DEFAULT_DB_PATH)
     settings = AppSettings(db)
+
+    # The language must be active before any UI module is imported: some build their
+    # labels at import time.
+    language = i18n.set_language(startup_language(settings))
+    if i18n.is_rtl(language):
+        app.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+
+    from greenc.core.drives import list_drives
+    from greenc.core.relocation.recovery import recover_interrupted
+    from greenc.core.storage_migration import move_vault, remove_dir_if_empty
+    from greenc.ui.data_location import run_first_run
+    from greenc.ui.icons import app_icon
+    from greenc.ui.main_window import MainWindow
+    from greenc.ui.theme import apply_theme
+
+    app.setWindowIcon(app_icon())
+    apply_theme(app)
     recover_interrupted(db)
 
     if settings.data_root is None:

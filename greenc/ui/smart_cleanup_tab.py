@@ -2,6 +2,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QCheckBox, QHBoxLayout, QPushButton, QVBoxLayout, QWidget
 
 from greenc.core.smart_analyzer import AppAnalysisProposal
+from greenc.i18n import tr
 from greenc.ui import format_size
 from greenc.ui.widgets import (
     PathValue,
@@ -30,11 +31,11 @@ class SmartCleanupTab(QWidget):
         lay.setSpacing(12)
 
         head = QHBoxLayout()
-        head.addWidget(page_title("Dọn dẹp"))
+        head.addWidget(page_title(tr("Dọn dẹp")))
         head.addStretch(1)
-        self.btn_scan_apps = QPushButton("Phân tích")
+        self.btn_scan_apps = QPushButton(tr("Phân tích"))
         self.btn_scan_apps.clicked.connect(self.scanAppsRequested.emit)
-        self.btn_clean_now = QPushButton("Dọn dẹp")
+        self.btn_clean_now = QPushButton(tr("Dọn dẹp"))
         self.btn_clean_now.setObjectName("PrimaryButton")
         self.btn_clean_now.setEnabled(False)
         self.btn_clean_now.clicked.connect(self._on_clean_clicked)
@@ -49,18 +50,21 @@ class SmartCleanupTab(QWidget):
         card = make_card()
         cl = QVBoxLayout(card)
         cl.setContentsMargins(14, 10, 14, 10)
-        self.proposal_summary_label = card_title("Chưa có kết quả phân tích")
+        self.proposal_summary_label = card_title(tr("Chưa có kết quả phân tích"))
         cl.addWidget(self.proposal_summary_label)
         self.table = make_table(
-            ["", "Ứng dụng", "Vị trí", "Đang dùng", "Giải phóng", "Kiểm tra"], stretch_col=2, right_cols=(3, 4)
+            ["", tr("Ứng dụng"), tr("Vị trí"), tr("Đang dùng"), tr("Giải phóng"), tr("Kiểm tra")], stretch_col=2, right_cols=(3, 4)
         )
         cl.addWidget(self.table)
         lay.addWidget(card, 1)
 
     def set_retention_days(self, days: int) -> None:
         self.description.setText(
-            f"Nén file cũ không dùng tới vào Kho dự phòng. Sau {days} ngày gói nén tự xóa; "
-            "trong thời gian đó có thể khôi phục bất cứ lúc nào."
+            tr(
+                "Nén file cũ không dùng tới vào Kho dự phòng. Sau {days} ngày gói nén tự xóa; "
+                "trong thời gian đó có thể khôi phục bất cứ lúc nào.",
+                days=days,
+            )
         )
 
     def set_proposals(self, proposals: list[AppAnalysisProposal]) -> None:
@@ -76,24 +80,30 @@ class SmartCleanupTab(QWidget):
             h.setAlignment(Qt.AlignmentFlag.AlignCenter)
             h.addWidget(chk)
             self.table.setCellWidget(row, 0, wrap)
-            set_cell(self.table, row, 1, prop.app_name)
+            set_cell(self.table, row, 1, tr(prop.app_name))
             set_cell(self.table, row, 2, PathValue(prop.target_paths[0] if prop.target_paths else ""))
             set_cell(self.table, row, 3, format_size(prop.total_physical_bytes), right=True)
             set_cell(self.table, row, 4, format_size(prop.reclaimable_bytes), right=True)
-            set_cell(self.table, row, 5, TagValue(prop.probe_strategy, warning=not prop.probe_passed, tooltip=prop.probe_detail))
+            set_cell(self.table, row, 5, TagValue(
+                tr(prop.probe_strategy), warning=not prop.probe_passed,
+                tooltip=tr(prop.probe_detail) if prop.probe_detail else prop.probe_detail,
+            ))
         fit_widget_columns(self.table)
         self._refresh_summary()
 
     def _refresh_summary(self) -> None:
         total = sum(p.reclaimable_bytes for p in self._proposals if p.selected)
         if not self._proposals:
-            self.proposal_summary_label.setText("Không có ứng dụng nào cần dọn")
+            self.proposal_summary_label.setText(tr("Không có ứng dụng nào cần dọn"))
         else:
             self.proposal_summary_label.setText(
-                f"{len(self._proposals)} ứng dụng · có thể giải phóng {format_size(total)}"
+                tr(
+                    "{count} ứng dụng · có thể giải phóng {size}",
+                    count=len(self._proposals), size=format_size(total),
+                )
             )
         self.btn_clean_now.setEnabled(total > 0)
-        self.btn_clean_now.setText(f"Dọn dẹp {format_size(total)}" if total > 0 else "Dọn dẹp")
+        self.btn_clean_now.setText(tr("Dọn dẹp {size}", size=format_size(total)) if total > 0 else tr("Dọn dẹp"))
 
     def _on_row_toggled(self, row: int, checked: bool) -> None:
         if 0 <= row < len(self._proposals):

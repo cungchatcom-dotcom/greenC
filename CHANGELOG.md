@@ -16,9 +16,10 @@ Ghi thay đổi mới vào mục **Unreleased**. Khi phát hành, `scripts/versi
 - Trang Chuyển dữ liệu: thư mục Windows (Downloads, Documents…), bộ đệm npm/pip, hướng dẫn Zalo, chuyển thư mục kèm junction, hoàn tác.
 - Số ngày giữ bản lưu mặc định 7 ngày, chỉnh được trong Cài đặt.
 - Chỉ cho chạy một cửa sổ ứng dụng cùng lúc.
+- Giao diện 50 ngôn ngữ, chọn trong Cài đặt → Ngôn ngữ; mặc định theo ngôn ngữ Windows; hỗ trợ ngôn ngữ viết từ phải sang trái.
 
 ### Thay đổi
-- Đổi tên thành **Green C:\\**, tác giả Cùng Chat (cungchat.com).
+- Đổi tên thành **Green C:\\** (trước đây là DiskGuard; package Python `greenc`), tác giả Cùng Chat (cungchat.com).
 - Giao diện mới kiểu Fluent: Tổng quan, Dọn dẹp, Chuyển dữ liệu, Vault, Cài đặt; bảng chi tiết bật bằng icon con mắt; ô đường dẫn có nút sao chép và mở thư mục.
 - Dữ liệu ứng dụng chuyển về `%LOCALAPPDATA%\Green C` (tự di chuyển từ `C:\DiskGuard`).
 

@@ -26,8 +26,19 @@ DEFAULT_DB_PATH = APP_HOME / "greenc.db"
 DEFAULT_VAULT_DIR = APP_HOME / "Vault"
 SANDBOX_DEMO_DIR = APP_HOME / "sandbox"
 
-# Locations used by version 0.1 (then named "DiskGuard") — migrated on first launch.
-LEGACY_BASE_DIR = Path(r"C:\DiskGuard")
+# Version 0.1 (then named "DiskGuard") kept its database and Vault inside its source folder,
+# which may since have been renamed to C:\GreenC. Migrated on first launch.
+LEGACY_BASE_CANDIDATES = (Path(r"C:\DiskGuard"), Path(r"C:\GreenC"))
+
+
+def legacy_base_dir(candidates: tuple[Path, ...] = LEGACY_BASE_CANDIDATES) -> Path:
+    for base in candidates:
+        if (base / "data" / "diskguard.db").exists() or (base / "vault").is_dir():
+            return base
+    return candidates[0]
+
+
+LEGACY_BASE_DIR = legacy_base_dir()
 LEGACY_DB_PATH = LEGACY_BASE_DIR / "data" / "diskguard.db"
 LEGACY_VAULT_DIR = LEGACY_BASE_DIR / "vault"
 

@@ -14,6 +14,7 @@ from greenc.core.app_profiles import discover_installed_heavy_apps
 from greenc.core.quota_enforcer import QuotaEnforcer
 from greenc.core.task_controller import TaskControl
 from greenc.core.win_locks import compute_physical_usage, is_file_locked
+from greenc.i18n import N_, tr
 from greenc.models import QuotaRule
 from greenc.storage.database import GreenCDB
 
@@ -165,7 +166,7 @@ class SmartAppAnalyzer:
         user_temp = local / "Temp"
         if user_temp.exists():
             results.append(
-                ("Thư mục Temp của Windows", "System/Temp", [str(user_temp)])
+                (N_("Thư mục Temp của Windows"), "System/Temp", [str(user_temp)])
             )
 
         for app_label, dirs in sorted(app_folders.items()):
@@ -182,8 +183,8 @@ class SmartAppAnalyzer:
         ctrl = task_control or TaskControl()
         if not ctrl.report(
             5,
-            "Đang chuẩn bị phân tích",
-            "Đang lấy danh sách ứng dụng và tiến trình.",
+            tr("Đang chuẩn bị phân tích"),
+            tr("Đang lấy danh sách ứng dụng và tiến trình."),
         ):
             return []
 
@@ -209,7 +210,7 @@ class SmartAppAnalyzer:
             pct = 10 + int((idx / total_cands) * 75)
             if not ctrl.report(
                 pct,
-                f"Đang phân tích {app_name} · {idx}/{total_cands}",
+                tr("Đang phân tích {app} · {index}/{total}", app=tr(app_name), index=idx, total=total_cands),
                 target_dirs[0] if target_dirs else "",
             ):
                 break
@@ -256,8 +257,8 @@ class SmartAppAnalyzer:
             # Step 3: Execute 1-Cycle Automated Sandbox Canary Probe on the oldest unlocked file group!
             if not ctrl.report(
                 min(95, pct + 2),
-                f"Đang kiểm tra an toàn cho {app_name}",
-                "Nén thử một file cũ rồi khôi phục để kiểm tra dữ liệu.",
+                tr("Đang kiểm tra an toàn cho {app}", app=tr(app_name)),
+                tr("Nén thử một file cũ rồi khôi phục để kiểm tra dữ liệu."),
             ):
                 break
 
@@ -276,15 +277,15 @@ class SmartAppAnalyzer:
             hl_diff = max(0, naive_bytes - phys_bytes)
             traits: list[str] = []
             if is_running:
-                traits.append("Đang chạy")
+                traits.append(tr("Đang chạy"))
             else:
-                traits.append("Đang nghỉ")
+                traits.append(tr("Đang nghỉ"))
             if hardlink_count > 0 or hl_diff > 1024 * 1024:
-                traits.append(f"Có liên kết cứng · {hardlink_count} nhóm")
+                traits.append(tr("Có liên kết cứng · {count} nhóm", count=hardlink_count))
             if locked_count > 0:
-                traits.append(f"Bỏ qua {locked_count} file đang mở")
+                traits.append(tr("Bỏ qua {count} file đang mở", count=locked_count))
             else:
-                traits.append("File cũ đều không bị khóa")
+                traits.append(tr("File cũ đều không bị khóa"))
 
             # Target cleanup: reclaim ~40% of reclaimable old data while keeping a comfortable rolling cap
             target_reclaim = int(reclaimable_bytes * 0.45)
@@ -314,8 +315,8 @@ class SmartAppAnalyzer:
         proposals.sort(key=lambda p: p.reclaimable_bytes, reverse=True)
         ctrl.report(
             100,
-            f"Đã phân tích xong {len(proposals)} ứng dụng",
-            "Chọn ứng dụng rồi bấm Dọn dẹp.",
+            tr("Đã phân tích xong {count} ứng dụng", count=len(proposals)),
+            tr("Chọn ứng dụng rồi bấm Dọn dẹp."),
         )
         return proposals
 
@@ -381,14 +382,21 @@ class SmartAppAnalyzer:
             if locked_count > 0:
                 return (
                     True,
-                    "Đạt · bỏ qua file đang mở",
-                    f"Bỏ qua {locked_count} file đang mở. Đã thử nén và khôi phục '{primary.name}', dữ liệu khớp.",
+                    tr("Đạt · bỏ qua file đang mở"),
+                    tr(
+                        "Bỏ qua {count} file đang mở. Đã thử nén và khôi phục '{name}', dữ liệu khớp.",
+                        count=locked_count,
+                        name=primary.name,
+                    ),
                     target_dirs,
                 )
             return (
                 True,
-                "Đạt",
-                f"Đã thử nén và khôi phục '{primary.name}', dữ liệu và liên kết cứng khớp.",
+                tr("Đạt"),
+                tr(
+                    "Đã thử nén và khôi phục '{name}', dữ liệu và liên kết cứng khớp.",
+                    name=primary.name,
+                ),
                 target_dirs,
             )
         except Exception:
@@ -417,11 +425,11 @@ class SmartAppAnalyzer:
             if safe_subdirs:
                 return (
                     True,
-                    "Chỉ dọn bộ đệm",
-                    "Thư mục chính có file quan trọng, chỉ dọn các thư mục Cache, Temp, Logs.",
+                    tr("Chỉ dọn bộ đệm"),
+                    tr("Thư mục chính có file quan trọng, chỉ dọn các thư mục Cache, Temp, Logs."),
                     safe_subdirs[:6],
                 )
-            return False, "Không đạt", "Không vượt qua kiểm tra an toàn.", target_dirs
+            return False, tr("Không đạt"), tr("Không vượt qua kiểm tra an toàn."), target_dirs
         finally:
             probe_zip.unlink(missing_ok=True)
 
@@ -454,8 +462,8 @@ class SmartAppAnalyzer:
             pct = int(((idx - 1) / total) * 90) + 5
             if not ctrl.report(
                 pct,
-                f"Đang dọn {prop.app_name} · {idx}/{total}",
-                "Nén file cũ vào Kho dự phòng.",
+                tr("Đang dọn {app} · {index}/{total}", app=tr(prop.app_name), index=idx, total=total),
+                tr("Nén file cũ vào Kho dự phòng."),
             ):
                 break
 
@@ -487,10 +495,14 @@ class SmartAppAnalyzer:
                 archives_created += 1
 
         freed_gb = f"{freed_bytes / (1024**3):.1f}".replace(".", ",")
-        detail = f"Đã giải phóng {freed_gb} GB từ {archives_created} ứng dụng."
+        detail = tr(
+            "Đã giải phóng {size} GB từ {count} ứng dụng.", size=freed_gb, count=archives_created
+        )
         if errors:
-            detail += f" Lỗi ở {len(errors)} ứng dụng: " + "; ".join(errors)
-        ctrl.report(100, "Đã dọn xong", detail)
+            detail += " " + tr(
+                "Lỗi ở {count} ứng dụng: {errors}", count=len(errors), errors="; ".join(errors)
+            )
+        ctrl.report(100, tr("Đã dọn xong"), detail)
         return {
             "freed_bytes": freed_bytes,
             "archives_created": archives_created,

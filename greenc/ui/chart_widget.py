@@ -2,6 +2,7 @@ from PySide6.QtCore import QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
+from greenc.i18n import tr
 from greenc.models import DailySnapshot
 from greenc.ui import format_bytes
 
@@ -54,7 +55,7 @@ class DailyBarChartWidget(QWidget):
             painter.drawText(
                 rect,
                 Qt.AlignmentFlag.AlignCenter,
-                "Chưa có dữ liệu. Bấm Làm mới để đọc lịch sử ổ đĩa.",
+                tr("Chưa có dữ liệu. Bấm Làm mới để đọc lịch sử ổ đĩa."),
             )
             return
 
@@ -69,7 +70,7 @@ class DailyBarChartWidget(QWidget):
         # Header caption
         painter.setPen(QColor("#616161"))
         painter.setFont(QFont("Segoe UI", 9))
-        painter.drawText(4, 20, "Mức tăng mỗi ngày · chọn một cột để xem chi tiết")
+        painter.drawText(4, 20, tr("Mức tăng mỗi ngày · chọn một cột để xem chi tiết"))
 
         max_delta = max(max(0, s.net_change_bytes) for s in self._snapshots) or 1
         max_used = max(s.used_bytes for s in self._snapshots) or 1

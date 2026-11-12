@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from greenc.i18n import tr
 from greenc.storage.database import GreenCDB
 from greenc.ui import format_size
 from greenc.ui.daily_tab import DailyMonitorTab
@@ -49,11 +50,11 @@ class OverviewPage(QWidget):
         lay.setSpacing(12)
 
         head = QHBoxLayout()
-        head.addWidget(page_title("Tổng quan"))
+        head.addWidget(page_title(tr("Tổng quan")))
         head.addStretch(1)
-        self.btn_analyze = QPushButton("Phân tích")
+        self.btn_analyze = QPushButton(tr("Phân tích"))
         self.btn_analyze.clicked.connect(self.analyzeRequested.emit)
-        self.btn_clean = QPushButton("Dọn dẹp")
+        self.btn_clean = QPushButton(tr("Dọn dẹp"))
         self.btn_clean.setObjectName("PrimaryButton")
         self.btn_clean.clicked.connect(self.cleanupRequested.emit)
         head.addWidget(self.btn_analyze)
@@ -65,7 +66,7 @@ class OverviewPage(QWidget):
         dl.setContentsMargins(14, 12, 14, 12)
         dl.setSpacing(8)
         top = QHBoxLayout()
-        top.addWidget(card_title("Ổ đĩa"))
+        top.addWidget(card_title(tr("Ổ đĩa")))
         self.drive_combo = QComboBox()
         self.drive_combo.addItems(drives)
         self.drive_combo.setMinimumWidth(80)
@@ -82,10 +83,12 @@ class OverviewPage(QWidget):
         lay.addWidget(drive_card)
 
         self.freeable_card = ExpandableTableCard(
-            "Có thể giải phóng", ["Ứng dụng", "Vị trí", "Dung lượng", "Giải phóng", "Đề xuất"], right_detail_cols=(2, 3)
+            tr("Có thể giải phóng"),
+            [tr("Ứng dụng"), tr("Vị trí"), tr("Dung lượng"), tr("Giải phóng"), tr("Đề xuất")],
+            right_detail_cols=(2, 3),
         )
         self.freeable_card.set_empty_text(
-            "Chưa phân tích. Bấm Phân tích để tìm dữ liệu có thể dọn hoặc chuyển sang ổ khác."
+            tr("Chưa phân tích. Bấm Phân tích để tìm dữ liệu có thể dọn hoặc chuyển sang ổ khác.")
         )
         self.freeable_card.set_rows([])
         lay.addWidget(self.freeable_card)
@@ -94,9 +97,9 @@ class OverviewPage(QWidget):
         hl = QVBoxLayout(hist)
         hl.setContentsMargins(14, 12, 14, 12)
         hh = QHBoxLayout()
-        hh.addWidget(card_title("Biến động theo ngày"))
+        hh.addWidget(card_title(tr("Biến động theo ngày")))
         hh.addStretch(1)
-        self.btn_refresh_history = QPushButton("Làm mới")
+        self.btn_refresh_history = QPushButton(tr("Làm mới"))
         self.btn_refresh_history.clicked.connect(self.refreshHistoryRequested.emit)
         hh.addWidget(self.btn_refresh_history)
         hl.addLayout(hh)
@@ -122,21 +125,21 @@ class OverviewPage(QWidget):
         self.drive_usage_bar.setValue(pct)
         self.drive_usage_bar.setObjectName("DangerBar" if pct >= 90 else "")
         repolish(self.drive_usage_bar)
-        self.drive_stats_label.setText(f"Còn trống {format_size(u.free)} / {format_size(u.total)}")
+        self.drive_stats_label.setText(tr("Còn trống {free} / {total}", free=format_size(u.free), total=format_size(u.total)))
 
     def set_freeable(self, proposals, candidates, target_label: str) -> None:
         rows: list[TableRow] = []
         for p in proposals:
             rows.append(TableRow(
-                (p.app_name, "Dọn file cũ", format_size(p.reclaimable_bytes)),
-                [p.app_name, PathValue(p.target_paths[0] if p.target_paths else ""),
-                 format_size(p.total_physical_bytes), format_size(p.reclaimable_bytes), TagValue("Dọn file cũ")],
+                (tr(p.app_name), tr("Dọn file cũ"), format_size(p.reclaimable_bytes)),
+                [tr(p.app_name), PathValue(p.target_paths[0] if p.target_paths else ""),
+                 format_size(p.total_physical_bytes), format_size(p.reclaimable_bytes), TagValue(tr("Dọn file cũ"))],
                 p.reclaimable_bytes,
             ))
         for c in candidates:
             if c.advanced:
                 continue
-            action = f"Chuyển sang {target_label}"
+            action = tr("Chuyển sang {target}", target=target_label)
             rows.append(TableRow(
                 (c.name, action, format_size(c.size_bytes)),
                 [c.name, PathValue(c.source_path), format_size(c.size_bytes), format_size(c.size_bytes), TagValue(action)],

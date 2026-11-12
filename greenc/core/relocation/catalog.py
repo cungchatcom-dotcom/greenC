@@ -20,6 +20,7 @@ from greenc.core.relocation.tool_config import (
     subprocess_runner,
 )
 from greenc.core.relocation.zalo import ZaloGuidedStrategy
+from greenc.i18n import tr
 from greenc.models import RELOCATION_DONE
 from greenc.storage.database import GreenCDB
 
@@ -91,7 +92,7 @@ def discover_candidates(
             cands.append(RelocationCandidate(
                 kf.app_id, kf.name, str(current), size,
                 KnownFolderStrategy(kf, shell=shell, system_root=sys_root),
-                "Dùng tính năng Vị trí của Windows",
+                tr("Dùng tính năng Vị trí của Windows"),
             ))
 
     # 2. Developer tool caches
@@ -108,7 +109,7 @@ def discover_candidates(
         if size >= min_bytes:
             cands.append(RelocationCandidate(
                 st.app_id, st.name, str(cache), size, st,
-                f"Đổi cấu hình {st.exe_name}, xóa bộ đệm cũ",
+                tr("Đổi cấu hình {tool}, xóa bộ đệm cũ", tool=st.exe_name),
             ))
 
     # 3. Zalo (guided)
@@ -119,7 +120,7 @@ def discover_candidates(
         if size >= min_bytes:
             cands.append(RelocationCandidate(
                 "zalo", "Zalo", str(zalo_dir), size, zalo,
-                "Dùng tùy chọn lưu trữ của Zalo, có hướng dẫn từng bước",
+                tr("Dùng tùy chọn lưu trữ của Zalo, có hướng dẫn từng bước"),
             ))
 
     # 4. Curated junction apps
@@ -130,7 +131,7 @@ def discover_candidates(
             cands.append(RelocationCandidate(
                 "telegram", "Telegram Desktop", str(telegram), size,
                 JunctionStrategy(["Telegram.exe"]),
-                "Chuyển thư mục và tạo liên kết · Cần đóng Telegram",
+                tr("Chuyển thư mục và tạo liên kết · Cần đóng Telegram"),
             ))
 
     # 5. Advanced: other large app folders (junction, unchecked by default)
@@ -148,7 +149,7 @@ def discover_candidates(
                 cands.append(RelocationCandidate(
                     f"dir-{_slug(child.name)}", child.name, str(child), size,
                     JunctionStrategy([]),
-                    "Chuyển thư mục và tạo liên kết · Cần đóng ứng dụng đang dùng thư mục này",
+                    tr("Chuyển thư mục và tạo liên kết · Cần đóng ứng dụng đang dùng thư mục này"),
                     advanced=True,
                 ))
 

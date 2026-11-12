@@ -2,18 +2,20 @@ import os
 from pathlib import Path
 import psutil
 
+from greenc.i18n import N_
+
 
 REASON_LABELS = {
-    "MEDIA_CHAT": "Media & File đính kèm phát sinh khi chat (Zalo / DingTalk / Chat App)",
-    "EAPP_BUNDLE": "Gói Mini-App / EApp tải về & giải nén lưu cữu (DingTalk EAppFiles)",
-    "CACHE_TEMP": "Bộ nhớ đệm (Cache / Temp / Resource Cache / ShaderCache)",
-    "OLD_APP_VERSION": "Bản cài đặt phiên bản cũ bị bỏ lại sau khi tự cập nhật (Update Leftover)",
-    "CRASH_DUMP": "File đổ lỗi bộ nhớ (Crash Dump .dmp / WER)",
-    "LOG_GROWTH": "File nhật ký hệ thống / ứng dụng phình to (.log / .etl / .calf)",
-    "DB_STORAGE": "Cơ sở dữ liệu & Nhật ký giao dịch (.db / .wal / .sqlite)",
-    "CONTAINER_VM": "Ảnh đĩa ảo Container / Máy ảo (.vhdx / WSL / Docker)",
-    "MEDIA_DOWNLOAD": "Tập tin tải về / Bộ cài / Video dung lượng lớn",
-    "APP_DATA": "Dữ liệu phát sinh trong quá trình vận hành ứng dụng",
+    "MEDIA_CHAT": N_("Media & File đính kèm phát sinh khi chat (Zalo / DingTalk / Chat App)"),
+    "EAPP_BUNDLE": N_("Gói Mini-App / EApp tải về & giải nén lưu cữu (DingTalk EAppFiles)"),
+    "CACHE_TEMP": N_("Bộ nhớ đệm (Cache / Temp / Resource Cache / ShaderCache)"),
+    "OLD_APP_VERSION": N_("Bản cài đặt phiên bản cũ bị bỏ lại sau khi tự cập nhật (Update Leftover)"),
+    "CRASH_DUMP": N_("File đổ lỗi bộ nhớ (Crash Dump .dmp / WER)"),
+    "LOG_GROWTH": N_("File nhật ký hệ thống / ứng dụng phình to (.log / .etl / .calf)"),
+    "DB_STORAGE": N_("Cơ sở dữ liệu & Nhật ký giao dịch (.db / .wal / .sqlite)"),
+    "CONTAINER_VM": N_("Ảnh đĩa ảo Container / Máy ảo (.vhdx / WSL / Docker)"),
+    "MEDIA_DOWNLOAD": N_("Tập tin tải về / Bộ cài / Video dung lượng lớn"),
+    "APP_DATA": N_("Dữ liệu phát sinh trong quá trình vận hành ứng dụng"),
 }
 
 
@@ -184,7 +186,7 @@ class AttributionEngine:
                 "process_name": "Windows Temp / App Installer",
                 "pid": 0,
                 "service_name": "System/Temp",
-                "service_display_name": "Bộ nhớ tạm hệ thống & trình cài đặt",
+                "service_display_name": N_("Bộ nhớ tạm hệ thống & trình cài đặt"),
                 "reason_code": reason_code,
                 "reason_detail": reason_detail,
             }
@@ -200,7 +202,7 @@ class AttributionEngine:
                     "process_name": exe_guess,
                     "pid": pid,
                     "service_name": "",
-                    "service_display_name": f"Ứng dụng {app_folder}",
+                    "service_display_name": N_("Ứng dụng {app}").format(app=app_folder),
                     "reason_code": reason_code,
                     "reason_detail": reason_detail,
                 }
@@ -210,7 +212,7 @@ class AttributionEngine:
             "process_name": f"{top_folder} (User/App)",
             "pid": 0,
             "service_name": "",
-            "service_display_name": f"Thư mục {top_folder}",
+            "service_display_name": N_("Thư mục {folder}").format(folder=top_folder),
             "reason_code": reason_code,
             "reason_detail": reason_detail,
         }
