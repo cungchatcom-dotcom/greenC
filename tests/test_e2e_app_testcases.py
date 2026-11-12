@@ -57,10 +57,10 @@ def test_tc01_clean_ui_and_sidebar_navigation(tmp_path: Path):
     app.processEvents()
     assert win.stack.currentIndex() == 1
 
-    # Chuyển sang trang 2 (Cài đặt: Rules & Safe Vault)
+    # Chuyển sang trang 4 (Cài đặt)
     win.btn_nav_settings.click()
     app.processEvents()
-    assert win.stack.currentIndex() == 2
+    assert win.stack.currentIndex() == 4
 
     win.close()
     win.deleteLater()

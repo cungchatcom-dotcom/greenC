@@ -21,10 +21,10 @@ def test_main_window_initializes_and_runs_sandbox_flow(tmp_path: Path):
         sandbox_dir=sandbox_dir,
         auto_scan_on_init=False,
     )
-    assert win.windowTitle() == "DiskGuard"
+    assert win.windowTitle() == "Green C:\\"
 
-    # Verify navigation pages: 0=Overview, 1=Smart Cleanup, 2=Settings (Rules & Vault)
-    assert win.stack.count() == 3
+    # 0 Tổng quan, 1 Dọn dẹp, 2 Di chuyển dữ liệu, 3 Kho dự phòng, 4 Cài đặt
+    assert win.stack.count() == 5
 
     # Populate Smart Cleanup proposals & check 1-click "Dọn dẹp" button state
     sample_prop = AppAnalysisProposal(
