@@ -18,6 +18,13 @@ from diskguard.models import QuotaRule
 from diskguard.storage.database import DiskGuardDB
 
 
+def _is_reparse_point(path: str) -> bool:
+    try:
+        return bool(os.lstat(path).st_file_attributes & 0x400)  # FILE_ATTRIBUTE_REPARSE_POINT
+    except OSError:
+        return True
+
+
 @dataclass
 class AppAnalysisProposal:
     app_name: str
@@ -391,16 +398,22 @@ class SmartAppAnalyzer:
                 dp = Path(d_str)
                 if not dp.exists():
                     continue
-                for sub in dp.rglob("*"):
-                    if sub.is_dir() and sub.name.lower() in (
-                        "cache",
-                        "temp",
-                        "logs",
-                        "dumps",
-                        "resource_cache",
-                        "download",
-                    ):
-                        safe_subdirs.append(str(sub))
+                for walk_root, dirnames, _ in os.walk(dp):
+                    # Prune junctions/symlinks: a target behind one could be outside the app.
+                    dirnames[:] = [
+                        n for n in dirnames
+                        if not _is_reparse_point(os.path.join(walk_root, n))
+                    ]
+                    for n in dirnames:
+                        if n.lower() in (
+                            "cache",
+                            "temp",
+                            "logs",
+                            "dumps",
+                            "resource_cache",
+                            "download",
+                        ):
+                            safe_subdirs.append(os.path.join(walk_root, n))
             if safe_subdirs:
                 return (
                     True,
@@ -425,7 +438,7 @@ class SmartAppAnalyzer:
         ctrl = task_control or TaskControl()
         selected = [p for p in proposals if p.selected and p.probe_passed]
         if not selected:
-            return {"freed_bytes": 0, "archives_created": 0, "rules_saved": 0}
+            return {"freed_bytes": 0, "archives_created": 0, "rules_saved": 0, "errors": []}
 
         existing_by_name = {r.app_name: r for r in self.db.list_quota_rules()}
         enforcer = QuotaEnforcer(self.db, self.vault_dir)
@@ -433,6 +446,7 @@ class SmartAppAnalyzer:
         freed_bytes = 0
         archives_created = 0
         rules_saved = 0
+        errors: list[str] = []
         total = len(selected)
 
         for idx, prop in enumerate(selected, start=1):
@@ -462,19 +476,23 @@ class SmartAppAnalyzer:
             rule.id = self.db.save_quota_rule(rule)
             rules_saved += 1
 
-            arch = enforcer.enforce_rule(rule)
+            try:
+                arch = enforcer.enforce_rule(rule, should_stop=lambda: ctrl.is_stopped)
+            except Exception as err:  # noqa: BLE001 - keep cleaning the other apps
+                errors.append(f"{prop.app_name}: {err}")
+                continue
             if arch is not None:
                 freed_bytes += arch.original_bytes
                 archives_created += 1
 
-        ctrl.report(
-            100,
-            "Hoàn tất dọn dẹp và thiết lập Quy tắc tự động",
-            f"Đã thu hồi {freed_bytes / (1024*1024):.1f} MB từ {archives_created} ứng dụng và đưa {rules_saved} quy tắc vào Cài đặt > Quy tắc chạy ngầm.",
-        )
+        detail = f"Đã thu hồi {freed_bytes / (1024*1024):.1f} MB từ {archives_created} ứng dụng và đưa {rules_saved} quy tắc vào Cài đặt > Quy tắc chạy ngầm."
+        if errors:
+            detail += f" Lỗi ở {len(errors)} ứng dụng: " + "; ".join(errors)
+        ctrl.report(100, "Hoàn tất dọn dẹp và thiết lập Quy tắc tự động", detail)
         return {
             "freed_bytes": freed_bytes,
             "archives_created": archives_created,
             "rules_saved": rules_saved,
+            "errors": errors,
         }
 

@@ -77,6 +77,10 @@ class MainWindow(QMainWindow):
             self.db, self.vault_dir, self.sandbox_dir / "canary_probes"
         )
         self._active_worker: BackgroundTaskWorker | None = None
+        # Silent 45s cycle runs on its own QThread (never on the GUI thread) and yields to
+        # user-started tasks: they ask it to stop, then start as soon as it has finished.
+        self._silent_worker: BackgroundTaskWorker | None = None
+        self._pending_launch: tuple | None = None
 
         self.setWindowTitle("DiskGuard")
         self.resize(1280, 800)
@@ -433,6 +437,13 @@ class MainWindow(QMainWindow):
     ) -> None:
         if self._active_worker is not None and self._active_worker.isRunning():
             return
+        if self._silent_worker is not None:
+            self._pending_launch = (initial_title, fn, on_done)
+            self._silent_worker.control.stop()
+            self.progress_card.update_progress(
+                0, initial_title, "Đang chờ tác vụ chạy ngầm dừng an toàn..."
+            )
+            return
         worker = BackgroundTaskWorker(fn, self)
         self._active_worker = worker
         self.progress_card.attach_worker(worker, initial_title)
@@ -495,6 +506,8 @@ class MainWindow(QMainWindow):
                     f"Đã thu hồi an toàn {format_bytes(res['freed_bytes'])} "
                     f"(Lưu dự phòng 7 ngày trong Kho dự phòng và kích hoạt {res['rules_saved']} quy tắc chạy ngầm)"
                 )
+                if res.get("errors"):
+                    summary_msg += " — Lỗi: " + "; ".join(res["errors"])
                 self.progress_card.update_progress(
                     100,
                     "Hoàn tất dọn dẹp và thiết lập quy tắc chạy ngầm",
@@ -540,23 +553,66 @@ class MainWindow(QMainWindow):
     def _run_silent_background_cycle(self) -> None:
         if self._active_worker is not None and self._active_worker.isRunning():
             return
-        created = self.enforcer.enforce_all_rules()
-        safety = self.watchdog.run_safety_cycle()
-        if created or safety["auto_rolled_back"] or safety["purged"]:
+        if self._silent_worker is not None:
+            return  # previous cycle still running (e.g. archiving several GB)
+
+        enforcer, watchdog = self.enforcer, self.watchdog
+
+        def _work(ctrl: TaskControl) -> dict:
+            created = enforcer.enforce_all_rules(should_stop=lambda: ctrl.is_stopped)
+            errors = list(getattr(enforcer, "last_errors", []))
+            if ctrl.is_stopped:
+                return {"created": created, "safety": None, "errors": errors}
+            safety = watchdog.run_safety_cycle()
+            return {"created": created, "safety": safety, "errors": errors}
+
+        worker = BackgroundTaskWorker(_work, self)
+        self._silent_worker = worker
+        worker.taskFinished.connect(self._on_silent_cycle_finished)
+        worker.taskFailed.connect(self._on_silent_cycle_failed)
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
+    def _on_silent_cycle_finished(self, res: dict | None, _stopped: bool) -> None:
+        self._silent_worker = None
+        res = res or {}
+        safety = res.get("safety") or {}
+        if res.get("created") or safety.get("auto_rolled_back") or safety.get("purged"):
             self.settings_tab.refresh_all()
-            if safety["auto_rolled_back"] and self.tray_icon.isVisible():
-                self.tray_icon.showMessage(
-                    "DiskGuard — Tự động khôi phục dữ liệu",
-                    f"Đã tự động giải nén trả lại {len(safety['auto_rolled_back'])} gói dữ liệu cho ứng dụng.",
-                    QSystemTrayIcon.MessageIcon.Information,
-                    5000,
-                )
+        tray_ok = getattr(self, "tray_icon", None) is not None and self.tray_icon.isVisible()
+        if safety.get("auto_rolled_back") and tray_ok:
+            self.tray_icon.showMessage(
+                "DiskGuard — Tự động khôi phục dữ liệu",
+                f"Đã tự động giải nén trả lại {len(safety['auto_rolled_back'])} gói dữ liệu cho ứng dụng.",
+                QSystemTrayIcon.MessageIcon.Information,
+                5000,
+            )
+        if res.get("errors") and tray_ok:
+            self.tray_icon.showMessage(
+                "DiskGuard — Không thể dọn dẹp một số ứng dụng",
+                "; ".join(res["errors"])[:300],
+                QSystemTrayIcon.MessageIcon.Warning,
+                8000,
+            )
+        self._run_pending_launch()
+
+    def _on_silent_cycle_failed(self, _err_msg: str) -> None:
+        self._silent_worker = None
+        self._run_pending_launch()
+
+    def _run_pending_launch(self) -> None:
+        if self._pending_launch is not None:
+            pending, self._pending_launch = self._pending_launch, None
+            self._launch_background_worker(*pending)
 
     def closeEvent(self, event) -> None:  # noqa: N802
         self._bg_timer.stop()
-        if self._active_worker is not None and self._active_worker.isRunning():
-            self._active_worker.control.stop()
-            self._active_worker.wait(1500)
+        self._pending_launch = None
+        for worker in (self._active_worker, self._silent_worker):
+            if worker is not None and worker.isRunning():
+                worker.control.stop()
+                # stop is polled per file, so this returns once the current file is done
+                worker.wait(5000)
         if hasattr(self, "tray_icon") and self.tray_icon is not None:
             self.tray_icon.hide()
         super().closeEvent(event)

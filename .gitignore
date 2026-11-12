@@ -9,3 +9,5 @@ sandbox_demo/
 *.db-wal
 *.db-shm
 
+
+.superpowers/

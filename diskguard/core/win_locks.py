@@ -14,6 +14,7 @@ INVALID_HANDLE_VALUE = wintypes.HANDLE(-1).value
 ERROR_SHARING_VIOLATION = 32
 ERROR_LOCK_VIOLATION = 33
 ERROR_ACCESS_DENIED = 5
+_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 
 kernel32.CreateFileW.argtypes = [
     wintypes.LPCWSTR,
@@ -74,31 +75,64 @@ def compute_physical_usage(
     inode_sizes: dict[tuple[int, int], int] = {}
 
     seen_paths: set[str] = set()
-    for root_item in paths:
-        root_path = Path(root_item)
-        if not root_path.exists():
-            continue
-        if root_path.is_file():
-            candidates = [root_path]
-        else:
-            candidates = []
-            for dp, _, fns in os.walk(root_path):
-                for fn in fns:
-                    candidates.append(Path(dp) / fn)
 
-        for fp in candidates:
-            norm = os.path.normcase(os.path.abspath(str(fp)))
-            if norm in seen_paths:
-                continue
-            seen_paths.add(norm)
+    def _add(path_str: str) -> None:
+        nonlocal naive_bytes
+        # Paths are built from an absolute root, so normcase alone dedupes overlapping roots.
+        norm = os.path.normcase(path_str)
+        if norm in seen_paths:
+            return
+        seen_paths.add(norm)
+        try:
+            # Full stat (not DirEntry.stat): on Windows only this fills st_ino/st_dev,
+            # which HardLink deduplication needs.
+            st = os.stat(path_str, follow_symlinks=False)
+        except OSError:
+            return
+        naive_bytes += st.st_size
+        fp = Path(path_str)
+        key = (st.st_dev, st.st_ino) if st.st_ino != 0 else (id(fp), len(inode_map))
+        inode_map.setdefault(key, []).append(fp)
+        inode_sizes[key] = st.st_size
+
+    for root_item in paths:
+        root_str = os.path.abspath(str(root_item))
+        if os.path.isfile(root_str):
+            _add(root_str)
+            continue
+        if not os.path.isdir(root_str):
+            continue
+        # Iterative os.scandir walk: avoids os.walk's per-directory lists and a Path +
+        # abspath per file (~2x faster warm, much more on a cold cache).
+        stack = [root_str]
+        while stack:
+            current = stack.pop()
             try:
-                st = os.stat(fp, follow_symlinks=False)
+                it = os.scandir(current)
             except OSError:
                 continue
-            naive_bytes += st.st_size
-            key = (st.st_dev, st.st_ino) if st.st_ino != 0 else (id(fp), len(inode_map))
-            inode_map.setdefault(key, []).append(fp)
-            inode_sizes[key] = st.st_size
+            with it:
+                subdirs: list[str] = []
+                for entry in it:
+                    try:
+                        # Never follow nested reparse points (junctions, symlinks, OneDrive
+                        # placeholders): a junction inside an app folder can point at the
+                        # user's Documents, which would then be archived and deleted.
+                        # The root itself is followed — it was chosen explicitly.
+                        # DirEntry.stat(follow_symlinks=False) is cached on Windows: no syscall.
+                        attrs = entry.stat(follow_symlinks=False).st_file_attributes
+                        if attrs & _FILE_ATTRIBUTE_REPARSE_POINT:
+                            continue
+                        if entry.is_dir(follow_symlinks=False):
+                            subdirs.append(entry.path)
+                            continue
+                        if not entry.is_file(follow_symlinks=False):
+                            continue
+                    except OSError:
+                        continue
+                    _add(entry.path)
+            # Reverse so directories are visited in the same top-down order as os.walk.
+            stack.extend(reversed(subdirs))
 
     physical_bytes = sum(inode_sizes.values())
     return physical_bytes, naive_bytes, inode_map

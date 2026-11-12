@@ -61,7 +61,7 @@ def test_perf01_high_volume_hardlink_deduplication_throughput(tmp_path: Path):
 def test_perf02_bulk_quota_zip_and_rollback_throughput(tmp_path: Path):
     """
     PERF-02: Tạo 30 file cũ (~6 MB tổng dung lượng) vượt ngưỡng Quota.
-    Đo tốc độ nén vào Safe Vault (kèm kiểm tra khóa Win32 + SHA-256 + testzip)
+    Đo tốc độ nén vào Safe Vault (kèm kiểm tra khóa Win32 + SHA-256 + kiểm tra Central Directory)
     và tốc độ Rollback khôi phục toàn bộ file: tổng thời gian < 3.5 giây.
     """
     db = DiskGuardDB(tmp_path / "perf02.db")
