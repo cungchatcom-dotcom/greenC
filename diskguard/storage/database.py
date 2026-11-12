@@ -122,6 +122,11 @@ class DiskGuardDB:
 
                 CREATE INDEX IF NOT EXISTS idx_vault_files_path
                     ON vault_files(original_path);
+
+                CREATE TABLE IF NOT EXISTS app_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
                 """
             )
 
@@ -133,6 +138,21 @@ class DiskGuardDB:
         if len(d) == 2 and d.endswith(":"):
             return f"{d}\\"
         return d
+
+    def get_setting(self, key: str, default: str | None = None) -> str | None:
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT value FROM app_settings WHERE key = ?", (key,)
+            ).fetchone()
+        return row["value"] if row else default
+
+    def set_setting(self, key: str, value: str) -> None:
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "INSERT INTO app_settings(key, value) VALUES(?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, value),
+            )
 
     def upsert_daily_snapshot(
         self,
