@@ -21,6 +21,8 @@ from PySide6.QtWidgets import (
 
 from diskguard.ui.icons import icon
 
+_ITEM_PAD_X = 16  # left + right padding of QTableWidget::item in theme.QSS
+
 
 def icon_button(name: str, tooltip: str, checkable: bool = False) -> QToolButton:
     btn = QToolButton()
@@ -72,6 +74,7 @@ def make_table(headers: list[str], stretch_col: int, right_cols: tuple[int, ...]
     table.setVerticalScrollMode(QTableWidget.ScrollMode.ScrollPerPixel)
     header = table.horizontalHeader()
     header.setHighlightSections(False)
+    header.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
     for col in range(len(headers)):
         mode = QHeaderView.ResizeMode.Stretch if col == stretch_col else QHeaderView.ResizeMode.ResizeToContents
         header.setSectionResizeMode(col, mode)
@@ -84,9 +87,36 @@ def make_table(headers: list[str], stretch_col: int, right_cols: tuple[int, ...]
 
 def fit_table_height(table: QTableWidget, max_rows: int = 12) -> None:
     rows = min(table.rowCount(), max_rows)
-    header_h = table.horizontalHeader().height() if table.horizontalHeader().isVisible() else 0
+    header = table.horizontalHeader()
+    header_h = header.sizeHint().height() if not header.isHidden() else 0
     height = header_h + sum(table.rowHeight(r) for r in range(rows)) + 4
     table.setFixedHeight(max(height, header_h + 8))
+
+
+def fit_widget_columns(table: QTableWidget) -> None:
+    """ResizeToContents ignores cell widgets (buttons, tags): size those columns to fit them."""
+    header = table.horizontalHeader()
+    for col in range(table.columnCount()):
+        if header.sectionResizeMode(col) == QHeaderView.ResizeMode.Stretch:
+            continue
+        widths = []
+        for r in range(table.rowCount()):
+            w = table.cellWidget(r, col)
+            if w is None:
+                continue
+            # Polish first so stylesheet padding / bold fonts are part of the size hint.
+            w.ensurePolished()
+            for child in w.findChildren(QWidget):
+                child.ensurePolished()
+            if w.layout() is not None:
+                w.layout().activate()
+            widths.append(w.sizeHint().width())
+        if not widths:
+            continue
+        # Cell widgets are inset by the item padding (QTableWidget::item { padding: 4px 8px }).
+        need = max(max(widths) + _ITEM_PAD_X, header.sectionSizeHint(col), table.sizeHintForColumn(col))
+        header.setSectionResizeMode(col, QHeaderView.ResizeMode.Fixed)
+        table.setColumnWidth(col, need + 4)
 
 
 def open_in_explorer(path: str) -> bool:
@@ -261,6 +291,7 @@ class ExpandableTableCard(QFrame):
             set_cell(self.simple_table, r, 2, size, right=True)
             for c, value in enumerate(row.detail):
                 set_cell(self.detail_table, r, c, value, right=c in self._right_cols)
+        fit_widget_columns(self.detail_table)
         fit_table_height(self.simple_table)
         fit_table_height(self.detail_table)
 

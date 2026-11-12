@@ -20,7 +20,7 @@ from diskguard.config import APP_NAME, DEFAULT_RETENTION_DAYS, MAX_RETENTION_DAY
 from diskguard.core.drives import DriveInfo, data_root_for, drive_of, recommend_drive
 from diskguard.core.settings import AppSettings
 from diskguard.ui import format_size
-from diskguard.ui.theme import QSS, repolish
+from diskguard.ui.theme import apply_theme, repolish
 from diskguard.ui.widgets import muted_label, page_title
 
 
@@ -167,7 +167,7 @@ class FirstRunDialog(QDialog):
     ):
         super().__init__(parent)
         self.setWindowTitle(APP_NAME)
-        self.setStyleSheet(QSS)
+        apply_theme(self)
         self.setMinimumWidth(540)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)

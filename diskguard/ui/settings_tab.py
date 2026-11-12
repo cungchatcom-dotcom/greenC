@@ -31,6 +31,7 @@ from diskguard.ui.widgets import (
     PathCell,
     PathValue,
     TagValue,
+    fit_widget_columns,
     card_title,
     make_card,
     make_table,
@@ -199,6 +200,7 @@ class SettingsTab(QWidget):
             h.addWidget(btn_edit)
             h.addWidget(btn_del)
             self.rules_table.setCellWidget(row, 6, wrap)
+        fit_widget_columns(self.rules_table)
 
     def open_new_rule_dialog(
         self, app_name: str = "", process_name: str = "", service_name: str = "", paths: list[str] | None = None

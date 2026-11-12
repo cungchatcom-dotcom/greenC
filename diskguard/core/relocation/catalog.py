@@ -119,7 +119,7 @@ def discover_candidates(
         if size >= min_bytes:
             cands.append(RelocationCandidate(
                 "zalo", "Zalo", str(zalo_dir), size, zalo,
-                "Dùng tùy chọn lưu trữ của Zalo · Hướng dẫn từng bước, tự kiểm tra sau khi đổi",
+                "Dùng tùy chọn lưu trữ của Zalo, có hướng dẫn từng bước",
             ))
 
     # 4. Curated junction apps

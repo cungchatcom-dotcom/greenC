@@ -10,7 +10,7 @@ from diskguard.models import VaultArchive
 from diskguard.storage.database import DiskGuardDB
 from diskguard.ui import format_size
 from diskguard.ui.dialogs import ArchiveDetailsDialog
-from diskguard.ui.widgets import PathValue, TagValue, make_card, make_table, muted_label, page_title, set_cell
+from diskguard.ui.widgets import PathValue, TagValue, fit_widget_columns, make_card, make_table, muted_label, page_title, set_cell
 
 STATUS_TEXT = {"QUARANTINED": "Đang giữ", "ROLLED_BACK": "Đã khôi phục", "PURGED": "Đã xóa"}
 
@@ -66,6 +66,7 @@ class VaultPage(QWidget):
             set_cell(self.vault_table, row, 4, TagValue(STATUS_TEXT.get(arch.status, arch.status), tooltip=arch.status_reason))
             set_cell(self.vault_table, row, 5, PathValue(arch.zip_path))
             self.vault_table.setCellWidget(row, 6, self._actions(arch))
+        fit_widget_columns(self.vault_table)
 
     def _actions(self, arch: VaultArchive) -> QWidget:
         wrap = QWidget()

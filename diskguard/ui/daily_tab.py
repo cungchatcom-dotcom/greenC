@@ -7,7 +7,7 @@ from diskguard.models import DailySnapshot
 from diskguard.storage.database import DiskGuardDB
 from diskguard.ui import format_size
 from diskguard.ui.chart_widget import DailyBarChartWidget
-from diskguard.ui.widgets import PathValue, card_title, make_table, muted_label, set_cell
+from diskguard.ui.widgets import PathValue, card_title, fit_widget_columns, make_table, muted_label, set_cell
 
 
 class DailyMonitorTab(QWidget):
@@ -101,3 +101,4 @@ class DailyMonitorTab(QWidget):
             h.setContentsMargins(4, 2, 4, 2)
             h.addWidget(btn)
             self.actor_table.setCellWidget(row, 3, wrap)
+        fit_widget_columns(self.actor_table)

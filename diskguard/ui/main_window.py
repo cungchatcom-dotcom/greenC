@@ -1,4 +1,5 @@
 from pathlib import Path
+import shutil
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction
@@ -10,6 +11,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMenu,
+    QMessageBox,
     QPushButton,
     QStackedWidget,
     QSystemTrayIcon,
@@ -20,20 +22,28 @@ from PySide6.QtWidgets import (
 from diskguard.config import APP_NAME, AUTHOR, DEFAULT_DB_PATH, SANDBOX_DEMO_DIR, WEBSITE_LABEL, WEBSITE_URL
 from diskguard.core.app_profiles import discover_installed_heavy_apps
 from diskguard.core.disk_tracker import DiskTracker
+from diskguard.core.drives import is_on_system_drive, list_drives
 from diskguard.core.quota_enforcer import QuotaEnforcer
+from diskguard.core.relocation.catalog import discover_candidates
+from diskguard.core.relocation.fs_ops import RelocationError, RelocationStopped
+from diskguard.core.relocation.service import RelocationService
 from diskguard.core.safety_watchdog import SafetyWatchdog
 from diskguard.core.settings import AppSettings
 from diskguard.core.simulator import SandboxSimulator
 from diskguard.core.smart_analyzer import AppAnalysisProposal, SmartAppAnalyzer
+from diskguard.core.storage_migration import move_vault, remove_dir_if_empty
 from diskguard.core.task_controller import TaskControl
 from diskguard.models import QuotaRule
 from diskguard.storage.database import DiskGuardDB
 from diskguard.ui import format_size
+from diskguard.ui.data_location import FirstRunDialog
+from diskguard.ui.dialogs import GuidedDialog
 from diskguard.ui.icons import app_icon
 from diskguard.ui.overview_page import OverviewPage
+from diskguard.ui.relocation_page import RelocationPage
 from diskguard.ui.settings_tab import SettingsTab
 from diskguard.ui.smart_cleanup_tab import SmartCleanupTab
-from diskguard.ui.theme import QSS
+from diskguard.ui.theme import apply_theme
 from diskguard.ui.vault_page import VaultPage
 from diskguard.ui.workers import BackgroundTaskWorker, TaskProgressCard
 
@@ -60,6 +70,7 @@ class MainWindow(QMainWindow):
         self.watchdog = SafetyWatchdog(self.db)
         self.simulator = SandboxSimulator(self.db, self.sandbox_dir, self.vault_dir)
         self.analyzer = SmartAppAnalyzer(self.db, self.vault_dir, self.sandbox_dir / "canary_probes")
+        self.relocation_service = RelocationService(self.db, self.settings)
         self._active_worker: BackgroundTaskWorker | None = None
         # Silent 45s cycle runs on its own QThread (never on the GUI thread) and yields to
         # user-started tasks: they ask it to stop, then start as soon as it has finished.
@@ -71,7 +82,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(APP_NAME)
         self.setWindowIcon(app_icon())
         self.resize(1280, 820)
-        self.setStyleSheet(QSS)
+        apply_theme(self)
 
         central = QWidget(self)
         central.setObjectName("Content")
@@ -129,6 +140,7 @@ class MainWindow(QMainWindow):
         for page in (self.overview_page, self.cleanup_tab, self.relocation_page, self.vault_page, self.settings_tab):
             self.stack.addWidget(page)
         cl.addWidget(self.stack, 1)
+        self.stack.currentChanged.connect(lambda i: self.nav_group.button(i).setChecked(True))
 
         self.progress_card = TaskProgressCard(self)
         cl.addWidget(self.progress_card)
@@ -144,6 +156,12 @@ class MainWindow(QMainWindow):
         self.settings_tab.settingsDataChanged.connect(self._on_settings_changed)
         self.settings_tab.dataRootChangeRequested.connect(self._on_change_data_root)
         self.vault_page.dataChanged.connect(self.refresh_data_views)
+        self.relocation_page.relocateRequested.connect(self._on_relocate)
+        self.relocation_page.guideRequested.connect(self._on_guide)
+        self.relocation_page.undoRequested.connect(self._on_undo_relocation)
+        self.relocation_page.refreshRequested.connect(self.start_smart_app_analysis_async)
+        self._refresh_relocation_target()
+        self.relocation_page.set_records(self.relocation_service.records())
 
         self._setup_system_tray()
 
@@ -177,8 +195,27 @@ class MainWindow(QMainWindow):
         return btn
 
     def _build_relocation_page(self) -> QWidget:
-        # Replaced by RelocationPage in Task 13.
-        return QWidget()
+        return RelocationPage(self)
+
+    def _refresh_relocation_target(self) -> None:
+        root = self.settings.data_root
+        free = None
+        if root is not None:
+            try:
+                free = shutil.disk_usage(root.anchor).free
+            except OSError:
+                free = None
+        self.relocation_page.set_target(root, free)
+        if root is None:
+            self.relocation_page.set_disabled_reason(
+                "Chưa chọn ổ lưu dữ liệu. Chọn trong Cài đặt → Vị trí lưu dữ liệu."
+            )
+        elif is_on_system_drive(root):
+            self.relocation_page.set_disabled_reason(
+                "Ổ lưu dữ liệu đang là ổ C:. Chọn một ổ khác trong Cài đặt để chuyển dữ liệu ứng dụng."
+            )
+        else:
+            self.relocation_page.set_disabled_reason(None)
 
     def _setup_system_tray(self) -> None:
         self.tray_icon = QSystemTrayIcon(self)
@@ -210,8 +247,116 @@ class MainWindow(QMainWindow):
         vault_dir.mkdir(parents=True, exist_ok=True)
 
     def _on_change_data_root(self) -> None:
-        # Implemented in Task 13 (needs the drive dialog + Vault move worker).
-        pass
+        dlg = FirstRunDialog(
+            list_drives(), self.settings.data_root, self.settings.retention_days_default, self,
+            title="Đổi nơi lưu dữ liệu", allow_later=False,
+        )
+        if not dlg.exec():
+            return
+        new_root = dlg.chosen_root()
+        self.settings.set_retention_days_default(dlg.chosen_retention())
+        self.settings_tab.retention_spin.setValue(self.settings.retention_days_default)
+        if new_root is None or new_root == self.settings.data_root:
+            return
+        new_vault = new_root / "Vault"
+        old_vault = self.vault_dir
+
+        def _work(ctrl: TaskControl):
+            return move_vault(self.db, new_vault, ctrl)
+
+        def _done(res, stopped: bool):
+            res = res or {"moved": 0, "errors": []}
+            if res["errors"]:
+                QMessageBox.warning(self, "Chưa chuyển hết Kho dự phòng", "\n".join(res["errors"]))
+                return
+            self.settings.set_data_root(new_root)
+            self._apply_vault_dir(new_vault)
+            remove_dir_if_empty(old_vault)
+            self.refresh_data_views()
+            self._refresh_relocation_target()
+
+        self._launch_background_worker("Đang chuyển Kho dự phòng", _work, _done)
+
+    def _on_relocate(self, cand) -> None:
+        try:
+            check = self.relocation_service.check(cand)
+        except RelocationError as err:
+            QMessageBox.warning(self, "Chưa thể chuyển", str(err))
+            return
+        if not check.ok:
+            QMessageBox.warning(self, "Chưa thể chuyển", check.reason)
+            return
+        answer = QMessageBox.question(
+            self, f"Chuyển {cand.name}",
+            f"Chuyển {cand.name} ({format_size(cand.size_bytes)}) sang {self.settings.data_root}?\n\n"
+            "Dữ liệu được sao chép và kiểm tra trước, sau đó mới xóa ở ổ C:. Có thể hoàn tác.",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        def _work(ctrl: TaskControl):
+            try:
+                return {"record": self.relocation_service.apply(cand, ctrl)}
+            except RelocationStopped:
+                return {"error": "Đã dừng. Dữ liệu vẫn ở vị trí cũ."}
+            except RelocationError as err:
+                return {"error": str(err)}
+
+        def _done(res, stopped: bool):
+            res = res or {}
+            if res.get("error"):
+                QMessageBox.warning(self, f"Không chuyển được {cand.name}", res["error"])
+            elif res.get("record") is not None:
+                self._last_candidates = [c for c in self._last_candidates if c is not cand]
+                self.relocation_page.set_candidates(self._last_candidates)
+                self.overview_page.set_freeable(self._last_proposals, self._last_candidates, self._target_label())
+                self.progress_card.update_progress(100, f"Đã chuyển {cand.name}", res["record"].target_path)
+            self.relocation_page.set_records(self.relocation_service.records())
+            self.overview_page.update_drive_usage(self.drive_combo.currentText())
+            self._refresh_relocation_target()
+
+        self._launch_background_worker(f"Đang chuyển {cand.name}", _work, _done)
+
+    def _on_guide(self, cand) -> None:
+        try:
+            root = self.relocation_service.target_root()
+        except RelocationError as err:
+            QMessageBox.warning(self, "Chưa thể chuyển", str(err))
+            return
+        try:
+            (root / "Zalo").mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+        dlg = GuidedDialog(cand, root, self.relocation_service, self)
+        dlg.exec()
+        if dlg.record is not None:
+            self._last_candidates = [c for c in self._last_candidates if c is not cand]
+            self.relocation_page.set_candidates(self._last_candidates)
+            self.relocation_page.set_records(self.relocation_service.records())
+            self.overview_page.set_freeable(self._last_proposals, self._last_candidates, self._target_label())
+
+    def _on_undo_relocation(self, rec) -> None:
+        answer = QMessageBox.question(
+            self, f"Hoàn tác {rec.app_name}",
+            f"Trả {rec.app_name} về vị trí cũ trên ổ C: ({format_size(rec.size_bytes)})?",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        def _work(ctrl: TaskControl):
+            try:
+                self.relocation_service.undo(rec, ctrl)
+                return {}
+            except RelocationError as err:
+                return {"error": str(err)}
+
+        def _done(res, stopped: bool):
+            if (res or {}).get("error"):
+                QMessageBox.warning(self, f"Không hoàn tác được {rec.app_name}", res["error"])
+            self.relocation_page.set_records(self.relocation_service.records())
+            self.overview_page.update_drive_usage(self.drive_combo.currentText())
+
+        self._launch_background_worker(f"Đang hoàn tác {rec.app_name}", _work, _done)
 
     def _seed_default_silent_rules(self) -> None:
         """Register rules for Zalo, DingTalk and other detected heavy apps; they run in the background."""
@@ -284,11 +429,20 @@ class MainWindow(QMainWindow):
 
     def start_smart_app_analysis_async(self) -> None:
         def _work(ctrl: TaskControl):
-            return {"proposals": self.analyzer.scan_and_probe_apps(task_control=ctrl)}
+            proposals = self.analyzer.scan_and_probe_apps(task_control=ctrl)
+            candidates = []
+            if not ctrl.is_stopped:
+                ctrl.report(97, "Đang tìm dữ liệu có thể chuyển", "")
+                candidates = discover_candidates(self.db, should_stop=lambda: ctrl.is_stopped)
+            return {"proposals": proposals, "candidates": candidates}
 
         def _done(res, stopped: bool):
-            self._last_proposals = (res or {}).get("proposals", [])
+            res = res or {}
+            self._last_proposals = res.get("proposals", [])
+            self._last_candidates = res.get("candidates", [])
             self.cleanup_tab.set_proposals(self._last_proposals)
+            self.relocation_page.set_candidates(self._last_candidates)
+            self._refresh_relocation_target()
             self.overview_page.set_freeable(self._last_proposals, self._last_candidates, self._target_label())
 
         self._launch_background_worker("Đang phân tích ứng dụng", _work, _done)

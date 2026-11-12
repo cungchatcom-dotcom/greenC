@@ -6,6 +6,7 @@ from diskguard.ui import format_size
 from diskguard.ui.widgets import (
     PathValue,
     TagValue,
+    fit_widget_columns,
     card_title,
     make_card,
     make_table,
@@ -80,6 +81,7 @@ class SmartCleanupTab(QWidget):
             set_cell(self.table, row, 3, format_size(prop.total_physical_bytes), right=True)
             set_cell(self.table, row, 4, format_size(prop.reclaimable_bytes), right=True)
             set_cell(self.table, row, 5, TagValue(prop.probe_strategy, warning=not prop.probe_passed, tooltip=prop.probe_detail))
+        fit_widget_columns(self.table)
         self._refresh_summary()
 
     def _refresh_summary(self) -> None:

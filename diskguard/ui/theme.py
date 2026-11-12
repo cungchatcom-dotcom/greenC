@@ -1,3 +1,4 @@
+from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QWidget
 
 ACCENT = "#0067C0"
@@ -65,13 +66,23 @@ QFrame#DriveOption[selected="true"] {{ border: 2px solid {ACCENT}; background: #
 QFrame#StatusBar {{ background: {SURFACE}; border-top: 1px solid {BORDER}; }}
 QFrame#DialogFooter {{ background: #F7F7F7; border-top: 1px solid {BORDER}; }}
 QLabel#Toast {{ background: #1B1B1B; color: #FFFFFF; border-radius: 4px; padding: 6px 12px; }}
-QCheckBox::indicator {{ width: 16px; height: 16px; }}
+QTableWidget QPushButton {{ padding: 3px 10px; }}
 """
 
 
 def apply_theme(target) -> None:
-    """Apply the single app stylesheet to a QApplication or a top-level widget."""
+    """
+    Apply the single app stylesheet + palette to a QApplication or a top-level widget.
+    The palette overrides the Windows accent color (radio buttons, checkboxes, links)
+    so native controls match the app accent instead of the user's system color.
+    """
     target.setStyleSheet(QSS)
+    pal = target.palette()
+    for role in ("Highlight", "Accent", "Link"):
+        if hasattr(QPalette.ColorRole, role):
+            pal.setColor(getattr(QPalette.ColorRole, role), QColor(ACCENT))
+    pal.setColor(QPalette.ColorRole.LinkVisited, QColor(ACCENT))
+    target.setPalette(pal)
 
 
 def repolish(widget: QWidget) -> None:

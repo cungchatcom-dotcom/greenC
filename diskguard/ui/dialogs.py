@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -6,6 +8,8 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
+    QHBoxLayout,
+    QLabel,
     QLineEdit,
     QPushButton,
     QSpinBox,
@@ -15,10 +19,12 @@ from PySide6.QtWidgets import (
 )
 
 from diskguard.config import DEFAULT_PROTECTED_PATTERNS, DEFAULT_RETENTION_DAYS
+from diskguard.core.relocation.base import RelocationCandidate
+from diskguard.core.relocation.service import RelocationService
 from diskguard.models import FileManifestItem, QuotaRule, VaultArchive
 from diskguard.ui import format_size
-from diskguard.ui.theme import QSS
-from diskguard.ui.widgets import PathValue, make_table, muted_label, set_cell
+from diskguard.ui.theme import apply_theme
+from diskguard.ui.widgets import PathValue, make_table, muted_label, page_title, set_cell
 
 
 class QuotaRuleDialog(QDialog):
@@ -38,7 +44,7 @@ class QuotaRuleDialog(QDialog):
     ):
         super().__init__(parent)
         self.setWindowTitle("Quy tắc dung lượng")
-        self.setStyleSheet(QSS)
+        apply_theme(self)
         self.resize(580, 440)
         self._rule = rule
         layout = QVBoxLayout(self)
@@ -132,7 +138,7 @@ class ArchiveDetailsDialog(QDialog):
     def __init__(self, archive: VaultArchive, files: list[FileManifestItem], parent: QWidget | None = None):
         super().__init__(parent)
         self.setWindowTitle(f"Gói dự phòng · {archive.app_name}")
-        self.setStyleSheet(QSS)
+        apply_theme(self)
         self.resize(860, 460)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 18, 20, 14)
@@ -153,3 +159,60 @@ class ArchiveDetailsDialog(QDialog):
         close.button(QDialogButtonBox.StandardButton.Close).setText("Đóng")
         close.rejected.connect(self.reject)
         layout.addWidget(close)
+
+
+class GuidedDialog(QDialog):
+    """Step-by-step instructions for apps that move their own data (Zalo)."""
+
+    def __init__(self, cand: RelocationCandidate, target_root: Path, service: RelocationService, parent=None):
+        super().__init__(parent)
+        self.cand = cand
+        self.service = service
+        self.record = None
+        self.setWindowTitle(f"Chuyển dữ liệu {cand.name}")
+        apply_theme(self)
+        self.setMinimumWidth(520)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(22, 20, 22, 16)
+        lay.setSpacing(10)
+        lay.addWidget(page_title(f"Chuyển dữ liệu {cand.name}"))
+        lay.addWidget(muted_label(
+            f"{cand.name} tự chuyển dữ liệu của mình, Green C:\\ chỉ hướng dẫn và kiểm tra lại. "
+            f"Hiện đang dùng {format_size(cand.size_bytes)} trên ổ C:."
+        ))
+        steps = cand.strategy.steps(target_root)
+        self.steps_label = QLabel(
+            "<ol style='margin-left:-20px'>" + "".join(f"<li>{s}</li>" for s in steps) + "</ol>"
+        )
+        self.steps_label.setTextFormat(Qt.TextFormat.RichText)
+        self.steps_label.setWordWrap(True)
+        lay.addWidget(self.steps_label)
+        self.result_label = muted_label("")
+        lay.addWidget(self.result_label)
+        row = QHBoxLayout()
+        self.btn_open = QPushButton(f"Mở {cand.name}")
+        self.btn_open.clicked.connect(self._open)
+        self.btn_verify = QPushButton("Kiểm tra lại")
+        self.btn_verify.setObjectName("PrimaryButton")
+        self.btn_verify.clicked.connect(self._verify)
+        close = QPushButton("Đóng")
+        close.clicked.connect(self.reject)
+        row.addWidget(self.btn_open)
+        row.addStretch(1)
+        row.addWidget(close)
+        row.addWidget(self.btn_verify)
+        lay.addLayout(row)
+
+    def _open(self) -> None:
+        if not self.cand.strategy.open_app():
+            self.result_label.setText(f"Không tìm thấy {self.cand.name} trên máy. Hãy mở bằng tay.")
+
+    def _verify(self) -> None:
+        rec = self.service.complete_guided(self.cand)
+        if rec is None:
+            current = self.cand.strategy.data_dir()
+            self.result_label.setText(f"Chưa thấy thay đổi. Dữ liệu {self.cand.name} vẫn ở {current}.")
+            return
+        self.record = rec
+        self.result_label.setText(f"Đã chuyển xong. Dữ liệu mới ở {rec.target_path}.")
+        self.btn_verify.setEnabled(False)
