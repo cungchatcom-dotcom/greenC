@@ -63,12 +63,15 @@ def is_file_locked(path: str | Path) -> bool:
 
 def compute_physical_usage(
     paths: list[str | Path],
+    stats_out: dict | None = None,
 ) -> tuple[int, int, dict[tuple[int, int], list[Path]]]:
     """
     Walk the given directories/files and compute:
       1. physical_bytes: deduplicated by NTFS (st_dev, st_ino) so HardLinks are counted once
       2. naive_bytes: simple sum of st_size across all directory entries
       3. inode_map: mapping from (st_dev, st_ino) -> list of Path objects sharing that inode
+    stats_out: if given, filled with {inode key: stat_result of the group's first path}
+    so callers need not stat every file a second time.
     """
     naive_bytes = 0
     inode_map: dict[tuple[int, int], list[Path]] = {}
@@ -92,7 +95,10 @@ def compute_physical_usage(
         naive_bytes += st.st_size
         fp = Path(path_str)
         key = (st.st_dev, st.st_ino) if st.st_ino != 0 else (id(fp), len(inode_map))
-        inode_map.setdefault(key, []).append(fp)
+        group = inode_map.setdefault(key, [])
+        if not group and stats_out is not None:
+            stats_out[key] = st
+        group.append(fp)
         inode_sizes[key] = st.st_size
 
     for root_item in paths:

@@ -165,15 +165,16 @@ def test_no_vault_space_raises_clear_error_and_keeps_originals(tmp_path: Path, m
     assert list(vault.glob("*.zip")) == []
 
 
+@pytest.mark.parametrize("path_kind", ["prefetched", "streamed_stored", "streamed_deflate"])
 def test_disk_full_during_write_removes_partial_zip_and_keeps_originals(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, path_kind
 ):
     db = GreenCDB(tmp_path / "enospc.db")
     app_dir = tmp_path / "app"
     app_dir.mkdir()
     now = time.time()
     fp = app_dir / "old.dat"
-    fp.write_bytes(b"X" * MB)
+    fp.write_bytes(os.urandom(MB) if path_kind == "streamed_stored" else b"X" * MB)
     os.utime(fp, (now - 3600, now - 3600))
     rule = _rule(app_dir, max_bytes=1024)
     rule.id = db.save_quota_rule(rule)
@@ -190,7 +191,17 @@ def test_disk_full_during_write_removes_partial_zip_and_keeps_originals(
             handle.write = _write
         return handle
 
-    monkeypatch.setattr(qe_mod.zipfile.ZipFile, "open", _open_then_fail)
+    def _entry_fails(*_a, **_kw):
+        err = OSError(28, "No space left on device")
+        err.winerror = 112
+        raise err
+
+    if path_kind == "prefetched":
+        monkeypatch.setattr(qe_mod, "_write_prepared_entry", _entry_fails)
+    else:
+        monkeypatch.setattr(qe_mod, "_PREFETCH_MAX_FILE", 64 * 1024)
+        monkeypatch.setattr(qe_mod.zipfile.ZipFile, "open", _open_then_fail)
+        monkeypatch.setattr(qe_mod, "_end_raw_entry", _entry_fails)
     vault = tmp_path / "vault"
     with pytest.raises(InsufficientVaultSpaceError):
         QuotaEnforcer(db, vault).enforce_rule(rule, now_ts=now)

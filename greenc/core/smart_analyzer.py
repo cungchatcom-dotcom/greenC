@@ -11,12 +11,13 @@ import psutil
 
 from greenc.config import DEFAULT_PROTECTED_PATTERNS, SANDBOX_DEMO_DIR
 from greenc.core.app_profiles import discover_installed_heavy_apps
-from greenc.core.quota_enforcer import QuotaEnforcer
+from greenc.core.quota_enforcer import ArchiveProgress, QuotaEnforcer
 from greenc.core.task_controller import TaskControl
 from greenc.core.win_locks import compute_physical_usage, is_file_locked
 from greenc.i18n import N_, tr
 from greenc.models import QuotaRule
 from greenc.storage.database import GreenCDB
+from greenc.ui import format_size
 
 
 def _is_reparse_point(path: str) -> bool:
@@ -24,6 +25,79 @@ def _is_reparse_point(path: str) -> bool:
         return bool(os.lstat(path).st_file_attributes & 0x400)  # FILE_ATTRIBUTE_REPARSE_POINT
     except OSError:
         return True
+
+
+def format_eta(seconds: float) -> str:
+    """Language-neutral clock style: 0:45, 12:05, 1:02:10."""
+    secs = max(0, int(round(seconds)))
+    hours, rem = divmod(secs, 3600)
+    mins, secs = divmod(rem, 60)
+    return f"{hours}:{mins:02d}:{secs:02d}" if hours else f"{mins}:{secs:02d}"
+
+
+class _ArchiveProgressReporter:
+    """Turns ArchiveProgress events of one app into status-bar text with speed and ETA."""
+
+    _MIN_INTERVAL_S = 0.1
+    _ETA_WARMUP_S = 3.0
+
+    def __init__(self, ctrl: TaskControl, title: str, pct_lo: int, pct_hi: int):
+        self.ctrl = ctrl
+        self.title = title
+        self.pct_lo = pct_lo
+        self.pct_hi = pct_hi
+        self._phase = ""
+        self._last_emit = 0.0
+        self._compress_start = 0.0
+
+    def _pct(self, frac: float) -> int:
+        return self.pct_lo + int((self.pct_hi - self.pct_lo) * max(0.0, min(1.0, frac)))
+
+    def __call__(self, p: ArchiveProgress) -> None:
+        now = time.perf_counter()
+        phase_changed = p.phase != self._phase
+        if phase_changed:
+            self._phase = p.phase
+            if p.phase == "compress":
+                self._compress_start = now
+        elif now - self._last_emit < self._MIN_INTERVAL_S:
+            return
+        self._last_emit = now
+
+        if p.phase == "scan":
+            self.ctrl.report(self._pct(0.0), self.title, tr("Đang quét file…"))
+        elif p.phase == "select":
+            self.ctrl.report(
+                self._pct(0.05),
+                self.title,
+                tr("Đang kiểm tra file đang mở… {done}/{total}", done=p.done_files, total=p.total_files),
+            )
+        elif p.phase == "compress":
+            byte_frac = p.done_bytes / p.total_bytes if p.total_bytes else 0.0
+            file_frac = p.done_files / p.total_files if p.total_files else 0.0
+            # Small files cost a per-file open/scan, large ones cost bytes: blend both.
+            frac = 0.5 * byte_frac + 0.5 * file_frac
+            elapsed = now - self._compress_start
+            detail = tr(
+                "{done}/{total} file · {size_done} / {size_total}",
+                done=p.done_files,
+                total=p.total_files,
+                size_done=format_size(p.done_bytes),
+                size_total=format_size(p.total_bytes),
+            )
+            if elapsed > 0.5:
+                detail += f" · {format_size(p.done_bytes / elapsed)}/s"
+            if elapsed >= self._ETA_WARMUP_S and frac > 0.005:
+                detail += " · " + tr(
+                    "còn khoảng {eta}", eta=format_eta(elapsed * (1.0 - frac) / frac)
+                )
+            if p.current:
+                detail += f" · {p.current}"
+            self.ctrl.report(self._pct(0.1 + 0.85 * frac), self.title, detail)
+        elif p.phase == "finalize":
+            self.ctrl.report(
+                self._pct(0.95), self.title, tr("Đang kiểm tra gói nén và xóa file gốc…")
+            )
 
 
 @dataclass
@@ -460,12 +534,13 @@ class SmartAppAnalyzer:
 
         for idx, prop in enumerate(selected, start=1):
             pct = int(((idx - 1) / total) * 90) + 5
-            if not ctrl.report(
-                pct,
-                tr("Đang dọn {app} · {index}/{total}", app=tr(prop.app_name), index=idx, total=total),
-                tr("Nén file cũ vào Kho dự phòng."),
-            ):
+            pct_next = int((idx / total) * 90) + 5
+            title = tr(
+                "Đang dọn {app} · {index}/{total}", app=tr(prop.app_name), index=idx, total=total
+            )
+            if not ctrl.report(pct, title, tr("Nén file cũ vào Kho dự phòng.")):
                 break
+            reporter = _ArchiveProgressReporter(ctrl, title, pct, pct_next)
 
             existing = existing_by_name.get(prop.app_name)
             rule = QuotaRule(
@@ -486,7 +561,9 @@ class SmartAppAnalyzer:
             rules_saved += 1
 
             try:
-                arch = enforcer.enforce_rule(rule, should_stop=lambda: ctrl.is_stopped)
+                arch = enforcer.enforce_rule(
+                    rule, should_stop=lambda: ctrl.is_stopped, progress=reporter
+                )
             except Exception as err:  # noqa: BLE001 - keep cleaning the other apps
                 errors.append(f"{prop.app_name}: {err}")
                 continue

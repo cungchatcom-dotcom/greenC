@@ -88,16 +88,16 @@ def test_file_modified_during_archiving_is_not_deleted(tmp_path: Path, monkeypat
     changing = _old_file(app_dir / "a_chat.log", b"L" * MB, 60_000)
     stable = _old_file(app_dir / "b_media.bin", b"M" * MB, 50_000)
 
-    real_make = qe_mod._make_zipinfo
+    real_make = qe_mod._zipinfo_from_stat
 
-    def _make_and_touch(path, arcname):
-        zinfo = real_make(path, arcname)
-        if path.name == "a_chat.log":  # the app appends a line right as we start copying
-            with open(path, "ab") as fh:
+    def _make_and_touch(st, arcname, compress_type):
+        zinfo = real_make(st, arcname, compress_type)
+        if arcname.endswith("a_chat.log"):  # the app appends a line right as we copy it
+            with open(changing, "ab") as fh:
                 fh.write(b"new message\n")
         return zinfo
 
-    monkeypatch.setattr(qe_mod, "_make_zipinfo", _make_and_touch)
+    monkeypatch.setattr(qe_mod, "_zipinfo_from_stat", _make_and_touch)
 
     db = GreenCDB(tmp_path / "m.db")
     rule = _rule(app_dir)
