@@ -1,0 +1,7 @@
+{
+  "app_name": "GreenC",
+  "scan_title": "Quét ổ đĩa: {drive}",
+  "days_left": "Còn khoảng {days} ngày",
+  "size_reclaimed": "Đã giải phóng {size}",
+  "status_quarantined": "Đang theo dõi"
+}

@@ -1,0 +1,59 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg-canvas: #f3f3f3;
+  --bg-card: #ffffff;
+  --bg-subtle: #f9f9f9;
+  --border-subtle: rgba(0, 0, 0, 0.08);
+  --text-primary: #1f1f1f;
+  --text-secondary: #616161;
+  --text-disabled: #8d8d8d;
+  --accent: #107c41;
+  --accent-hover: #0e6d39;
+  --accent-subtle: #e8f5e9;
+  --danger: #c42b1c;
+  --warning: #9d5d00;
+}
+
+.dark {
+  --bg-canvas: #202020;
+  --bg-card: #2c2c2c;
+  --bg-subtle: #262626;
+  --border-subtle: rgba(255, 255, 255, 0.08);
+  --text-primary: #ffffff;
+  --text-secondary: #d1d1d1;
+  --text-disabled: #707070;
+  --accent: #22c55e;
+  --accent-hover: #16a34a;
+  --accent-subtle: rgba(34, 197, 94, 0.15);
+  --danger: #ff6f61;
+  --warning: #fbc02d;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--bg-canvas);
+  color: var(--text-primary);
+  font-family: 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
+  user-select: none;
+  overflow: hidden;
+}
+
+/* Tabular figures for size, rates, and counters */
+.tabular-numbers {
+  font-variant-numeric: tabular-nums;
+}
+
+/* RTL Layout properties & strict LTR isolation for Windows paths, hashes, and numeric spinboxes */
+[dir="rtl"] {
+  text-align: start;
+}
+
+.ltr-isolate,
+input[type="number"] {
+  direction: ltr;
+  unicode-bidi: isolate;
+}

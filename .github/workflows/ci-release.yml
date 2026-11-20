@@ -1,0 +1,98 @@
+name: GreenC v2 CI & Release Pipeline
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+jobs:
+  quality-gate:
+    name: Rust & UI Quality Gate
+    runs-on: windows-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.83.0
+          components: rustfmt, clippy
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache Cargo Dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup Node.js & pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - name: Install Frontend Dependencies
+        run: pnpm --dir ui install
+
+      - name: Build Frontend Assets
+        run: pnpm --dir ui run build
+
+      - name: Verify Rust Formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy Lints
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Verify Workspace Compilation
+        run: cargo check --workspace --all-targets
+
+      - name: Validate 50 Localization Catalogs
+        run: cargo run -p greenc-i18n -- check
+
+      - name: Run Workspace Tests
+        run: cargo test --workspace
+
+  release-packaging:
+    name: Build Installer Release
+    needs: quality-gate
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.83.0
+
+      - name: Setup Node.js & pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - name: Install Frontend Dependencies
+        run: pnpm --dir ui install
+
+      - name: Build Frontend Assets
+        run: pnpm --dir ui run build
+
+      - name: Build Desktop Application (Tauri v2)
+        run: cargo build --release -p greenc-app -p greenc-cli
+
+      - name: Stage Release Binaries
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist/GreenC | Out-Null
+          Copy-Item -Path target/release/greenc-app.exe -Destination dist/GreenC/GreenC.exe -Force
+          Copy-Item -Path target/release/greenc-cli.exe -Destination dist/GreenC/greenc-cli.exe -Force
+
+      - name: Compile Inno Setup Installer
+        uses: Minithra/innosetup-action@v1
+        with:
+          filepath: packaging/greenc.iss
+
+      - name: Upload Release Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: GreenC-Installer
+          path: dist/GreenC-Setup-*.exe

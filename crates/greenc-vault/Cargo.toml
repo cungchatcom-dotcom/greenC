@@ -1,0 +1,30 @@
+[package]
+name = "greenc-vault"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+greenc-core.workspace = true
+greenc-win32.workspace = true
+greenc-storage.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+zip.workspace = true
+zstd.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+greenc-i18n.workspace = true
+
+[[bench]]
+name = "archive_bench"
+harness = false
+
+[lints]
+workspace = true

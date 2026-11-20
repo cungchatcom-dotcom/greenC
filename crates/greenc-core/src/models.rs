@@ -1,0 +1,598 @@
+use chrono::{DateTime, NaiveDate, Utc};
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+
+// ==========================================
+// 1. Volume & Drive Models
+// ==========================================
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DriveInfo {
+    pub root: PathBuf,      // e.g. "C:\\" or "D:\\"
+    pub drive_letter: char, // 'C'
+    pub label: String,      // e.g. "Windows"
+    pub filesystem: String, // e.g. "NTFS"
+    pub total_bytes: u64,
+    pub free_bytes: u64,
+    pub is_system: bool,
+    pub is_eligible: bool,
+    pub ineligible_reason: Option<String>,
+}
+
+impl DriveInfo {
+    pub fn used_bytes(&self) -> u64 {
+        self.total_bytes.saturating_sub(self.free_bytes)
+    }
+
+    pub fn usage_ratio(&self) -> f64 {
+        if self.total_bytes == 0 {
+            0.0
+        } else {
+            self.used_bytes() as f64 / self.total_bytes as f64
+        }
+    }
+
+    pub fn is_critical(&self, threshold_ratio: f64) -> bool {
+        self.usage_ratio() >= threshold_ratio
+    }
+}
+
+// ==========================================
+// 2. Snapshot & Write Tracking Models
+// ==========================================
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DailySnapshot {
+    pub id: Option<i64>,
+    pub drive_letter: String,     // "C:\\"
+    pub snapshot_date: NaiveDate, // YYYY-MM-DD
+    pub total_bytes: u64,
+    pub used_bytes: u64,
+    pub free_bytes: u64,
+    pub net_change_bytes: i64, // Signed daily delta
+    pub reclaimed_bytes: u64,  // Bytes freed by GreenC
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum WriteReasonCode {
+    MediaChat,      // MEDIA_CHAT
+    EappBundle,     // EAPP_BUNDLE
+    CacheTemp,      // CACHE_TEMP
+    OldAppVersion,  // OLD_APP_VERSION
+    CrashDump,      // CRASH_DUMP
+    LogGrowth,      // LOG_GROWTH
+    DbStorage,      // DB_STORAGE
+    ContainerVm,    // CONTAINER_VM
+    MediaDownload,  // MEDIA_DOWNLOAD
+    AppData,        // APP_DATA
+    OrphanLeftover, // ORPHAN_LEFTOVER (new in v2)
+}
+
+impl WriteReasonCode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::MediaChat => "MEDIA_CHAT",
+            Self::EappBundle => "EAPP_BUNDLE",
+            Self::CacheTemp => "CACHE_TEMP",
+            Self::OldAppVersion => "OLD_APP_VERSION",
+            Self::CrashDump => "CRASH_DUMP",
+            Self::LogGrowth => "LOG_GROWTH",
+            Self::DbStorage => "DB_STORAGE",
+            Self::ContainerVm => "CONTAINER_VM",
+            Self::MediaDownload => "MEDIA_DOWNLOAD",
+            Self::AppData => "APP_DATA",
+            Self::OrphanLeftover => "ORPHAN_LEFTOVER",
+        }
+    }
+
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.trim().to_uppercase().as_str() {
+            "MEDIA_CHAT" => Self::MediaChat,
+            "EAPP_BUNDLE" => Self::EappBundle,
+            "CACHE_TEMP" => Self::CacheTemp,
+            "OLD_APP_VERSION" => Self::OldAppVersion,
+            "CRASH_DUMP" => Self::CrashDump,
+            "LOG_GROWTH" => Self::LogGrowth,
+            "DB_STORAGE" => Self::DbStorage,
+            "CONTAINER_VM" => Self::ContainerVm,
+            "MEDIA_DOWNLOAD" => Self::MediaDownload,
+            "APP_DATA" => Self::AppData,
+            "ORPHAN_LEFTOVER" => Self::OrphanLeftover,
+            _ => Self::CacheTemp,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WriteEvent {
+    pub id: Option<i64>,
+    pub event_date: String, // YYYY-MM-DD
+    pub timestamp: DateTime<Utc>,
+    pub drive_letter: String, // "C:\\"
+    pub folder_path: PathBuf,
+    pub file_path: PathBuf,
+    pub delta_bytes: i64,
+    pub process_name: String,
+    pub pid: u32,
+    pub service_name: String,
+    pub service_display_name: String,
+    pub reason_code: WriteReasonCode,
+    pub reason_detail: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FolderGrowthRow {
+    pub folder_path: PathBuf,
+    pub reason_code: String,
+    pub total_delta_bytes: i64,
+    pub file_count: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ActorWriteRow {
+    pub process_name: String,
+    pub service_name: String,
+    pub total_delta_bytes: i64,
+    pub event_count: u64,
+}
+
+// ==========================================
+// 3. Quota & Cleanup Candidate Models
+// ==========================================
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QuotaRule {
+    pub id: Option<i64>,
+    pub app_name: String,
+    pub process_name: String,
+    pub service_name: String,
+    pub target_paths: Vec<PathBuf>,
+    pub max_bytes: u64,
+    pub watermark_ratio: f64,      // default 0.85
+    pub retention_days: u32,       // 1..=90
+    pub min_file_age_seconds: u64, // default 60
+    pub exclude_patterns: Vec<String>,
+    pub protected_files: Vec<String>,
+    pub enabled: bool,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CleanCandidate {
+    pub path: PathBuf,
+    pub size_bytes: u64,
+    pub mtime: std::time::SystemTime,
+    pub is_locked: bool,
+    pub profile_id: String,
+    pub is_canary: bool,
+    pub is_orphan: bool,
+    pub hardlink_siblings: Vec<PathBuf>,
+}
+
+// ==========================================
+// 4. Canary Vault & Manifest Models
+// ==========================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum VaultStatus {
+    Quarantined,
+    RolledBack,
+    Purged,
+    /// The archive's ZIP is gone from every known Vault folder: it cannot be restored.
+    Missing,
+}
+
+impl VaultStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Quarantined => "QUARANTINED",
+            Self::RolledBack => "ROLLED_BACK",
+            Self::Purged => "PURGED",
+            Self::Missing => "MISSING",
+        }
+    }
+
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.trim().to_uppercase().as_str() {
+            "ROLLED_BACK" => Self::RolledBack,
+            "PURGED" => Self::Purged,
+            "MISSING" => Self::Missing,
+            _ => Self::Quarantined,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VaultArchive {
+    pub id: Option<i64>,
+    pub rule_id: i64, // 0 for ad-hoc 1-click cleanup
+    pub app_name: String,
+    pub zip_path: PathBuf,
+    pub manifest_path: PathBuf,
+    pub file_count: u64,
+    pub original_bytes: u64,
+    pub compressed_bytes: u64,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    pub status: VaultStatus,
+    pub status_reason: String,
+    pub resolved_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FileManifestItem {
+    pub id: Option<i64>,
+    pub archive_id: Option<i64>,
+    pub original_path: PathBuf,
+    pub rel_arcname: String, // item_00001_file.dat
+    pub size_bytes: u64,
+    pub sha256: String,
+    pub mtime: f64,
+    pub atime: f64,
+    pub hardlink_paths: Vec<PathBuf>,
+    pub restored_individually: bool,
+}
+
+pub type VaultFileItem = FileManifestItem;
+pub type VaultFileEntry = FileManifestItem;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VaultManifest {
+    pub archive_id: String,
+    pub created_at: DateTime<Utc>,
+    pub original_root: PathBuf,
+    pub files: Vec<FileManifestItem>,
+    pub total_size: u64,
+    pub compressed_size: u64,
+    pub sha256: String,
+}
+
+// ==========================================
+// 5. Relocation Models
+// ==========================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RelocationStrategyKind {
+    KnownFolder,
+    ToolConfig,
+    Guided,
+    Junction,
+}
+
+impl RelocationStrategyKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::KnownFolder => "known_folder",
+            Self::ToolConfig => "tool_config",
+            Self::Guided => "guided",
+            Self::Junction => "junction",
+        }
+    }
+
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.trim().to_lowercase().as_str() {
+            "known_folder" => Self::KnownFolder,
+            "tool_config" => Self::ToolConfig,
+            "guided" => Self::Guided,
+            _ => Self::Junction,
+        }
+    }
+}
+
+pub type RelocationStrategy = RelocationStrategyKind;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RelocationStatus {
+    Moving, // Atomic transition state
+    Done,
+    Failed,
+    Undone,
+}
+
+impl RelocationStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Moving => "moving",
+            Self::Done => "done",
+            Self::Failed => "failed",
+            Self::Undone => "undone",
+        }
+    }
+
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.trim().to_lowercase().as_str() {
+            "moving" => Self::Moving,
+            "failed" => Self::Failed,
+            "undone" => Self::Undone,
+            _ => Self::Done,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RelocationHealthStatus {
+    Healthy,
+    TargetOffline,
+    LinkBroken,
+}
+
+impl RelocationHealthStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Healthy => "healthy",
+            Self::TargetOffline => "target_offline",
+            Self::LinkBroken => "link_broken",
+        }
+    }
+
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.trim().to_lowercase().as_str() {
+            "target_offline" => Self::TargetOffline,
+            "link_broken" => Self::LinkBroken,
+            _ => Self::Healthy,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RelocationRecord {
+    pub id: Option<i64>,
+    pub app_id: String,
+    pub app_name: String,
+    pub strategy: RelocationStrategyKind,
+    pub source_path: PathBuf,
+    pub target_path: PathBuf,
+    pub size_bytes: u64,
+    pub status: RelocationStatus,
+    pub health_status: RelocationHealthStatus,
+    pub process_names: Vec<String>,
+    pub created_at: DateTime<Utc>,
+    pub detail: Option<String>,
+}
+
+// ==========================================
+// 6. In-Place Compaction Models
+// ==========================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompactionKind {
+    WofDirectory,
+    VhdxTrim,
+}
+
+impl CompactionKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::WofDirectory => "wof_directory",
+            Self::VhdxTrim => "vhdx_trim",
+        }
+    }
+
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.trim().to_lowercase().as_str() {
+            "vhdx_trim" => Self::VhdxTrim,
+            _ => Self::WofDirectory,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CompactionRecord {
+    pub id: Option<i64>,
+    pub target_path: PathBuf,
+    pub kind: CompactionKind,
+    pub algorithm: String, // XPRESS8K, XPRESS16K, LZNT1, VIRTDISK
+    pub logical_bytes: u64,
+    pub physical_before_bytes: u64,
+    pub physical_after_bytes: u64,
+    pub file_count: u64,
+    pub status: String, // "compacted", "decompressed"
+    pub updated_at: DateTime<Utc>,
+}
+
+// ==========================================
+// Drive Quota (per-volume capacity budget)
+// ==========================================
+
+/// Severity of a drive's usage relative to its configured [`DriveQuota`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QuotaLevel {
+    /// Usage is below the warning threshold.
+    Ok,
+    /// Usage reached the warning threshold: notify the user.
+    Warning,
+    /// Usage reached the clean threshold: auto-clean / auto-backup may run.
+    Critical,
+}
+
+impl QuotaLevel {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            QuotaLevel::Ok => "ok",
+            QuotaLevel::Warning => "warning",
+            QuotaLevel::Critical => "critical",
+        }
+    }
+}
+
+/// Capacity budget for a whole drive. It is the basis for warnings, automatic backup and
+/// automatic cleanup performed by the background guardian.
+///
+/// Thresholds are fractions of the *effective limit*: `limit_bytes` when set (and smaller than
+/// the drive), otherwise the drive's total capacity.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DriveQuota {
+    pub id: Option<i64>,
+    /// Drive root, e.g. `C:\`.
+    pub drive_root: String,
+    /// Budget in bytes. `0` means "use the whole drive capacity".
+    pub limit_bytes: u64,
+    /// Usage ratio at which a warning is raised (default 0.80).
+    pub warn_ratio: f64,
+    /// Usage ratio at which automatic actions start (default 0.90).
+    pub clean_ratio: f64,
+    /// Usage ratio automatic cleanup tries to get back under (default 0.85).
+    pub target_ratio: f64,
+    pub auto_clean: bool,
+    pub auto_backup: bool,
+    /// Folder that receives a copy of each new Vault archive when `auto_backup` is on.
+    pub backup_dir: Option<PathBuf>,
+    pub enabled: bool,
+    pub created_at: DateTime<Utc>,
+}
+
+pub const DEFAULT_DRIVE_WARN_RATIO: f64 = 0.80;
+pub const DEFAULT_DRIVE_CLEAN_RATIO: f64 = 0.90;
+pub const DEFAULT_DRIVE_TARGET_RATIO: f64 = 0.85;
+
+impl DriveQuota {
+    pub fn new(drive_root: impl Into<String>) -> Self {
+        Self {
+            id: None,
+            drive_root: drive_root.into(),
+            limit_bytes: 0,
+            warn_ratio: DEFAULT_DRIVE_WARN_RATIO,
+            clean_ratio: DEFAULT_DRIVE_CLEAN_RATIO,
+            target_ratio: DEFAULT_DRIVE_TARGET_RATIO,
+            auto_clean: false,
+            auto_backup: false,
+            backup_dir: None,
+            enabled: true,
+            created_at: Utc::now(),
+        }
+    }
+
+    /// Returns a copy with ratios clamped into a consistent order:
+    /// `0.10 <= target < clean <= 0.99` and `warn <= clean`.
+    pub fn normalized(mut self) -> Self {
+        self.clean_ratio = self.clean_ratio.clamp(0.20, 0.99);
+        self.warn_ratio = self.warn_ratio.clamp(0.10, self.clean_ratio);
+        self.target_ratio = self.target_ratio.clamp(0.10, self.clean_ratio - 0.01);
+        self
+    }
+
+    /// Budget in bytes for a drive of `total_bytes`.
+    pub fn effective_limit(&self, total_bytes: u64) -> u64 {
+        if self.limit_bytes == 0 || self.limit_bytes > total_bytes {
+            total_bytes
+        } else {
+            self.limit_bytes
+        }
+    }
+
+    /// Used bytes (`total - free`) as a share of the effective limit. May exceed `1.0`.
+    pub fn usage_ratio(&self, total_bytes: u64, free_bytes: u64) -> f64 {
+        let limit = self.effective_limit(total_bytes);
+        if limit == 0 {
+            return 0.0;
+        }
+        total_bytes.saturating_sub(free_bytes) as f64 / limit as f64
+    }
+
+    pub fn level(&self, total_bytes: u64, free_bytes: u64) -> QuotaLevel {
+        let ratio = self.usage_ratio(total_bytes, free_bytes);
+        if ratio >= self.clean_ratio {
+            QuotaLevel::Critical
+        } else if ratio >= self.warn_ratio {
+            QuotaLevel::Warning
+        } else {
+            QuotaLevel::Ok
+        }
+    }
+
+    /// Bytes that must be freed to get back to `target_ratio` (0 when already under it).
+    pub fn bytes_to_reclaim(&self, total_bytes: u64, free_bytes: u64) -> u64 {
+        let limit = self.effective_limit(total_bytes);
+        let used = total_bytes.saturating_sub(free_bytes);
+        let target = (limit as f64 * self.target_ratio) as u64;
+        used.saturating_sub(target)
+    }
+}
+
+/// Normalizes a user-supplied drive root to `X:\` (upper-case letter, trailing backslash).
+/// Returns `None` when the text is not a drive root such as `C`, `c:` or `C:\`.
+pub fn normalize_drive_root(input: &str) -> Option<String> {
+    let t = input.trim();
+    let mut chars = t.chars();
+    let letter = chars.next()?;
+    if !letter.is_ascii_alphabetic() {
+        return None;
+    }
+    let rest: String = chars.collect();
+    match rest.as_str() {
+        "" | ":" | ":\\" | ":/" => Some(format!("{}:\\", letter.to_ascii_uppercase())),
+        _ => None,
+    }
+}
+
+impl DriveQuota {
+    /// Checks the backup settings: a backup folder is required when `auto_backup` is on, and it must
+    /// not live on the drive being protected (it would consume the very space we try to free).
+    pub fn validate_backup(&self) -> std::result::Result<(), String> {
+        if !self.auto_backup {
+            return Ok(());
+        }
+        let dir = self
+            .backup_dir
+            .as_ref()
+            .ok_or_else(|| "Cần chọn thư mục sao lưu".to_string())?;
+        let key = |s: &str| s.chars().take(2).collect::<String>().to_ascii_uppercase();
+        if key(&dir.to_string_lossy()) == key(&self.drive_root) {
+            return Err("Thư mục sao lưu phải nằm trên ổ khác với ổ được bảo vệ".to_string());
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod drive_quota_tests {
+    use super::*;
+
+    const GB: u64 = 1024 * 1024 * 1024;
+
+    #[test]
+    fn levels_follow_thresholds() {
+        let q = DriveQuota::new("C:\\");
+        assert_eq!(q.level(100 * GB, 50 * GB), QuotaLevel::Ok); // 50%
+        assert_eq!(q.level(100 * GB, 20 * GB), QuotaLevel::Warning); // 80%
+        assert_eq!(q.level(100 * GB, 10 * GB), QuotaLevel::Critical); // 90%
+    }
+
+    #[test]
+    fn explicit_limit_is_the_budget() {
+        let mut q = DriveQuota::new("D:\\");
+        q.limit_bytes = 50 * GB;
+        // 40 GB used of a 50 GB budget on a 100 GB drive = 80%
+        assert_eq!(q.level(100 * GB, 60 * GB), QuotaLevel::Warning);
+        // a limit larger than the drive falls back to the drive size
+        q.limit_bytes = 500 * GB;
+        assert_eq!(q.effective_limit(100 * GB), 100 * GB);
+    }
+
+    #[test]
+    fn reclaim_targets_target_ratio() {
+        let q = DriveQuota::new("C:\\");
+        // 95 GB used, target 85% of 100 GB => reclaim 10 GB
+        assert_eq!(q.bytes_to_reclaim(100 * GB, 5 * GB), 10 * GB);
+        assert_eq!(q.bytes_to_reclaim(100 * GB, 50 * GB), 0);
+    }
+
+    #[test]
+    fn normalization_keeps_order_and_handles_zero_total() {
+        let mut q = DriveQuota::new("C:\\");
+        q.warn_ratio = 0.99;
+        q.clean_ratio = 0.50;
+        q.target_ratio = 0.95;
+        let q = q.normalized();
+        assert!(q.target_ratio < q.clean_ratio && q.warn_ratio <= q.clean_ratio);
+        assert_eq!(q.level(0, 0), QuotaLevel::Ok);
+    }
+}

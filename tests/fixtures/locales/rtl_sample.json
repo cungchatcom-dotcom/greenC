@@ -1,0 +1,6 @@
+{
+  "app_name": "GreenC",
+  "scan_title": "مسح محرك الأقراص: {drive}",
+  "days_left": "متبقي {days} يوم تقريبًا",
+  "is_rtl": true
+}

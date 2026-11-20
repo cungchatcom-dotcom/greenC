@@ -1,0 +1,27 @@
+[package]
+name = "greenc-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+greenc-core.workspace = true
+greenc-win32.workspace = true
+greenc-storage.workspace = true
+greenc-i18n.workspace = true
+greenc-scanner.workspace = true
+greenc-vault.workspace = true
+greenc-relocate.workspace = true
+clap.workspace = true
+tokio.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

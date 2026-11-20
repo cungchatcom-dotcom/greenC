@@ -8,6 +8,11 @@ Ghi thay đổi mới vào mục **Unreleased**. Khi phát hành, `scripts/versi
 ## [Unreleased]
 
 ### Thay đổi
+- **Viết lại toàn bộ bằng Rust + Tauri v2 + Svelte 5** (bản v2.0.0), thay thế hoàn toàn bản Python. Bản Python cũ nằm ở nhánh `python-legacy` (chỉ có trên máy, chưa đẩy lên remote).
+- Hạn mức dung lượng theo từng ổ đĩa làm căn cứ cảnh báo, sao lưu Vault và dọn dẹp tự động.
+- Tự sửa đường dẫn gói Vault khi thư mục Vault đã đổi chỗ; gói mất tệp ZIP được đánh dấu MISSING.
+- Hộp tiến trình dọn dẹp hiện "Đang chuẩn bị dọn dẹp…" 0/N ngay khi bấm, thay vì hiện trạng thái hoàn tất cũ của lần quét trước.
+- Sửa lỗi ứng dụng thoát ngay khi mở do thiếu Tokio reactor.
 - Nén vào Kho dự phòng nhanh hơn khoảng 4,5 lần trên bộ đệm npm (11.900 file, 1,4 GB: từ 448 giây xuống khoảng 100 giây): file nhỏ được đọc, hash và nén song song; file lớn được nén song song theo từng khối; dữ liệu đã nén sẵn (gzip, zip, ảnh…) được lưu thẳng, không nén lại; bỏ các lần stat và kiểm tra trùng lặp.
 - Thanh trạng thái khi dọn ứng dụng hiện từng giai đoạn, số file, dung lượng, tốc độ và thời gian còn lại.
 

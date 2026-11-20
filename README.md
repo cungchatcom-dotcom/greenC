@@ -1,61 +1,41 @@
-# Green C:\
+# GreenC v2 (Rust Edition)
 
-Green your C drive forever. Ứng dụng Windows giữ ổ C: luôn thoáng: dọn file cũ an toàn và chuyển dữ liệu ứng dụng sang ổ khác.
+**Green your C drive forever.** Thế hệ tiếp theo của **GreenC** được thiết kế và viết lại toàn bộ bằng **Rust** theo phương pháp **Spec-Driven Development** (GitHub Spec Kit).
 
 Tác giả: **Cùng Chat** · [cungchat.com](https://cungchat.com)
 
-![Green C:\](showcase/1.png)
+---
 
-## Tính năng
+## Tài liệu Đặc tả & Kế hoạch Kiến trúc (Spec Kit)
 
-- **Tổng quan:** dung lượng ổ đĩa, biến động theo ngày, danh sách ứng dụng có thể giải phóng (bấm icon con mắt để xem bảng chi tiết).
-- **Dọn dẹp:** nén file cũ không dùng tới vào Kho dự phòng (Vault) kèm SHA-256. Sau số ngày cài đặt (mặc định 7) gói nén tự xóa; trước đó có thể khôi phục. Tự bỏ qua file đang mở, file bị sửa trong lúc nén, junction.
-- **Chuyển dữ liệu:** chuyển thư mục Windows (Downloads, Documents…), bộ đệm npm/pip, hướng dẫn đổi thư mục dữ liệu Zalo, hoặc chuyển thư mục ứng dụng kèm junction. Có kiểm tra sau khi chép và hoàn tác.
-- **Ổ dữ liệu:** chọn ở lần chạy đầu hoặc trong Cài đặt; Vault và dữ liệu đã chuyển nằm trong `<ổ>\Green C`.
-- **50 ngôn ngữ:** chọn trong Cài đặt → Ngôn ngữ (mặc định theo ngôn ngữ Windows).
+Toàn bộ nguyên tắc bất biến, đặc tả tính năng (bao gồm đầy đủ tính năng hiện có + chiều sâu mở rộng), mô hình dữ liệu, hợp đồng giao tiếp và danh sách tác vụ triển khai nằm tại:
 
-## Cài đặt
+- **Hiến pháp dự án (Constitution)**: [`.specify/memory/constitution.md`](.specify/memory/constitution.md)
+- **Đặc tả tính năng toàn diện (Specification)**: [`specs/001-greenc-complete-platform/spec.md`](specs/001-greenc-complete-platform/spec.md)
+- **Checklist chất lượng đặc tả**: [`specs/001-greenc-complete-platform/checklists/requirements.md`](specs/001-greenc-complete-platform/checklists/requirements.md)
+- **Kế hoạch kiến trúc Rust (Implementation Plan)**: [`specs/001-greenc-complete-platform/plan.md`](specs/001-greenc-complete-platform/plan.md)
+- **Nghiên cứu kỹ thuật (Phase 0 Research)**: [`specs/001-greenc-complete-platform/research.md`](specs/001-greenc-complete-platform/research.md)
+- **Mô hình dữ liệu SQLite WAL v2 & Kiểu Rust**: [`specs/001-greenc-complete-platform/data-model.md`](specs/001-greenc-complete-platform/data-model.md)
+- **Hợp đồng Tauri IPC & CLI**: [`specs/001-greenc-complete-platform/contracts/`](specs/001-greenc-complete-platform/contracts/)
+- **Hướng dẫn khởi chạy & nghiệm thu**: [`specs/001-greenc-complete-platform/quickstart.md`](specs/001-greenc-complete-platform/quickstart.md)
+- **Danh sách tác vụ thực thi chi tiết (Tasks)**: [`specs/001-greenc-complete-platform/tasks.md`](specs/001-greenc-complete-platform/tasks.md)
 
-Tải `GreenC-Setup-<version>.exe` ở trang [Releases](https://github.com/cungchatcom-dotcom/greenC/releases) và chạy. Bộ cài cài cho người dùng hiện tại vào `%LOCALAPPDATA%\Programs\Green C`, không cần quyền Admin. Gỡ cài đặt không xóa dữ liệu trong `%LOCALAPPDATA%\Green C` và trên ổ dữ liệu.
+---
 
-## Phát triển
+## Cấu trúc Mã nguồn Dự kiến (`C:\DiskGuard`)
 
-Yêu cầu: Windows 10/11, [uv](https://docs.astral.sh/uv/).
+- `crates/greenc-core`: Kiểu miền cốt lõi, cấu hình `GreenC`, bộ điều phối tác vụ `TaskControl` (Pause/Resume/Stop) và phân loại lỗi.
+- `crates/greenc-win32`: Tầng bọc an toàn RAII cho Windows API (`CreateFileW` khóa độc quyền, Restart Manager, NTFS Junction `FSCTL_SET_REPARSE_POINT`, Known Folders, nén lạnh `WOF XPRESS`, thu gọn `.vhdx`, khóa đơn phiên bản `GreenCAppMutex`).
+- `crates/greenc-storage`: Lưu trữ SQLite WAL nhúng tĩnh (`rusqlite`), tự động nâng cấp lược đồ và di chuyển dữ liệu từ bản cũ (`DiskGuard`, `Green C`, `GreenC` Python v2.0).
+- `crates/greenc-i18n`: Danh mục 50 ngôn ngữ, hỗ trợ RTL và đổi ngôn ngữ trực tiếp không cần khởi động lại.
+- `crates/greenc-scanner`: Quét ổ đĩa đa luồng `rayon` + tăng tốc `USN/MFT`, khử trùng lặp `NTFS HardLink`, Space Lens Treemap, dự báo đầy ổ đĩa, hồ sơ ứng dụng và phát hiện dữ liệu mồ côi.
+- `crates/greenc-vault`: Đóng gói song song `ZIP64` (`STORED`/`DEFLATE`/`ZSTD`), Canary Probe 1 chu trình, khôi phục lẻ từng tệp và Safety Watchdog tự động Rollback.
+- `crates/greenc-relocate`: Di chuyển dữ liệu 4 chiến lược (Known Folders, 10+ bộ đệm công cụ Dev/AI, hướng dẫn Zalo/WSL2/Docker, liên kết thư mục chống sập nguồn) & nén lạnh tại chỗ.
+- `crates/greenc-cli`: Công cụ dòng lệnh chẩn đoán, tự động hóa và xuất/nhập cấu hình quy tắc (`--json`).
+- `crates/greenc-app` & `ui/`: Ứng dụng Desktop Tauri v2 + Svelte 5 chuẩn Windows 11 Fluent, giải phóng WebView2 khi thu xuống khay hệ thống (`< 15 MB RAM`).
 
-```powershell
-uv sync
-uv run python main.py      # hoặc run_greenc.bat
-uv run pytest -q
-```
+---
 
-Cấu trúc: `greenc/core` (quét, nén, chuyển dữ liệu), `greenc/storage` (SQLite), `greenc/ui` (PySide6), `greenc/i18n` (bản dịch), `packaging/` (PyInstaller + Inno Setup), `scripts/` (build, version, i18n).
+## Quy trình Triển khai với Antigravity & Spec Kit
 
-## Version và phát hành
-
-Version nằm duy nhất ở `greenc/__init__.py` (`__version__`), đồng bộ với `pyproject.toml`. Theo [SemVer](https://semver.org/lang/vi/): `patch` sửa lỗi, `minor` thêm tính năng, `major` thay đổi lớn.
-
-1. Ghi thay đổi vào mục `## [Unreleased]` trong [CHANGELOG.md](CHANGELOG.md).
-2. Tăng version, commit và gắn tag:
-   ```powershell
-   uv run python scripts/version.py bump minor --commit --tag
-   git push origin main --tags
-   ```
-3. GitHub Actions (`.github/workflows/release.yml`) build bộ cài và tạo Release kèm file `.exe` và `.sha256`.
-
-Build bộ cài trên máy (cần [Inno Setup 6](https://jrsoftware.org/isinfo.php): `winget install JRSoftware.InnoSetup`):
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\build.ps1   # -SkipTests để bỏ qua test
-# -> dist\GreenC-Setup-<version>.exe
-```
-
-## Dịch thuật
-
-Chuỗi giao diện viết bằng tiếng Việt và bọc trong `tr()` (`from greenc.i18n import tr`). Bản dịch ở `greenc/i18n/locales/<mã>.json`.
-
-```powershell
-uv run python scripts/i18n.py extract   # cập nhật greenc/i18n/messages.json sau khi sửa chữ
-uv run python scripts/i18n.py check     # liệt kê chuỗi thiếu dịch / sai biến {…}
-```
-
-Test `tests/test_i18n.py` sẽ báo lỗi nếu còn chuỗi chưa dịch ở bất kỳ ngôn ngữ nào.
+Dự án đã được cấu hình sẵn tích hợp Spec Kit cho Antigravity (`agy`). Để bắt đầu viết mã từng giai đoạn theo kế hoạch đã lập, sử dụng kỹ năng `/speckit-implement` dựa trên [`specs/001-greenc-complete-platform/tasks.md`](specs/001-greenc-complete-platform/tasks.md).

@@ -1,18 +1,22 @@
-.venv/
-__pycache__/
-*.py[cod]
-.pytest_cache/
-data/
-vault/
-sandbox_demo/
+# Rust build outputs
+/target/
+**/*.rs.bk
+
+# Frontend build & node dependencies
+/ui/node_modules/
+/ui/dist/
+/ui/.svelte-kit/
+
+# Packaging outputs
+/dist/
+/build/
+
+# Local runtime artifacts
 *.db
 *.db-wal
 *.db-shm
+.env
 
-
-.superpowers/
-
-# Build output
-build/
-dist/
-
+# Legacy data of the retired Python app and local runtime folders
+/data/
+/vault/

@@ -1,0 +1,117 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/greenc-core",
+    "crates/greenc-win32",
+    "crates/greenc-storage",
+    "crates/greenc-i18n",
+    "crates/greenc-scanner",
+    "crates/greenc-vault",
+    "crates/greenc-relocate",
+    "crates/greenc-cli",
+    "crates/greenc-app",
+]
+
+[workspace.package]
+version = "2.0.0"
+edition = "2021"
+authors = ["GreenC Team"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/cungchatcom-dotcom/greenC"
+rust-version = "1.83.0"
+
+[workspace.dependencies]
+# Internal Workspace Crates
+greenc-core = { path = "crates/greenc-core" }
+greenc-win32 = { path = "crates/greenc-win32" }
+greenc-storage = { path = "crates/greenc-storage" }
+greenc-i18n = { path = "crates/greenc-i18n" }
+greenc-scanner = { path = "crates/greenc-scanner" }
+greenc-vault = { path = "crates/greenc-vault" }
+greenc-relocate = { path = "crates/greenc-relocate" }
+
+# System & Win32 APIs
+windows = { version = "0.58.0", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_RestartManager",
+    "Win32_System_Services",
+    "Win32_UI_Shell",
+    "Win32_System_Threading",
+    "Win32_Security",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Power",
+    "Win32_System_IO",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_SystemServices",
+    "Win32_System_Ioctl",
+    "Win32_Storage_Vhd",
+    "Win32_System_Com",
+    "Win32_System_Registry",
+    "Win32_System_WindowsProgramming",
+    "Win32_System_Diagnostics_Debug",
+] }
+
+# Concurrency & Async
+tokio = { version = "1.40.0", features = ["rt-multi-thread", "macros", "sync", "time", "io-util", "fs", "signal"] }
+tokio-util = { version = "0.7.12" }
+rayon = "1.10.0"
+parking_lot = "0.12.3"
+
+# Storage, Serialization & Archiving
+rusqlite = { version = "0.32.1", features = ["bundled", "backup", "chrono"] }
+serde = { version = "1.0.210", features = ["derive"] }
+serde_json = "1.0.128"
+chrono = { version = "0.4.38", features = ["serde"] }
+zip = { version = "2.2.0", default-features = false, features = ["deflate", "zstd", "time"] }
+zstd = "0.13.2"
+sha2 = "0.10.8"
+uuid = { version = "1.10.0", features = ["v4"] }
+
+# CLI, App Shell & Diagnostics
+clap = { version = "4.5.20", features = ["derive", "cargo"] }
+thiserror = "2.0.3"
+tracing = "0.1.40"
+tauri = { version = "2.2.0", features = ["tray-icon"] }
+tauri-build = { version = "2.2.0" }
+tauri-plugin-autostart = "2.2.0"
+tauri-plugin-notification = "2.2.0"
+
+# Testing Utilities
+tempfile = "3.14.0"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "allow"
+unreachable_pub = "allow"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "allow", priority = -1 }
+nursery = { level = "allow", priority = -1 }
+# Pragmatic allowances for system programming
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+cast_possible_truncation = "allow"
+cast_precision_loss = "allow"
+cast_sign_loss = "allow"
+too_many_arguments = "allow"
+chunks_exact_to_as_chunks = "allow"
+manual_is_multiple_of = "allow"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.dev]
+opt-level = 0
+debug = true
+
+[profile.test]
+opt-level = 0
+debug = true
