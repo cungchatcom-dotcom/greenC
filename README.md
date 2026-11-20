@@ -31,27 +31,27 @@
 ### 1. Overview & Space Lens
 Monitor C: drive free space, daily growth rate, days remaining before full, and inspect the interactive **Space Lens** treemap to spot large folders immediately.
 
-![GreenC Overview](web/public/screenshots/dashboard.png)
+![GreenC Overview](web/public/screenshots/en/dashboard.png)
 
 ### 2. Smart Junk Cleanup
 Automatically detects reclaimable caches from Zalo PC, Chrome, Edge, and Windows Temp with real-time progress and Safety Vault backup enabled by default.
 
-![GreenC Cleanup](web/public/screenshots/cleanup.png)
+![GreenC Cleanup](web/public/screenshots/en/cleanup.png)
 
 ### 3. Safe Relocation to Drive D:
 Relocate Windows Known Folders and heavy app directories to drive D: seamlessly, with one-click undo and link health checks.
 
-![GreenC Relocate](web/public/screenshots/relocate.png)
+![GreenC Relocate](web/public/screenshots/en/relocate.png)
 
 ### 4. Canary Safety Vault (7-Day Backup)
 Inspect quarantined ZIP64 archives stored on your secondary drive and restore any file or full backup in one click.
 
-![GreenC Safety Vault](web/public/screenshots/vault.png)
+![GreenC Safety Vault](web/public/screenshots/en/vault.png)
 
 ### 5. Settings & Per-Drive Quotas
 Switch between **English** and **Vietnamese**, choose your backup drive and retention days, and configure per-drive storage limits.
 
-![GreenC Settings](web/public/screenshots/settings.png)
+![GreenC Settings](web/public/screenshots/en/settings.png)
 
 ---
 

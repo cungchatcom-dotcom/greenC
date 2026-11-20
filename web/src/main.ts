@@ -227,10 +227,10 @@ function render(): void {
               <span>v2.0</span>
             </div>
             <img
-              src="/screenshots/dashboard.png"
+              src="${esc(t.tour.tabs[0].image)}"
               alt="${esc(t.tour.tabs[0].alt)}"
               class="gc-shot js-zoom"
-              data-src="/screenshots/dashboard.png"
+              data-src="${esc(t.tour.tabs[0].image)}"
               data-alt="${esc(t.tour.tabs[0].alt)}"
             />
           </div>

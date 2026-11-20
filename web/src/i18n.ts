@@ -556,7 +556,7 @@ export const DICT: Record<Lang, TranslationDict> = {
           label: 'Overview',
           title: 'Spot what’s filling up drive C: in seconds',
           desc: 'See how much space is left, how fast it’s growing each day, and what can be cleared safely right now.',
-          image: '/screenshots/dashboard.png',
+          image: '/screenshots/en/dashboard.png',
           alt: 'GreenC Overview screen',
         },
         {
@@ -564,7 +564,7 @@ export const DICT: Record<Lang, TranslationDict> = {
           label: 'Cleanup',
           title: 'Deep-scan and clear junk automatically',
           desc: 'Finds hidden clutter from Zalo, browsers, and Windows — showing you exactly how much space you’ll get back.',
-          image: '/screenshots/cleanup.png',
+          image: '/screenshots/en/cleanup.png',
           alt: 'GreenC Cleanup screen',
         },
         {
@@ -572,7 +572,7 @@ export const DICT: Record<Lang, TranslationDict> = {
           label: 'Move to D:',
           title: 'Shift heavy folders to drive D: safely',
           desc: 'Move Downloads, Documents, Pictures, or Zalo files to drive D: in one click — and undo anytime you want.',
-          image: '/screenshots/relocate.png',
+          image: '/screenshots/en/relocate.png',
           alt: 'GreenC Move to D: screen',
         },
         {
@@ -580,7 +580,7 @@ export const DICT: Record<Lang, TranslationDict> = {
           label: 'Safety Vault',
           title: 'Compressed & kept safe for 7 days',
           desc: 'Nothing vanishes immediately. GreenC compresses cleaned files into your Safety Vault so you can restore anything in one click.',
-          image: '/screenshots/vault.png',
+          image: '/screenshots/en/vault.png',
           alt: 'GreenC 7-day Safety Vault screen',
         },
         {
@@ -588,7 +588,7 @@ export const DICT: Record<Lang, TranslationDict> = {
           label: 'Settings',
           title: 'Set your limit once, relax all year',
           desc: 'Pick your maximum C: drive limit, choose where to keep your Safety Vault, and let GreenC guard your drive daily.',
-          image: '/screenshots/settings.png',
+          image: '/screenshots/en/settings.png',
           alt: 'GreenC Settings screen',
         },
       ],
