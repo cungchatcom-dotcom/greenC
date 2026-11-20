@@ -1,3 +1,5 @@
+#![cfg_attr(unix, allow(unsafe_code))]
+
 use greenc_platform::handle::is_file_locked;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -25,7 +27,6 @@ fn test_exclusive_lock_detection() {
     {
         use std::os::unix::io::AsRawFd;
         // SAFETY: `open_file` owns a valid open file descriptor.
-        #[allow(unsafe_code)]
         let rc = unsafe { libc::flock(open_file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
         assert_eq!(rc, 0, "Failed to acquire flock for Unix lock probe test");
     }

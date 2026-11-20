@@ -177,7 +177,10 @@ fn list_drives_macos() -> Result<Vec<DriveInfo>> {
     }
 
     let capacity = (count as usize).saturating_add(4);
-    let mut entries: Vec<libc::statfs> = vec![unsafe { std::mem::zeroed() }; capacity];
+    // SAFETY: `libc::statfs` is a plain C struct safe to zero-initialize before `getfsstat`.
+    let mut entries: Vec<libc::statfs> = (0..capacity)
+        .map(|_| unsafe { std::mem::zeroed() })
+        .collect();
     let buf_size = (capacity * std::mem::size_of::<libc::statfs>()) as libc::c_int;
 
     // SAFETY: `entries` has capacity `buf_size` bytes for `getfsstat` to populate.
