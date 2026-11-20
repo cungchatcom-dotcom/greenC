@@ -31,27 +31,27 @@
 ### 1. Overview & Space Lens
 Monitor C: drive free space, daily growth rate, days remaining before full, and inspect the interactive **Space Lens** treemap to spot large folders immediately.
 
-![GreenC Overview](web/public/screenshots/en/dashboard.png)
+![GreenC Overview](docs/screenshots/en/dashboard.png)
 
 ### 2. Smart Junk Cleanup
 Automatically detects reclaimable caches from Zalo PC, Chrome, Edge, and Windows Temp with real-time progress and Safety Vault backup enabled by default.
 
-![GreenC Cleanup](web/public/screenshots/en/cleanup.png)
+![GreenC Cleanup](docs/screenshots/en/cleanup.png)
 
 ### 3. Safe Relocation to Drive D:
 Relocate Windows Known Folders and heavy app directories to drive D: seamlessly, with one-click undo and link health checks.
 
-![GreenC Relocate](web/public/screenshots/en/relocate.png)
+![GreenC Relocate](docs/screenshots/en/relocate.png)
 
 ### 4. Canary Safety Vault (7-Day Backup)
 Inspect quarantined ZIP64 archives stored on your secondary drive and restore any file or full backup in one click.
 
-![GreenC Safety Vault](web/public/screenshots/en/vault.png)
+![GreenC Safety Vault](docs/screenshots/en/vault.png)
 
 ### 5. Settings & Per-Drive Quotas
 Switch between **English** and **Vietnamese**, choose your backup drive and retention days, and configure per-drive storage limits.
 
-![GreenC Settings](web/public/screenshots/en/settings.png)
+![GreenC Settings](docs/screenshots/en/settings.png)
 
 ---
 
@@ -74,7 +74,6 @@ Switch between **English** and **Vietnamese**, choose your backup drive and rete
 | `crates/greenc-relocate` | Multi-strategy folder relocation (Known Folders, app configs, guided moves, NTFS junctions) & compaction |
 | `crates/greenc-cli` | Headless CLI for diagnostics, automation, and JSON config export/import |
 | `crates/greenc-app` & `ui/` | Tauri v2 + Svelte 5 desktop app with 45s `BackgroundGuardian` & low-RAM tray mode |
-| `web/` | Official landing page & CungChat Account gated download portal (`greenc.cungchat.com`) |
 
 ---
 
@@ -89,16 +88,10 @@ Get the free official Windows installer (`GreenC-Setup-2.0.0.exe`, 5.6 MB) at **
 Requirements: Windows 10/11 (64-bit), Rust `1.83+`, Node.js `20+`, pnpm `10+`.
 
 ```powershell
-# Desktop app
 pnpm --dir ui install
 cargo test --workspace
 pnpm --dir ui build
 cargo run -p greenc-app
-
-# Landing page (web/)
-npm --prefix web install
-npm --prefix web run build
-node web/server.mjs
 ```
 
 ---

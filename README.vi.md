@@ -31,27 +31,27 @@
 ### 1. Tổng quan & Bản đồ dung lượng (Space Lens)
 Theo dõi dung lượng trống ổ C, tốc độ tăng mỗi ngày, dự báo số ngày trước khi đầy và xem bản đồ **Space Lens** để biết ngay thư mục nào chiếm chỗ nhiều nhất.
 
-![Tổng quan GreenC](web/public/screenshots/dashboard.png)
+![Tổng quan GreenC](docs/screenshots/dashboard.png)
 
 ### 2. Dọn dẹp file rác thông minh
 Tự động quét file tạm từ Zalo PC, Chrome, Edge và Windows Temp kèm tiến trình trực tiếp và chế độ sao lưu vào Kho an toàn bật sẵn.
 
-![Dọn dẹp GreenC](web/public/screenshots/cleanup.png)
+![Dọn dẹp GreenC](docs/screenshots/cleanup.png)
 
 ### 3. Di chuyển dữ liệu sang ổ D an toàn
 Chuyển các thư mục Windows quen thuộc và thư mục ứng dụng nặng sang ổ D nhẹ nhàng, giữ nguyên cách mở file và hỗ trợ hoàn tác 1 chạm.
 
-![Di chuyển sang ổ D trên GreenC](web/public/screenshots/relocate.png)
+![Di chuyển sang ổ D trên GreenC](docs/screenshots/relocate.png)
 
 ### 4. Kho an toàn 7 ngày (Canary Safety Vault)
 Xem danh sách các gói ZIP64 đang lưu dự phòng trên ổ D và khôi phục lại bất kỳ file nào chỉ với 1 cú bấm.
 
-![Kho an toàn GreenC](web/public/screenshots/vault.png)
+![Kho an toàn GreenC](docs/screenshots/vault.png)
 
 ### 5. Cài đặt đơn giản & Hạn mức theo ổ đĩa
 Đổi ngôn ngữ **Tiếng Việt / English** trực tiếp, chọn ổ D lưu Kho dự phòng, chỉnh số ngày giữ bản lưu và đặt hạn mức cho từng ổ đĩa.
 
-![Cài đặt GreenC](web/public/screenshots/settings.png)
+![Cài đặt GreenC](docs/screenshots/settings.png)
 
 ---
 
@@ -74,7 +74,6 @@ Xem danh sách các gói ZIP64 đang lưu dự phòng trên ổ D và khôi ph�
 | `crates/greenc-relocate` | Chuyển dữ liệu đa chiến lược (Known Folders, cấu hình ứng dụng, hướng dẫn, NTFS Junction) & thu gọn tệp |
 | `crates/greenc-cli` | Công cụ dòng lệnh chẩn đoán, tự động hóa và xuất/nhập quy tắc JSON |
 | `crates/greenc-app` & `ui/` | Ứng dụng Desktop Tauri v2 + Svelte 5 tích hợp `BackgroundGuardian` (45 giây) & chế độ khay hệ thống tiết kiệm RAM |
-| `web/` | Trang giới thiệu chính thức & cổng tải xác thực tài khoản Cùng Chat (`greenc.cungchat.com`) |
 
 ---
 
@@ -89,16 +88,10 @@ Tải bộ cài đặt Windows chính thức miễn phí (`GreenC-Setup-2.0.0.ex
 Yêu cầu: Windows 10/11 (64-bit), Rust `1.83+`, Node.js `20+`, pnpm `10+`.
 
 ```powershell
-# Ứng dụng Desktop
 pnpm --dir ui install
 cargo test --workspace
 pnpm --dir ui build
 cargo run -p greenc-app
-
-# Trang Landing Page (web/)
-npm --prefix web install
-npm --prefix web run build
-node web/server.mjs
 ```
 
 ---
