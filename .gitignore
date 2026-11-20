@@ -20,3 +20,7 @@
 # Legacy data of the retired Python app and local runtime folders
 /data/
 /vault/
+
+# Archify local scratch & receipts
+/.archify/
+/docs/*.json
