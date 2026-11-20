@@ -20,10 +20,7 @@ fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) {
                 continue;
             }
             collect_files(&p, out);
-        } else if p
-            .extension()
-            .is_some_and(|e| e == "svelte" || e == "ts")
-        {
+        } else if p.extension().is_some_and(|e| e == "svelte" || e == "ts") {
             out.push(p);
         }
     }
@@ -65,7 +62,8 @@ fn extract_keys(src: &str) -> Vec<String> {
     while i + 2 < chars.len() {
         let is_t_call = chars[i] == 't'
             && chars[i + 1] == '('
-            && (i == 0 || !(chars[i - 1].is_alphanumeric() || chars[i - 1] == '_' || chars[i - 1] == '.'));
+            && (i == 0
+                || !(chars[i - 1].is_alphanumeric() || chars[i - 1] == '_' || chars[i - 1] == '.'));
         if is_t_call {
             let mut j = i + 2;
             while j < chars.len() && chars[j].is_whitespace() {
@@ -101,14 +99,26 @@ fn extractor_handles_quotes_escapes_and_templates() {
     let src = r#"t('Xin chào') t("Ổ {drive}") at('no') t(`a ${x}`) t(`plain`) { labelKey: 'Thu gọn' } t('It\'s') t('a\n\nb') t('{d}:\\')"#;
     assert_eq!(
         extract_keys(src),
-        vec!["Xin chào", "Ổ {drive}", "plain", "It's", "a\n\nb", "{d}:\\", "Thu gọn"]
+        vec![
+            "Xin chào",
+            "Ổ {drive}",
+            "plain",
+            "It's",
+            "a\n\nb",
+            "{d}:\\",
+            "Thu gọn"
+        ]
     );
 }
 
 #[test]
 fn every_ui_translation_key_exists_in_catalog() {
     let ui_src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ui/src");
-    assert!(ui_src.exists(), "UI sources not found at {}", ui_src.display());
+    assert!(
+        ui_src.exists(),
+        "UI sources not found at {}",
+        ui_src.display()
+    );
 
     let mut files = Vec::new();
     collect_files(&ui_src, &mut files);

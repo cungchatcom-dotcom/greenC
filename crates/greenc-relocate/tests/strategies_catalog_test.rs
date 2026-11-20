@@ -2,16 +2,16 @@
 //! Developer tool configurations, and Guided app profiles (Tasks T040, T043, T044, T045).
 
 use greenc_core::task::TaskControl;
+use greenc_platform::traits::{
+    MockFileLockProbe, MockProcessServiceProbe, MockShellFolderApi, MockVolumeApi, ShellFolderApi,
+};
+use greenc_platform::{FOLDERID_DOCUMENTS, FOLDERID_DOWNLOADS};
 use greenc_relocate::candidate::{CandidateQualificationEngine, CandidateScanner};
 use greenc_relocate::catalog::{
     get_app_catalog, get_tool_catalog, ADVANCED_SKIP_LIST, ADVANCED_THRESHOLD_BYTES,
 };
 use greenc_relocate::known_folders::KnownFolderService;
 use greenc_storage::db::GreenCDb;
-use greenc_win32::traits::{
-    MockFileLockProbe, MockProcessServiceProbe, MockShellFolderApi, MockVolumeApi, ShellFolderApi,
-};
-use greenc_win32::{FOLDERID_DOCUMENTS, FOLDERID_DOWNLOADS};
 use std::fs;
 use std::path::PathBuf;
 use tempfile::TempDir;

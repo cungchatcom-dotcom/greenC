@@ -17,7 +17,7 @@ use greenc_core::config::MIN_VAULT_RESERVE_BYTES;
 use greenc_core::error::{GreenCError, Result};
 use greenc_core::models::{CleanCandidate, FileManifestItem};
 use greenc_core::task::TaskControl;
-use greenc_win32::traits::Win32VolumeApi;
+use greenc_platform::traits::Win32VolumeApi;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs::File;
@@ -125,7 +125,7 @@ fn get_candidate_dedup_key(cand: &CleanCandidate) -> FileDedupKey {
     if let Ok(_meta) = std::fs::metadata(&cand.path) {
         #[cfg(windows)]
         {
-            if let Some(id) = greenc_win32::query_file_identity(&cand.path) {
+            if let Some(id) = greenc_platform::query_file_identity(&cand.path) {
                 if id.file_index != 0 {
                     return FileDedupKey::DeviceInode {
                         volume_serial: id.volume_serial,

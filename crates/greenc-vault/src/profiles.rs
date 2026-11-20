@@ -9,7 +9,7 @@
 use greenc_core::config::is_protected_filename;
 use greenc_core::models::CleanCandidate;
 use greenc_core::task::TaskControl;
-use greenc_win32::traits::FileLockProbe;
+use greenc_platform::traits::FileLockProbe;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
@@ -160,8 +160,23 @@ impl PresetProfiles {
         Self::all().into_iter().find(|p| p.id == id)
     }
 
-    /// Resolves target directory paths on disk for a given profile.
+    /// Resolves target directory paths on disk for a given profile (OS-aware: Windows, macOS, Linux).
     pub fn resolve_profile_paths(profile_id: &str) -> Vec<PathBuf> {
+        #[cfg(windows)]
+        let paths = Self::resolve_profile_paths_windows(profile_id);
+
+        #[cfg(target_os = "macos")]
+        let paths = Self::resolve_profile_paths_macos(profile_id);
+
+        #[cfg(all(unix, not(target_os = "macos")))]
+        let paths = Self::resolve_profile_paths_linux(profile_id);
+
+        // Return only paths that exist on disk (silently skips TCC/permission-denied paths)
+        paths.into_iter().filter(|p| p.exists()).collect()
+    }
+
+    #[cfg(windows)]
+    fn resolve_profile_paths_windows(profile_id: &str) -> Vec<PathBuf> {
         let local_app_data = std::env::var("LOCALAPPDATA").map(PathBuf::from).ok();
         let app_data = std::env::var("APPDATA").map(PathBuf::from).ok();
         let user_profile = std::env::var("USERPROFILE").map(PathBuf::from).ok();
@@ -244,8 +259,127 @@ impl PresetProfiles {
             _ => {}
         }
 
-        // Return only paths that exist on disk
-        paths.into_iter().filter(|p| p.exists()).collect()
+        paths
+    }
+
+    #[cfg(target_os = "macos")]
+    fn resolve_profile_paths_macos(profile_id: &str) -> Vec<PathBuf> {
+        let home = match std::env::var("HOME") {
+            Ok(h) => PathBuf::from(h),
+            Err(_) => return Vec::new(),
+        };
+        let lib = home.join("Library");
+        let caches = lib.join("Caches");
+        let app_support = lib.join("Application Support");
+        let mut paths = Vec::new();
+
+        match profile_id {
+            "windows_temp" => {
+                if let Ok(tmpdir) = std::env::var("TMPDIR") {
+                    if !tmpdir.trim().is_empty() {
+                        paths.push(PathBuf::from(tmpdir));
+                    }
+                }
+            }
+            "browser_cache" => {
+                paths.push(caches.join("Google/Chrome/Default/Cache"));
+                paths.push(caches.join("Google/Chrome/Default/Code Cache"));
+                paths.push(caches.join("Microsoft Edge/Default/Cache"));
+                paths.push(caches.join("BraveSoftware/Brave-Browser/Default/Cache"));
+                paths.push(caches.join("Firefox/Profiles"));
+                paths.push(caches.join("com.apple.Safari"));
+            }
+            "chat_media" => {
+                paths.push(app_support.join("ZaloData/Cache"));
+                paths.push(app_support.join("ZaloData/fileNoise"));
+                paths.push(app_support.join("discord/Cache"));
+                paths.push(app_support.join("discord/Code Cache"));
+                paths.push(app_support.join("Slack/Cache"));
+                paths.push(app_support.join("Slack/Code Cache"));
+            }
+            "crash_dumps" => {
+                paths.push(lib.join("Logs/DiagnosticReports"));
+            }
+            "package_managers" => {
+                paths.push(caches.join("Homebrew"));
+                paths.push(lib.join("Developer/Xcode/DerivedData"));
+                paths.push(home.join(".npm/_cacache"));
+                paths.push(caches.join("pip"));
+                paths.push(caches.join("uv"));
+                paths.push(caches.join("pnpm"));
+                paths.push(home.join(".cargo/registry/cache"));
+                paths.push(home.join(".gradle/caches"));
+            }
+            "app_logs" => {
+                paths.push(lib.join("Logs"));
+            }
+            "old_versions" => {
+                paths.push(lib.join("Developer/Xcode/iOS DeviceSupport"));
+                paths.push(home.join(".Trash"));
+            }
+            "orphan_radar" => {}
+            _ => {}
+        }
+
+        paths
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    fn resolve_profile_paths_linux(profile_id: &str) -> Vec<PathBuf> {
+        let home = match std::env::var("HOME") {
+            Ok(h) => PathBuf::from(h),
+            Err(_) => return Vec::new(),
+        };
+        let xdg_cache = std::env::var("XDG_CACHE_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| home.join(".cache"));
+        let xdg_config = std::env::var("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| home.join(".config"));
+        let xdg_data = std::env::var("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| home.join(".local/share"));
+        let mut paths = Vec::new();
+
+        match profile_id {
+            "windows_temp" => {
+                paths.push(xdg_cache.join("thumbnails"));
+            }
+            "browser_cache" => {
+                paths.push(xdg_cache.join("google-chrome/Default/Cache"));
+                paths.push(xdg_cache.join("google-chrome/Default/Code Cache"));
+                paths.push(xdg_cache.join("chromium/Default/Cache"));
+                paths.push(xdg_cache.join("BraveSoftware/Brave-Browser/Default/Cache"));
+                paths.push(xdg_cache.join("mozilla/firefox"));
+            }
+            "chat_media" => {
+                paths.push(xdg_config.join("discord/Cache"));
+                paths.push(xdg_config.join("discord/Code Cache"));
+                paths.push(xdg_config.join("Slack/Cache"));
+                paths.push(xdg_data.join("TelegramDesktop/tdata/user_data/cache"));
+            }
+            "crash_dumps" => {
+                paths.push(xdg_data.join("apport"));
+            }
+            "package_managers" => {
+                paths.push(home.join(".npm/_cacache"));
+                paths.push(xdg_cache.join("pip"));
+                paths.push(xdg_cache.join("uv"));
+                paths.push(xdg_data.join("pnpm/store"));
+                paths.push(home.join(".cargo/registry/cache"));
+                paths.push(home.join(".gradle/caches"));
+            }
+            "app_logs" => {
+                paths.push(home.join(".local/state"));
+            }
+            "old_versions" => {
+                paths.push(xdg_data.join("Trash/files"));
+            }
+            "orphan_radar" => {}
+            _ => {}
+        }
+
+        paths
     }
 
     /// Discovers candidate cleanup files for a specified profile.
@@ -325,6 +459,10 @@ impl PresetProfiles {
                 Ok(ft) => ft,
                 Err(_) => continue,
             };
+
+            if file_type.is_symlink() {
+                continue;
+            }
 
             if file_type.is_dir() {
                 Self::scan_directory_recursive(

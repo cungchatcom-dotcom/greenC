@@ -3,12 +3,12 @@
 use crate::state::{AppState, TaskProgressEvent};
 use greenc_core::config::{default_vault_dir, sandbox_demo_dir, MIN_VAULT_RESERVE_BYTES};
 use greenc_core::task::TaskControl;
+use greenc_platform::handle::NativeFileLockProbe;
+use greenc_platform::volume::NativeWin32VolumeApi;
 use greenc_vault::archiver::{ArchiveOptions, ArchiverPipeline};
 use greenc_vault::canary::CanaryVerifier;
 use greenc_vault::cleanup::{CleanupOptions, DeletionMethod, SafeCleaner};
 use greenc_vault::profiles::PresetProfiles;
-use greenc_win32::handle::NativeFileLockProbe;
-use greenc_win32::volume::NativeWin32VolumeApi;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;

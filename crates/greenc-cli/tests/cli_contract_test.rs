@@ -192,8 +192,19 @@ fn cli_quota_set_list_remove_and_validation() {
     // Set (drive letter is normalized to "C:\").
     let set = run_args(
         &[
-            "greenc", "quota", "set", "--drive", "c", "--warn", "75", "--clean", "88", "--target",
-            "80", "--auto-clean", "--json",
+            "greenc",
+            "quota",
+            "set",
+            "--drive",
+            "c",
+            "--warn",
+            "75",
+            "--clean",
+            "88",
+            "--target",
+            "80",
+            "--auto-clean",
+            "--json",
         ],
         &db_path,
     );
@@ -208,18 +219,31 @@ fn cli_quota_set_list_remove_and_validation() {
     assert!((rows[0]["warn_ratio"].as_f64().unwrap() - 0.75).abs() < 1e-9);
 
     // Same drive again updates instead of duplicating.
-    let again = run_args(&["greenc", "quota", "set", "--drive", "C:", "--json"], &db_path);
+    let again = run_args(
+        &["greenc", "quota", "set", "--drive", "C:", "--json"],
+        &db_path,
+    );
     assert_eq!(again.exit_code, EXIT_SUCCESS);
     let list = run_args(&["greenc", "quota", "list", "--json"], &db_path);
     let v: serde_json::Value = serde_json::from_str(&list.stdout).unwrap();
     assert_eq!(v["quotas"].as_array().unwrap().len(), 1);
 
     // Invalid drive and backup on the protected drive are refused.
-    let bad_drive = run_args(&["greenc", "quota", "set", "--drive", "C:/Users", "--json"], &db_path);
+    let bad_drive = run_args(
+        &["greenc", "quota", "set", "--drive", "C:/Users", "--json"],
+        &db_path,
+    );
     assert_eq!(bad_drive.exit_code, EXIT_PRECONDITION_BLOCKED);
     let same_drive = run_args(
         &[
-            "greenc", "quota", "set", "--drive", "C", "--auto-backup", "--backup-dir", "C:/bk",
+            "greenc",
+            "quota",
+            "set",
+            "--drive",
+            "C",
+            "--auto-backup",
+            "--backup-dir",
+            "C:/bk",
             "--json",
         ],
         &db_path,
@@ -227,8 +251,14 @@ fn cli_quota_set_list_remove_and_validation() {
     assert_eq!(same_drive.exit_code, EXIT_PRECONDITION_BLOCKED);
 
     // Remove, then removing again is an error.
-    let rm = run_args(&["greenc", "quota", "remove", "--drive", "C", "--json"], &db_path);
+    let rm = run_args(
+        &["greenc", "quota", "remove", "--drive", "C", "--json"],
+        &db_path,
+    );
     assert_eq!(rm.exit_code, EXIT_SUCCESS);
-    let rm2 = run_args(&["greenc", "quota", "remove", "--drive", "C", "--json"], &db_path);
+    let rm2 = run_args(
+        &["greenc", "quota", "remove", "--drive", "C", "--json"],
+        &db_path,
+    );
     assert_ne!(rm2.exit_code, EXIT_SUCCESS);
 }

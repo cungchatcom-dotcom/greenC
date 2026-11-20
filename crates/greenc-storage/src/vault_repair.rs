@@ -32,7 +32,11 @@ pub fn default_vault_search_dirs(db: &GreenCDb) -> Vec<PathBuf> {
     if let Ok(local) = std::env::var("LOCALAPPDATA") {
         dirs.push(PathBuf::from(&local).join("Green C").join("Vault"));
     }
-    for legacy in [r"C:\Green C\Vault", r"C:\GreenC\Vault", r"C:\DiskGuard\vault"] {
+    for legacy in [
+        r"C:\Green C\Vault",
+        r"C:\GreenC\Vault",
+        r"C:\DiskGuard\vault",
+    ] {
         dirs.push(PathBuf::from(legacy));
     }
     let mut seen = std::collections::HashSet::new();

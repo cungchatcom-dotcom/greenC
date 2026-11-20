@@ -3,9 +3,9 @@
 use greenc_core::error::GreenCError;
 use greenc_core::models::{CleanCandidate, DriveInfo};
 use greenc_core::task::TaskControl;
+use greenc_platform::traits::{MockFileLockProbe, MockVolumeApi};
 use greenc_vault::archiver::{ArchiveOptions, ArchiverPipeline};
 use greenc_vault::cleanup::{CleanupOptions, DeletionMethod, SafeCleaner};
-use greenc_win32::traits::{MockFileLockProbe, MockVolumeApi};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::Write;

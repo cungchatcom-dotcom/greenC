@@ -8,8 +8,8 @@
 use greenc_core::models::{CleanCandidate, DriveInfo};
 use greenc_core::task::TaskControl;
 use greenc_i18n::catalog::Catalog;
+use greenc_platform::traits::MockVolumeApi;
 use greenc_vault::archiver::{ArchiveOptions, ArchiverPipeline};
-use greenc_win32::traits::MockVolumeApi;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 use tempfile::tempdir;

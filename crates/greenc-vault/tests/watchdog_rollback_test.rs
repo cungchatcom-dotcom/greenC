@@ -2,10 +2,10 @@
 
 use chrono::Utc;
 use greenc_core::models::{VaultArchive, VaultFileItem, VaultStatus};
+use greenc_platform::traits::ProcessServiceProbe;
 use greenc_storage::db::GreenCDb;
 use greenc_vault::manifest::VaultManifest;
 use greenc_vault::rollback::{RestoreOptions, RollbackEngine};
-use greenc_win32::traits::ProcessServiceProbe;
 use std::fs::File;
 use std::io::Write;
 use tempfile::tempdir;
@@ -478,7 +478,9 @@ fn test_repeated_restores_get_unique_names_and_never_overwrite() {
     let file_id = db.get_vault_files(archive_id).unwrap()[0].id.unwrap();
 
     let engine = RollbackEngine::new(&db, RestoreOptions::default());
-    let first = engine.restore_files_selective(archive_id, &[file_id]).unwrap();
+    let first = engine
+        .restore_files_selective(archive_id, &[file_id])
+        .unwrap();
     // Pre-fill the first restored copy with a marker: a second restore must not clobber it.
     let first_path = first.restored_paths[0].clone();
     std::fs::write(&first_path, b"user edited the restored copy").unwrap();
@@ -508,9 +510,14 @@ fn test_full_rollback_skips_files_already_restored_individually() {
     let file_id = db.get_vault_files(archive_id).unwrap()[0].id.unwrap();
 
     let engine = RollbackEngine::new(&db, RestoreOptions::default());
-    engine.restore_files_selective(archive_id, &[file_id]).unwrap();
+    engine
+        .restore_files_selective(archive_id, &[file_id])
+        .unwrap();
     let full = engine.rollback_archive(archive_id, "full", false).unwrap();
-    assert_eq!(full.restored_count, 0, "already-restored file restored twice");
+    assert_eq!(
+        full.restored_count, 0,
+        "already-restored file restored twice"
+    );
 
     let copies = std::fs::read_dir(tmp.path().join("app_data"))
         .unwrap()

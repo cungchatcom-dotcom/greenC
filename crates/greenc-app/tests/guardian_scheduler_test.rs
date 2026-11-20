@@ -9,8 +9,8 @@ use greenc_app::guardian::{BackgroundGuardian, GuardianDeps};
 use greenc_app::state::AppState;
 use greenc_core::models::{DriveInfo, QuotaRule};
 use greenc_core::task::TaskControl;
-use greenc_win32::power_session::{MockPowerSessionApi, PowerSessionState};
-use greenc_win32::traits::{
+use greenc_platform::power_session::{MockPowerSessionApi, PowerSessionState};
+use greenc_platform::traits::{
     MockFileLockProbe, MockProcessServiceProbe, MockReparsePointApi, MockVolumeApi,
 };
 use std::path::PathBuf;
@@ -205,9 +205,8 @@ fn seed_drive_quota(
     dir: &std::path::Path,
     mutate: impl FnOnce(&mut greenc_core::models::DriveQuota),
 ) {
-    let mut q = greenc_core::models::DriveQuota::new(
-        dir.join("SysDrive").to_string_lossy().to_string(),
-    );
+    let mut q =
+        greenc_core::models::DriveQuota::new(dir.join("SysDrive").to_string_lossy().to_string());
     mutate(&mut q);
     state.db.save_drive_quota(&q).unwrap();
 }
@@ -230,7 +229,10 @@ async fn drive_quota_warns_once_then_stays_quiet_within_cooldown() {
         .any(|a| a.kind == "drive_quota" && a.severity == "warning"));
 
     let second = guardian.run_cycle().await.unwrap();
-    assert_eq!(second.drive_quota_warnings, 0, "cooldown must suppress repeats");
+    assert_eq!(
+        second.drive_quota_warnings, 0,
+        "cooldown must suppress repeats"
+    );
 }
 
 #[tokio::test]
@@ -342,9 +344,15 @@ fn enforce_drive_quota_moves_oldest_candidates_into_vault_and_flags_same_drive_b
     assert_eq!(out.bytes_freed, 3 * 4096);
     assert!(out.vault_zip.as_ref().is_some_and(|z| z.exists()));
     assert!(out.backed_up_to.is_none());
-    assert!(out.backup_problem.is_some(), "same-drive backup must be refused");
+    assert!(
+        out.backup_problem.is_some(),
+        "same-drive backup must be refused"
+    );
     for i in 0..3 {
-        assert!(!cache.join(format!("f{i}.bin")).exists(), "original removed after archiving");
+        assert!(
+            !cache.join(format!("f{i}.bin")).exists(),
+            "original removed after archiving"
+        );
     }
 }
 
@@ -357,13 +365,23 @@ fn backup_refuses_same_drive_and_copies_to_other_folder() {
     std::fs::write(dir.path().join("arch1.manifest.json"), b"{}").unwrap();
 
     // Same drive prefix as the protected root => refused.
-    let err = backup_vault_archive(&zip, std::path::Path::new("C:\\"), std::path::Path::new("C:/bk"))
-        .unwrap_err();
+    let err = backup_vault_archive(
+        &zip,
+        std::path::Path::new("C:\\"),
+        std::path::Path::new("C:/bk"),
+    )
+    .unwrap_err();
     assert!(err.contains("chính ổ"));
 
     // Different drive prefix => copied (protected root uses a letter the temp dir is not on).
     let dest_dir = dir.path().join("bk");
-    let tmp_letter = dir.path().to_string_lossy().chars().next().unwrap().to_ascii_uppercase();
+    let tmp_letter = dir
+        .path()
+        .to_string_lossy()
+        .chars()
+        .next()
+        .unwrap()
+        .to_ascii_uppercase();
     let other = if tmp_letter == 'Q' { "R:/" } else { "Q:/" };
     let dest = backup_vault_archive(&zip, std::path::Path::new(other), &dest_dir).unwrap();
     assert!(dest.exists());

@@ -8,8 +8,10 @@ use greenc_core::models::{
     RelocationHealthStatus, RelocationRecord, RelocationStatus, RelocationStrategyKind,
 };
 use greenc_core::task::TaskControl;
+use greenc_platform::traits::{
+    ProcessServiceProbe, ReparsePointApi, ShellFolderApi, Win32VolumeApi,
+};
 use greenc_storage::db::GreenCDb;
-use greenc_win32::traits::{ProcessServiceProbe, ReparsePointApi, ShellFolderApi, Win32VolumeApi};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -50,10 +52,9 @@ impl TransactionalMover {
         if !candidate.is_eligible {
             return Err(GreenCError::PreconditionBlocked {
                 operation: "relocate".to_string(),
-                reason: candidate
-                    .ineligible_reason
-                    .clone()
-                    .unwrap_or_else(|| format!("'{}' is not eligible for relocation", candidate.id)),
+                reason: candidate.ineligible_reason.clone().unwrap_or_else(|| {
+                    format!("'{}' is not eligible for relocation", candidate.id)
+                }),
             });
         }
         Ok(())
@@ -321,12 +322,12 @@ impl TransactionalMover {
                     .strip_prefix("known_folder_")
                     .unwrap_or(&record.app_id)
                 {
-                    "downloads" => greenc_win32::FOLDERID_DOWNLOADS,
-                    "documents" => greenc_win32::FOLDERID_DOCUMENTS,
-                    "pictures" => greenc_win32::FOLDERID_PICTURES,
-                    "videos" => greenc_win32::FOLDERID_VIDEOS,
-                    "music" => greenc_win32::FOLDERID_MUSIC,
-                    "desktop" => greenc_win32::FOLDERID_DESKTOP,
+                    "downloads" => greenc_platform::FOLDERID_DOWNLOADS,
+                    "documents" => greenc_platform::FOLDERID_DOCUMENTS,
+                    "pictures" => greenc_platform::FOLDERID_PICTURES,
+                    "videos" => greenc_platform::FOLDERID_VIDEOS,
+                    "music" => greenc_platform::FOLDERID_MUSIC,
+                    "desktop" => greenc_platform::FOLDERID_DESKTOP,
                     g => g,
                 };
 

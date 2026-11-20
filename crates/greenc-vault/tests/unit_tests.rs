@@ -192,6 +192,7 @@ fn test_preset_profiles_catalog() {
 }
 
 #[test]
+#[cfg(windows)]
 fn old_versions_profile_follows_windir_instead_of_hard_coded_c_drive() {
     let tmp = tempfile::tempdir().unwrap();
     let fake_windir = tmp.path().join("Windows");

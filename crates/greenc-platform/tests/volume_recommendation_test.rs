@@ -1,5 +1,5 @@
 use greenc_core::models::DriveInfo;
-use greenc_win32::volume::recommend_drive;
+use greenc_platform::volume::recommend_drive;
 use std::path::PathBuf;
 
 #[test]

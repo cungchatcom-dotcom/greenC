@@ -1,7 +1,7 @@
 //! Unit tests for fixed NTFS drive filtering, eligibility tagging, and recommendation fallback (Task T018).
 
 use greenc_core::models::DriveInfo;
-use greenc_win32::volume::{
+use greenc_platform::volume::{
     evaluate_drive_eligibility, get_system_drive_root, recommend_drive, recommend_drive_info,
     recommend_drive_letter, DRIVE_CDROM, DRIVE_FIXED, DRIVE_RAMDISK, DRIVE_REMOTE, DRIVE_REMOVABLE,
     DRIVE_UNKNOWN,
@@ -166,22 +166,29 @@ fn test_recovery_partition_rejected() {
 #[test]
 fn test_system_drive_root_formatting() {
     let sys_root = get_system_drive_root();
-    assert!(
-        sys_root.ends_with(":\\"),
-        "System drive root '{}' must end with ':\\'",
-        sys_root
-    );
-    assert_eq!(
-        sys_root.matches(':').count(),
-        1,
-        "System drive root '{}' must have exactly 1 colon (no double colons)",
-        sys_root
-    );
-    assert!(
-        !sys_root.contains("::"),
-        "System drive root '{}' must not contain '::'",
-        sys_root
-    );
+    #[cfg(windows)]
+    {
+        assert!(
+            sys_root.ends_with(":\\"),
+            "System drive root '{}' must end with ':\\'",
+            sys_root
+        );
+        assert_eq!(
+            sys_root.matches(':').count(),
+            1,
+            "System drive root '{}' must have exactly 1 colon (no double colons)",
+            sys_root
+        );
+        assert!(
+            !sys_root.contains("::"),
+            "System drive root '{}' must not contain '::'",
+            sys_root
+        );
+    }
+    #[cfg(unix)]
+    {
+        assert_eq!(sys_root, "/");
+    }
 }
 
 #[test]

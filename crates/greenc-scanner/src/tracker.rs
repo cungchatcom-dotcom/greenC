@@ -6,9 +6,9 @@ use chrono::{DateTime, Duration, Local, NaiveDate, Utc};
 use greenc_core::error::{GreenCError, Result};
 use greenc_core::models::{ActorWriteRow, DailySnapshot, FolderGrowthRow, WriteEvent};
 use greenc_core::task::TaskControl;
+use greenc_platform::traits::Win32VolumeApi;
+use greenc_platform::volume::NativeWin32VolumeApi;
 use greenc_storage::db::GreenCDb;
-use greenc_win32::traits::Win32VolumeApi;
-use greenc_win32::volume::NativeWin32VolumeApi;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -418,6 +418,12 @@ impl DiskTracker {
                     use std::os::windows::fs::MetadataExt;
                     const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
                     if (sym_meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT) != 0 {
+                        continue;
+                    }
+                }
+                #[cfg(not(windows))]
+                {
+                    if sym_meta.file_type().is_symlink() {
                         continue;
                     }
                 }

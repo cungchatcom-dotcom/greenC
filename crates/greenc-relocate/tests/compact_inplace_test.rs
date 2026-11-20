@@ -2,12 +2,12 @@
 //! decompression undo, and VHDX virtual disk trim (Tasks T049, T050, T051).
 
 use greenc_core::task::TaskControl;
+use greenc_platform::traits::{
+    MockCompactionApi, MockFileLockProbe, MockProcessServiceProbe, WofAlgorithm,
+};
 use greenc_relocate::compress::InPlaceCompactor;
 use greenc_relocate::vhdx::VhdxCompactor;
 use greenc_storage::db::GreenCDb;
-use greenc_win32::traits::{
-    MockCompactionApi, MockFileLockProbe, MockProcessServiceProbe, WofAlgorithm,
-};
 use std::fs;
 use tempfile::TempDir;
 

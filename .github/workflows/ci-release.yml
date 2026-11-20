@@ -9,18 +9,35 @@ on:
 
 jobs:
   quality-gate:
-    name: Rust & UI Quality Gate
-    runs-on: windows-latest
+    name: Rust & UI Quality Gate (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+
+      - name: Install Linux Tauri System Dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev \
+            libgtk-3-dev \
+            build-essential
 
       - name: Install Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.83.0
           components: rustfmt, clippy
-          targets: x86_64-pc-windows-msvc
 
       - name: Cache Cargo Dependencies
         uses: Swatinem/rust-cache@v2
@@ -51,8 +68,8 @@ jobs:
       - name: Run Workspace Tests
         run: cargo test --workspace
 
-  release-packaging:
-    name: Build Installer Release
+  release-windows:
+    name: Build Windows Installer Release
     needs: quality-gate
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: windows-latest
@@ -64,6 +81,9 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.83.0
+
+      - name: Cache Cargo Dependencies
+        uses: Swatinem/rust-cache@v2
 
       - name: Setup Node.js & pnpm
         uses: pnpm/action-setup@v3
@@ -91,8 +111,106 @@ jobs:
         with:
           filepath: packaging/greenc.iss
 
-      - name: Upload Release Artifacts
+      - name: Upload Windows Release Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: GreenC-Installer
+          name: GreenC-Windows-Installer
           path: dist/GreenC-Setup-*.exe
+
+  release-macos:
+    name: Build macOS DMG Release (Ad-Hoc Signed)
+    needs: quality-gate
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: macos-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.83.0
+
+      - name: Cache Cargo Dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup Node.js & pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - name: Install Frontend Dependencies
+        run: pnpm --dir ui install
+
+      - name: Build Frontend Assets
+        run: pnpm --dir ui run build
+
+      - name: Build macOS CLI Binary
+        run: cargo build --release -p greenc-cli
+
+      - name: Build macOS DMG Bundle (Tauri v2)
+        run: pnpm dlx @tauri-apps/cli@2 build --config crates/greenc-app/tauri.conf.json --bundles dmg
+
+      - name: Upload macOS Release Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: GreenC-macOS-DMG
+          path: |
+            target/release/bundle/dmg/*.dmg
+            target/release/greenc-cli
+
+  release-linux:
+    name: Build Linux DEB & AppImage Release
+    needs: quality-gate
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux Tauri System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev \
+            libgtk-3-dev \
+            build-essential
+
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.83.0
+
+      - name: Cache Cargo Dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup Node.js & pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - name: Install Frontend Dependencies
+        run: pnpm --dir ui install
+
+      - name: Build Frontend Assets
+        run: pnpm --dir ui run build
+
+      - name: Build Linux CLI Binary
+        run: cargo build --release -p greenc-cli
+
+      - name: Build Linux DEB & AppImage Bundles (Tauri v2)
+        run: pnpm dlx @tauri-apps/cli@2 build --config crates/greenc-app/tauri.conf.json --bundles deb,appimage
+
+      - name: Upload Linux Release Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: GreenC-Linux-Packages
+          path: |
+            target/release/bundle/deb/*.deb
+            target/release/bundle/appimage/*.AppImage
+            target/release/greenc-cli

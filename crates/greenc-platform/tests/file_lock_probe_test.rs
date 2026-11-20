@@ -1,4 +1,4 @@
-use greenc_win32::handle::is_file_locked;
+use greenc_platform::handle::is_file_locked;
 use std::fs::OpenOptions;
 use std::io::Write;
 use tempfile::NamedTempFile;
@@ -18,14 +18,23 @@ fn test_exclusive_lock_detection() {
 
     assert!(!is_file_locked(&file_path));
 
-    // Open file with exclusive handle
-    let _open_file = OpenOptions::new().write(true).open(&file_path).unwrap();
+    // Open file and hold OS-appropriate exclusive lock
+    let open_file = OpenOptions::new().write(true).open(&file_path).unwrap();
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        // SAFETY: `open_file` owns a valid open file descriptor.
+        #[allow(unsafe_code)]
+        let rc = unsafe { libc::flock(open_file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        assert_eq!(rc, 0, "Failed to acquire flock for Unix lock probe test");
+    }
 
     // Now is_file_locked must report true
     assert!(is_file_locked(&file_path));
 
     // Close handle by dropping it
-    drop(_open_file);
+    drop(open_file);
 
     // Now unlocked
     assert!(!is_file_locked(&file_path));

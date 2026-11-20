@@ -3,8 +3,8 @@
 use crate::state::AppState;
 use chrono::Utc;
 use greenc_core::models::{DriveQuota, QuotaLevel};
-use greenc_win32::traits::Win32VolumeApi;
-use greenc_win32::volume::NativeWin32VolumeApi;
+use greenc_platform::traits::Win32VolumeApi;
+use greenc_platform::volume::NativeWin32VolumeApi;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tauri::State;
@@ -167,7 +167,7 @@ pub async fn delete_drive_quota(
 mod tests {
     use super::*;
     use greenc_core::models::DriveInfo;
-    use greenc_win32::traits::MockVolumeApi;
+    use greenc_platform::traits::MockVolumeApi;
 
     fn input(root: &str) -> DriveQuotaInputDto {
         DriveQuotaInputDto {
@@ -203,7 +203,10 @@ mod tests {
         assert!(build_quota(&bad).is_err(), "backup needs a folder");
 
         bad.backup_dir = Some("C:\\bk".to_string());
-        assert!(build_quota(&bad).is_err(), "backup on the protected drive is refused");
+        assert!(
+            build_quota(&bad).is_err(),
+            "backup on the protected drive is refused"
+        );
 
         bad.backup_dir = Some("D:\\bk".to_string());
         let q = build_quota(&bad).unwrap();

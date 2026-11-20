@@ -6,17 +6,16 @@ use greenc_core::models::{
     RelocationHealthStatus, RelocationRecord, RelocationStatus, RelocationStrategyKind,
 };
 use greenc_core::task::TaskControl;
-use greenc_relocate::candidate::{CandidateQualificationEngine, RelocationCandidate};
+use greenc_platform::traits::{
+    MockProcessServiceProbe, MockReparsePointApi, MockShellFolderApi, MockVolumeApi,
+    ReparsePointApi,
+};
+use greenc_relocate::candidate::RelocationCandidate;
 use greenc_relocate::mover::{MoveOptions, TransactionalMover};
 use greenc_relocate::recovery::RecoveryService;
 use greenc_storage::db::GreenCDb;
-use greenc_win32::traits::{
-    MockFileLockProbe, MockProcessServiceProbe, MockReparsePointApi, MockShellFolderApi,
-    MockVolumeApi, ReparsePointApi,
-};
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::path::PathBuf;
 use tempfile::TempDir;
 
 fn setup_test_env() -> (
@@ -633,7 +632,11 @@ fn test_relocate_junction_refuses_known_folders_guided_and_ineligible_candidates
     let (tmp, db, vol_api, reparse_api, proc_probe, shell_api) = setup_test_env();
 
     let cases = [
-        (RelocationStrategyKind::KnownFolder, true, "known_folder_desktop"),
+        (
+            RelocationStrategyKind::KnownFolder,
+            true,
+            "known_folder_desktop",
+        ),
         (RelocationStrategyKind::Guided, true, "wsl2"),
         (RelocationStrategyKind::Junction, false, "telegram"),
     ];
@@ -677,7 +680,10 @@ fn test_relocate_junction_refuses_known_folders_guided_and_ineligible_candidates
         .expect_err(&format!("{id} must be refused"));
 
         assert!(
-            matches!(err, greenc_core::error::GreenCError::PreconditionBlocked { .. }),
+            matches!(
+                err,
+                greenc_core::error::GreenCError::PreconditionBlocked { .. }
+            ),
             "{id}: expected PreconditionBlocked, got {err:?}"
         );
         assert!(src_dir.join("keep.bin").exists(), "{id}: source untouched");
@@ -691,7 +697,10 @@ fn test_relocate_junction_refuses_known_folders_guided_and_ineligible_candidates
 /// relocated with the same reversible junction transaction as app data.
 #[test]
 fn test_preflight_allows_junction_and_tool_config_strategies() {
-    for strategy in [RelocationStrategyKind::Junction, RelocationStrategyKind::ToolConfig] {
+    for strategy in [
+        RelocationStrategyKind::Junction,
+        RelocationStrategyKind::ToolConfig,
+    ] {
         let candidate = RelocationCandidate {
             id: "x".to_string(),
             name: "x".to_string(),

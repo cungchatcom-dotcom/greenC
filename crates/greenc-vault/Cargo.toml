@@ -3,11 +3,11 @@ name = "greenc-vault"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
-license.workspace = true
+license-file.workspace = true
 
 [dependencies]
 greenc-core.workspace = true
-greenc-win32.workspace = true
+greenc-platform.workspace = true
 greenc-storage.workspace = true
 serde.workspace = true
 serde_json.workspace = true

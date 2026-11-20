@@ -1613,11 +1613,11 @@ dependencies = [
  "chrono",
  "greenc-core",
  "greenc-i18n",
+ "greenc-platform",
  "greenc-relocate",
  "greenc-scanner",
  "greenc-storage",
  "greenc-vault",
- "greenc-win32",
  "parking_lot",
  "serde",
  "serde_json",
@@ -1639,11 +1639,11 @@ dependencies = [
  "clap",
  "greenc-core",
  "greenc-i18n",
+ "greenc-platform",
  "greenc-relocate",
  "greenc-scanner",
  "greenc-storage",
  "greenc-vault",
- "greenc-win32",
  "serde",
  "serde_json",
  "tempfile",
@@ -1674,13 +1674,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "greenc-platform"
+version = "2.0.0"
+dependencies = [
+ "greenc-core",
+ "libc",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.21",
+ "windows 0.58.0",
+]
+
+[[package]]
 name = "greenc-relocate"
 version = "2.0.0"
 dependencies = [
  "chrono",
  "greenc-core",
+ "greenc-platform",
  "greenc-storage",
- "greenc-win32",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -1696,8 +1708,8 @@ version = "2.0.0"
 dependencies = [
  "chrono",
  "greenc-core",
+ "greenc-platform",
  "greenc-storage",
- "greenc-win32",
  "rayon",
  "rusqlite",
  "serde",
@@ -1729,8 +1741,8 @@ dependencies = [
  "chrono",
  "greenc-core",
  "greenc-i18n",
+ "greenc-platform",
  "greenc-storage",
- "greenc-win32",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -1739,17 +1751,6 @@ dependencies = [
  "tracing",
  "zip",
  "zstd",
-]
-
-[[package]]
-name = "greenc-win32"
-version = "2.0.0"
-dependencies = [
- "greenc-core",
- "serde",
- "tempfile",
- "thiserror 2.0.21",
- "windows 0.58.0",
 ]
 
 [[package]]

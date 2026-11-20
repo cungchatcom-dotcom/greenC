@@ -2,7 +2,7 @@
 resolver = "2"
 members = [
     "crates/greenc-core",
-    "crates/greenc-win32",
+    "crates/greenc-platform",
     "crates/greenc-storage",
     "crates/greenc-i18n",
     "crates/greenc-scanner",
@@ -23,14 +23,15 @@ rust-version = "1.83.0"
 [workspace.dependencies]
 # Internal Workspace Crates
 greenc-core = { path = "crates/greenc-core" }
-greenc-win32 = { path = "crates/greenc-win32" }
+greenc-platform = { path = "crates/greenc-platform" }
 greenc-storage = { path = "crates/greenc-storage" }
 greenc-i18n = { path = "crates/greenc-i18n" }
 greenc-scanner = { path = "crates/greenc-scanner" }
 greenc-vault = { path = "crates/greenc-vault" }
 greenc-relocate = { path = "crates/greenc-relocate" }
 
-# System & Win32 APIs
+# System & Platform APIs
+libc = "0.2.164"
 windows = { version = "0.58.0", features = [
     "Win32_Foundation",
     "Win32_Storage_FileSystem",

@@ -1,17 +1,20 @@
 [package]
-name = "greenc-win32"
+name = "greenc-platform"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
-license.workspace = true
+license-file.workspace = true
 
 [dependencies]
 greenc-core.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 
-[dependencies.windows]
-workspace = true
+[target.'cfg(windows)'.dependencies]
+windows.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -46,8 +46,24 @@ pub struct ToolConfigProfile {
     pub how_description: String,
 }
 
-/// Retrieves standard known desktop app profiles.
+/// Retrieves standard known desktop app profiles (OS-aware: Windows, macOS, Linux).
 pub fn get_app_catalog() -> Vec<AppCatalogProfile> {
+    #[cfg(windows)]
+    {
+        get_app_catalog_windows()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        get_app_catalog_macos()
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        get_app_catalog_linux()
+    }
+}
+
+#[cfg(windows)]
+fn get_app_catalog_windows() -> Vec<AppCatalogProfile> {
     let mut catalog = Vec::new();
     let appdata = env::var("APPDATA").map(PathBuf::from).unwrap_or_default();
     let local_appdata = env::var("LOCALAPPDATA")
@@ -154,15 +170,155 @@ pub fn get_app_catalog() -> Vec<AppCatalogProfile> {
     catalog
 }
 
-/// Retrieves developer tool config cache profiles.
+#[cfg(target_os = "macos")]
+fn get_app_catalog_macos() -> Vec<AppCatalogProfile> {
+    let home = env::var("HOME").map(PathBuf::from).unwrap_or_default();
+    let app_support = home.join("Library").join("Application Support");
+    let dev = home.join("Library").join("Developer");
+
+    vec![
+        AppCatalogProfile {
+            app_id: "telegram".to_string(),
+            name: "Telegram Desktop".to_string(),
+            strategy: RelocationStrategyKind::Junction,
+            source_path: app_support.join("Telegram Desktop"),
+            process_names: vec!["Telegram".to_string()],
+            how_description: "Liên kết dữ liệu chat và media bằng Symlink".to_string(),
+        },
+        AppCatalogProfile {
+            app_id: "discord".to_string(),
+            name: "Discord".to_string(),
+            strategy: RelocationStrategyKind::Junction,
+            source_path: app_support.join("discord"),
+            process_names: vec!["Discord".to_string()],
+            how_description: "Liên kết bộ nhớ đệm và dữ liệu ứng dụng Discord bằng Symlink"
+                .to_string(),
+        },
+        AppCatalogProfile {
+            app_id: "slack".to_string(),
+            name: "Slack".to_string(),
+            strategy: RelocationStrategyKind::Junction,
+            source_path: app_support.join("Slack"),
+            process_names: vec!["Slack".to_string()],
+            how_description: "Liên kết dữ liệu không gian làm việc Slack bằng Symlink".to_string(),
+        },
+        AppCatalogProfile {
+            app_id: "jetbrains".to_string(),
+            name: "JetBrains IDEs Data".to_string(),
+            strategy: RelocationStrategyKind::Junction,
+            source_path: app_support.join("JetBrains"),
+            process_names: vec![
+                "idea".to_string(),
+                "pycharm".to_string(),
+                "webstorm".to_string(),
+            ],
+            how_description: "Liên kết cấu hình và chỉ mục mã nguồn JetBrains bằng Symlink"
+                .to_string(),
+        },
+        AppCatalogProfile {
+            app_id: "xcode_derived".to_string(),
+            name: "Xcode DerivedData".to_string(),
+            strategy: RelocationStrategyKind::Junction,
+            source_path: dev.join("Xcode").join("DerivedData"),
+            process_names: vec!["Xcode".to_string()],
+            how_description: "Di chuyển Xcode DerivedData sang ổ đĩa ngoài bằng Symlink"
+                .to_string(),
+        },
+        AppCatalogProfile {
+            app_id: "docker".to_string(),
+            name: "Docker Desktop Containers".to_string(),
+            strategy: RelocationStrategyKind::Guided,
+            source_path: home.join("Library/Containers/com.docker.docker/Data"),
+            process_names: vec!["Docker".to_string(), "com.docker.backend".to_string()],
+            how_description:
+                "Đổi vị trí Disk image location trong Docker Desktop Settings → Resources"
+                    .to_string(),
+        },
+    ]
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn get_app_catalog_linux() -> Vec<AppCatalogProfile> {
+    let home = env::var("HOME").map(PathBuf::from).unwrap_or_default();
+    let config = env::var("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| home.join(".config"));
+    let data = env::var("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| home.join(".local/share"));
+
+    vec![
+        AppCatalogProfile {
+            app_id: "telegram".to_string(),
+            name: "Telegram Desktop".to_string(),
+            strategy: RelocationStrategyKind::Junction,
+            source_path: data.join("TelegramDesktop"),
+            process_names: vec!["telegram-desktop".to_string()],
+            how_description: "Liên kết dữ liệu chat và media bằng Symlink".to_string(),
+        },
+        AppCatalogProfile {
+            app_id: "discord".to_string(),
+            name: "Discord".to_string(),
+            strategy: RelocationStrategyKind::Junction,
+            source_path: config.join("discord"),
+            process_names: vec!["Discord".to_string()],
+            how_description: "Liên kết bộ nhớ đệm và dữ liệu ứng dụng Discord bằng Symlink"
+                .to_string(),
+        },
+        AppCatalogProfile {
+            app_id: "slack".to_string(),
+            name: "Slack".to_string(),
+            strategy: RelocationStrategyKind::Junction,
+            source_path: config.join("Slack"),
+            process_names: vec!["slack".to_string()],
+            how_description: "Liên kết dữ liệu không gian làm việc Slack bằng Symlink".to_string(),
+        },
+        AppCatalogProfile {
+            app_id: "jetbrains".to_string(),
+            name: "JetBrains IDEs Data".to_string(),
+            strategy: RelocationStrategyKind::Junction,
+            source_path: config.join("JetBrains"),
+            process_names: vec![
+                "idea".to_string(),
+                "pycharm".to_string(),
+                "webstorm".to_string(),
+            ],
+            how_description: "Liên kết cấu hình và chỉ mục mã nguồn JetBrains bằng Symlink"
+                .to_string(),
+        },
+        AppCatalogProfile {
+            app_id: "docker".to_string(),
+            name: "Docker Data Root".to_string(),
+            strategy: RelocationStrategyKind::Guided,
+            source_path: PathBuf::from("/var/lib/docker"),
+            process_names: vec!["dockerd".to_string()],
+            how_description:
+                "Cấu hình `data-root` trong `/etc/docker/daemon.json` sang phân vùng dữ liệu"
+                    .to_string(),
+        },
+    ]
+}
+
+/// Retrieves developer tool config cache profiles (OS-aware: Windows, macOS, Linux).
 pub fn get_tool_catalog() -> Vec<ToolConfigProfile> {
     let mut catalog = Vec::new();
+    #[cfg(windows)]
     let user_profile = env::var("USERPROFILE")
         .map(PathBuf::from)
         .unwrap_or_default();
+    #[cfg(not(windows))]
+    let user_profile = env::var("HOME").map(PathBuf::from).unwrap_or_default();
+
+    #[cfg(windows)]
     let local_appdata = env::var("LOCALAPPDATA")
         .map(PathBuf::from)
         .unwrap_or_default();
+    #[cfg(target_os = "macos")]
+    let local_appdata = user_profile.join("Library").join("Caches");
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let local_appdata = env::var("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| user_profile.join(".cache"));
 
     // 1. npm
     catalog.push(ToolConfigProfile {

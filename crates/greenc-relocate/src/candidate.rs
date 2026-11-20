@@ -5,8 +5,8 @@ use crate::catalog::{
 };
 use greenc_core::error::{GreenCError, Result};
 use greenc_core::models::RelocationStrategyKind;
-use greenc_win32::traits::{FileLockProbe, ProcessServiceProbe, ShellFolderApi, Win32VolumeApi};
-use greenc_win32::{
+use greenc_platform::traits::{FileLockProbe, ProcessServiceProbe, ShellFolderApi, Win32VolumeApi};
+use greenc_platform::{
     FOLDERID_DESKTOP, FOLDERID_DOCUMENTS, FOLDERID_DOWNLOADS, FOLDERID_MUSIC, FOLDERID_PICTURES,
     FOLDERID_VIDEOS,
 };

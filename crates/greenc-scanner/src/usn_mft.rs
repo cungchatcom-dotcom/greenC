@@ -4,13 +4,13 @@ use crate::space_lens::SpaceNode;
 use crate::walker::walk_directory_parallel;
 use greenc_core::error::Result;
 use greenc_core::task::TaskControl;
-use greenc_win32::volume::{probe_volume_usn_capability, UsnCapabilityStatus};
+use greenc_platform::volume::{probe_volume_usn_capability, UsnCapabilityStatus};
 use std::path::Path;
 
 /// Determines if elevated USN/MFT scanner can be used on the target drive.
 ///
 /// Performs an authentic privilege check (Process Token Elevation) and volume
-/// capability probe (`\\.\<drive>:` query via `greenc-win32`).
+/// capability probe (`\\.\<drive>:` query via `greenc-platform`).
 /// Returns `true` only if the process is elevated and the volume USN journal is active.
 pub fn can_use_usn_scanner(drive_root: &str) -> bool {
     let drive_letter = match extract_drive_letter(drive_root) {

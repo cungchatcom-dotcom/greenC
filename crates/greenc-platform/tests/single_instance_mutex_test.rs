@@ -1,5 +1,5 @@
 use greenc_core::error::GreenCError;
-use greenc_win32::mutex::GreenCAppMutex;
+use greenc_platform::mutex::GreenCAppMutex;
 
 #[test]
 fn test_single_instance_mutex() {

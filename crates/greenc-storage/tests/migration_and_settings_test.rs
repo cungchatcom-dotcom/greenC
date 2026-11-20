@@ -1,4 +1,3 @@
-use greenc_storage::CURRENT_SCHEMA_VERSION;
 use greenc_core::error::GreenCError;
 use greenc_core::models::*;
 use greenc_storage::db::GreenCDb;
@@ -6,6 +5,7 @@ use greenc_storage::legacy_migration::{
     auto_migrate_legacy_db_with_candidates, migrate_legacy_db, move_vault,
 };
 use greenc_storage::settings::AppSettings;
+use greenc_storage::CURRENT_SCHEMA_VERSION;
 use rusqlite::Connection;
 use std::fs;
 use std::path::PathBuf;

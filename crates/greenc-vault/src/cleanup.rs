@@ -10,7 +10,7 @@
 use greenc_core::config::MIN_VAULT_RESERVE_BYTES;
 use greenc_core::error::Result;
 use greenc_core::models::FileManifestItem;
-use greenc_win32::traits::{FileLockProbe, Win32VolumeApi};
+use greenc_platform::traits::{FileLockProbe, Win32VolumeApi};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;

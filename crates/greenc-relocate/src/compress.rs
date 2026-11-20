@@ -4,8 +4,8 @@ use chrono::Utc;
 use greenc_core::error::{GreenCError, Result};
 use greenc_core::models::{CompactionKind, CompactionRecord};
 use greenc_core::task::TaskControl;
+use greenc_platform::traits::{CompactionApi, FileLockProbe, WofAlgorithm};
 use greenc_storage::db::GreenCDb;
-use greenc_win32::traits::{CompactionApi, FileLockProbe, WofAlgorithm};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -176,7 +176,7 @@ impl InPlaceCompactor {
         }
         // Refuse protected system folders as a whole instead of "succeeding" with 0 bytes saved
         // after every per-file refusal was swallowed.
-        greenc_win32::handle::ensure_not_protected_system_path(dir, "compact")?;
+        greenc_platform::handle::ensure_not_protected_system_path(dir, "compact")?;
 
         let files = if dir.is_file() {
             vec![dir.to_path_buf()]

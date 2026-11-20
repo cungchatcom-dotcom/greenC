@@ -12,8 +12,8 @@ use crate::manifest::VaultManifest;
 use chrono::Utc;
 use greenc_core::error::{GreenCError, Result};
 use greenc_core::models::{VaultFileItem, VaultStatus};
+use greenc_platform::traits::ProcessServiceProbe;
 use greenc_storage::db::GreenCDb;
-use greenc_win32::traits::ProcessServiceProbe;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fs::{File, FileTimes};
@@ -397,10 +397,12 @@ impl<'a> RollbackEngine<'a> {
 
         // Seconds resolution collides when restores run back to back: never reuse an existing name,
         // otherwise File::create would truncate an earlier restored copy.
-        let mut candidate = original_path.with_file_name(format!("{file_name}.restored_{timestamp}"));
+        let mut candidate =
+            original_path.with_file_name(format!("{file_name}.restored_{timestamp}"));
         let mut n = 2u32;
         while candidate.exists() {
-            candidate = original_path.with_file_name(format!("{file_name}.restored_{timestamp}_{n}"));
+            candidate =
+                original_path.with_file_name(format!("{file_name}.restored_{timestamp}_{n}"));
             n += 1;
         }
         Ok(candidate)

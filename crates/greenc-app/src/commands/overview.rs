@@ -5,10 +5,10 @@ use greenc_core::config::{APP_NAME, DEFAULT_RETENTION_DAYS};
 use greenc_core::error::Result;
 use greenc_core::models::DriveInfo;
 use greenc_core::task::TaskControl;
+use greenc_platform::volume::{list_drives_native, recommend_drive};
 use greenc_scanner::forecast::{predict_fullness, BurnRateForecast};
 use greenc_scanner::space_lens::SpaceNode;
 use greenc_scanner::walker::walk_directory_parallel;
-use greenc_win32::volume::{list_drives_native, recommend_drive};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -181,8 +181,12 @@ pub async fn complete_first_run(
 
     let root_path = if let Some(ref custom_root) = data_root {
         PathBuf::from(custom_root)
-    } else {
+    } else if cfg!(windows) {
         PathBuf::from(format!("{}:\\GreenC", target_drive_letter))
+    } else if drive_info.is_system {
+        greenc_core::config::app_home()
+    } else {
+        drive_info.root.join(greenc_core::config::DATA_FOLDER_NAME)
     };
 
     // Initialize required subdirectories with error handling
@@ -234,15 +238,23 @@ pub async fn get_overview_summary(
     state: State<'_, AppState>,
     drive: Option<char>,
 ) -> std::result::Result<OverviewSummary, String> {
-    let target_drive = drive.unwrap_or('C').to_ascii_uppercase();
-    let root_str = format!("{}:\\", target_drive);
-
     // Get current live disk capacity
     let drives = list_drives_native().map_err(|e| e.to_string())?;
-    let drive_info = drives
-        .iter()
-        .find(|d| d.drive_letter == target_drive)
-        .ok_or_else(|| format!("Drive '{}:' not found", target_drive))?;
+    let drive_info = if let Some(letter) = drive {
+        let target = letter.to_ascii_uppercase();
+        drives
+            .iter()
+            .find(|d| d.drive_letter == target)
+            .or_else(|| drives.iter().find(|d| d.is_system))
+            .ok_or_else(|| format!("Drive '{}' not found", target))?
+    } else {
+        drives
+            .iter()
+            .find(|d| d.is_system)
+            .or_else(|| drives.first())
+            .ok_or_else(|| "No drives detected".to_string())?
+    };
+    let root_str = drive_info.root.to_string_lossy().into_owned();
 
     let total_bytes = drive_info.total_bytes;
     let free_bytes = drive_info.free_bytes;
@@ -292,7 +304,7 @@ pub async fn get_overview_summary(
     };
 
     Ok(OverviewSummary {
-        drive_letter: target_drive,
+        drive_letter: drive_info.drive_letter,
         total_bytes,
         free_bytes,
         used_bytes,
@@ -320,7 +332,15 @@ pub async fn scan_space_lens(
     max_depth: Option<u8>,
 ) -> std::result::Result<SpaceNode, String> {
     let drive_letter = drive.to_ascii_uppercase();
-    let root_path = format!("{}:\\", drive_letter);
+    let drives_list = list_drives_native().unwrap_or_default();
+    let matched_drive = drives_list.iter().find(|d| d.drive_letter == drive_letter);
+    let root_path = if let Some(d) = matched_drive {
+        d.root.to_string_lossy().into_owned()
+    } else if cfg!(windows) {
+        format!("{}:\\", drive_letter)
+    } else {
+        "/".to_string()
+    };
     let task_id = format!(
         "space-lens-{}-{}",
         drive_letter,
@@ -331,15 +351,9 @@ pub async fn scan_space_lens(
     state.register_task(task_id.clone(), Arc::clone(&task_control));
 
     // Query host logical drives to estimate total used bytes for percentage calculation
-    let total_used_bytes = if let Ok(drives) = list_drives_native() {
-        drives
-            .iter()
-            .find(|d| d.drive_letter == drive_letter)
-            .map(|d| d.total_bytes.saturating_sub(d.free_bytes))
-            .unwrap_or(0)
-    } else {
-        0
-    };
+    let total_used_bytes = matched_drive
+        .map(|d| d.total_bytes.saturating_sub(d.free_bytes))
+        .unwrap_or(0);
 
     // Progress throttle controller (<= 100ms interval)
     let last_emit = Arc::new(parking_lot::Mutex::new(
@@ -476,14 +490,14 @@ pub async fn scan_space_lens(
 }
 
 /// 5. reveal_in_explorer
-/// Safely reveals the target file or directory inside Windows File Explorer using `/select,path`.
+/// Safely reveals the target file or directory inside the OS file manager
+/// (Windows Explorer, macOS Finder, or Linux xdg-open).
 #[tauri::command]
 pub fn reveal_in_explorer(path: String) -> std::result::Result<bool, String> {
-    let clean_path = path.trim().replace('/', "\\");
-    let target = Path::new(&clean_path);
-
     #[cfg(target_os = "windows")]
     {
+        let clean_path = path.trim().replace('/', "\\");
+        let target = Path::new(&clean_path);
         let mut cmd = std::process::Command::new("explorer.exe");
         if target.is_file() {
             cmd.arg(format!("/select,{}", clean_path));
@@ -506,9 +520,40 @@ pub fn reveal_in_explorer(path: String) -> std::result::Result<bool, String> {
         Ok(true)
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
     {
-        tracing::warn!("reveal_in_explorer is a no-op on non-Windows platforms");
-        Ok(false)
+        let clean_path = path.trim();
+        let target = Path::new(clean_path);
+        let mut cmd = std::process::Command::new("open");
+        if target.is_file() {
+            cmd.args(["-R", clean_path]);
+        } else if target.is_dir() {
+            cmd.arg(clean_path);
+        } else if let Some(parent) = target.parent().filter(|p| p.exists()) {
+            cmd.arg(parent);
+        } else {
+            return Err(format!("Target path does not exist: {}", clean_path));
+        }
+        cmd.spawn()
+            .map_err(|e| format!("Failed to spawn Finder: {}", e))?;
+        Ok(true)
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let clean_path = path.trim();
+        let target = Path::new(clean_path);
+        let open_target = if target.is_dir() {
+            target.to_path_buf()
+        } else if let Some(parent) = target.parent().filter(|p| p.exists()) {
+            parent.to_path_buf()
+        } else {
+            return Err(format!("Target path does not exist: {}", clean_path));
+        };
+        std::process::Command::new("xdg-open")
+            .arg(&open_target)
+            .spawn()
+            .map_err(|e| format!("Failed to spawn xdg-open: {}", e))?;
+        Ok(true)
     }
 }

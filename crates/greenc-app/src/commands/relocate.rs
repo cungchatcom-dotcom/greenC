@@ -2,14 +2,14 @@
 
 use crate::state::{AppState, TaskProgressEvent};
 use greenc_core::task::TaskControl;
+use greenc_platform::traits::{
+    NativeFileLockProbe, NativeProcessServiceProbe, NativeReparsePointApi, NativeShellFolderApi,
+    NativeWin32VolumeApi,
+};
 use greenc_relocate::candidate::CandidateScanner;
 use greenc_relocate::known_folders::KnownFolderService;
 use greenc_relocate::mover::{MoveOptions, TransactionalMover};
 use greenc_relocate::recovery::RecoveryService;
-use greenc_win32::traits::{
-    NativeFileLockProbe, NativeProcessServiceProbe, NativeReparsePointApi, NativeShellFolderApi,
-    NativeWin32VolumeApi,
-};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;

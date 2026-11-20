@@ -5,8 +5,8 @@ use greenc_core::error::{GreenCError, Result};
 use greenc_core::models::{
     RelocationHealthStatus, RelocationRecord, RelocationStatus, RelocationStrategyKind,
 };
+use greenc_platform::traits::ReparsePointApi;
 use greenc_storage::db::GreenCDb;
-use greenc_win32::traits::ReparsePointApi;
 use std::fs;
 use std::path::{Path, PathBuf};
 

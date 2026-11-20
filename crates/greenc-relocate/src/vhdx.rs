@@ -3,8 +3,8 @@
 use chrono::Utc;
 use greenc_core::error::{GreenCError, Result};
 use greenc_core::models::{CompactionKind, CompactionRecord};
+use greenc_platform::traits::{CompactionApi, ProcessServiceProbe};
 use greenc_storage::db::GreenCDb;
-use greenc_win32::traits::{CompactionApi, ProcessServiceProbe};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};

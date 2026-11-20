@@ -10,8 +10,8 @@ pub mod tray;
 pub use state::*;
 
 use greenc_core::error::Result;
+use greenc_platform::GreenCAppMutex;
 use greenc_storage::legacy_migration::auto_migrate_legacy_db;
-use greenc_win32::GreenCAppMutex;
 use std::sync::Arc;
 use tauri::Manager;
 

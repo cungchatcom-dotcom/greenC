@@ -475,11 +475,12 @@ impl ProcessServiceProbe for MockProcessServiceProbe {
     }
 }
 
-/// Native implementation of ProcessServiceProbe using ToolHelp32 snapshot APIs.
+/// Native implementation of ProcessServiceProbe (Win32 ToolHelp32 on Windows, `/proc` or `pgrep` on Unix).
 #[derive(Default, Clone, Debug)]
 pub struct NativeProcessServiceProbe;
 
 impl ProcessServiceProbe for NativeProcessServiceProbe {
+    #[cfg(windows)]
     fn is_process_running(&self, exe_name: &str) -> bool {
         let target = exe_name.to_lowercase();
         // SAFETY: `CreateToolhelp32Snapshot` returns a snapshot `HANDLE` wrapped immediately in
@@ -532,6 +533,11 @@ impl ProcessServiceProbe for NativeProcessServiceProbe {
             }
         }
         false
+    }
+
+    #[cfg(unix)]
+    fn is_process_running(&self, exe_name: &str) -> bool {
+        crate::unix::process::is_process_running_unix(exe_name)
     }
 
     fn is_service_running(&self, service_name: &str) -> Result<bool> {

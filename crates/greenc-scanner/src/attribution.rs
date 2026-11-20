@@ -2,7 +2,7 @@
 //! Service attribution engine combining Restart Manager, SCM PID maps, and path signatures (Tasks T053, T055).
 
 use greenc_core::models::WriteReasonCode;
-use greenc_win32::restart_mgr::{NativeRestartManagerApi, RestartManagerApi};
+use greenc_platform::restart_mgr::{NativeRestartManagerApi, RestartManagerApi};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

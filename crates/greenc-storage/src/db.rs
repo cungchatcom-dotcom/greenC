@@ -1131,7 +1131,11 @@ impl GreenCDb {
                 "SELECT id, drive_root, limit_bytes, warn_ratio, clean_ratio, target_ratio,
                         auto_clean, auto_backup, backup_dir, enabled, created_at
                  FROM drive_quotas {} ORDER BY drive_root ASC;",
-                if enabled_only { "WHERE enabled = 1" } else { "" }
+                if enabled_only {
+                    "WHERE enabled = 1"
+                } else {
+                    ""
+                }
             );
             let mut stmt = conn
                 .prepare(&sql)

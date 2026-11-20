@@ -17,6 +17,13 @@ use greenc_core::models::{
     VaultStatus,
 };
 use greenc_core::task::TaskControl;
+use greenc_platform::handle::NativeFileLockProbe;
+use greenc_platform::reparse::NativeReparsePointApi;
+use greenc_platform::traits::{
+    NativeCompactionApi, NativeProcessServiceProbe, NativeShellFolderApi, Win32VolumeApi,
+    WofAlgorithm,
+};
+use greenc_platform::volume::{list_drives_native, recommend_drive_info, NativeWin32VolumeApi};
 use greenc_relocate::candidate::CandidateScanner;
 use greenc_relocate::compress::InPlaceCompactor;
 use greenc_relocate::mover::{MoveOptions, TransactionalMover};
@@ -32,13 +39,6 @@ use greenc_vault::canary::CanaryVerifier;
 use greenc_vault::cleanup::{CleanupOptions, DeletionMethod, SafeCleaner};
 use greenc_vault::profiles::PresetProfiles;
 use greenc_vault::rollback::{RestoreOptions, RollbackEngine};
-use greenc_win32::handle::NativeFileLockProbe;
-use greenc_win32::reparse::NativeReparsePointApi;
-use greenc_win32::traits::{
-    NativeCompactionApi, NativeProcessServiceProbe, NativeShellFolderApi, Win32VolumeApi,
-    WofAlgorithm,
-};
-use greenc_win32::volume::{list_drives_native, recommend_drive_info, NativeWin32VolumeApi};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;

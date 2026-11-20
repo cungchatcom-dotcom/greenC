@@ -1,9 +1,9 @@
 use greenc_core::models::{DriveInfo, WriteReasonCode};
+use greenc_platform::restart_mgr::{LockingProcessInfo, MockRestartManagerApi};
+use greenc_platform::traits::MockVolumeApi;
 use greenc_scanner::attribution::{classify_write_reason, AttributionEngine};
 use greenc_scanner::tracker::DiskTracker;
 use greenc_storage::db::GreenCDb;
-use greenc_win32::restart_mgr::{LockingProcessInfo, MockRestartManagerApi};
-use greenc_win32::traits::MockVolumeApi;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

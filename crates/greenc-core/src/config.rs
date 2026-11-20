@@ -40,6 +40,10 @@ pub const DEFAULT_PROTECTED_PATTERNS: &[&str] = &[
     "*.exe",
     "*.dll",
     "*.sys",
+    "*.dylib",
+    "*.so",
+    "*.plist",
+    "*.framework",
     "*.ini",
     "*.cfg",
     "*.config",
@@ -60,26 +64,68 @@ pub const DEFAULT_PROTECTED_PATTERNS: &[&str] = &[
     "MANIFEST-*",
 ];
 
-/// Resolves standard GreenC application home under %LOCALAPPDATA%\GreenC.
+/// Resolves standard GreenC application home directory per operating system:
+/// - Windows: `%LOCALAPPDATA%\GreenC`
+/// - macOS: `~/Library/Application Support/GreenC`
+/// - Linux/Unix: `$XDG_DATA_HOME/greenc` or `~/.local/share/greenc`
 pub fn app_home() -> PathBuf {
-    if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
-        PathBuf::from(local_app_data).join(DATA_FOLDER_NAME)
-    } else if let Ok(user_profile) = std::env::var("USERPROFILE") {
-        PathBuf::from(user_profile)
-            .join("AppData")
-            .join("Local")
-            .join(DATA_FOLDER_NAME)
-    } else {
-        PathBuf::from(r"C:\GreenC")
+    #[cfg(windows)]
+    {
+        if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+            PathBuf::from(local_app_data).join(DATA_FOLDER_NAME)
+        } else if let Ok(user_profile) = std::env::var("USERPROFILE") {
+            PathBuf::from(user_profile)
+                .join("AppData")
+                .join("Local")
+                .join(DATA_FOLDER_NAME)
+        } else {
+            PathBuf::from(r"C:\GreenC")
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            PathBuf::from(home)
+                .join("Library")
+                .join("Application Support")
+                .join(DATA_FOLDER_NAME)
+        } else {
+            PathBuf::from("/tmp/GreenC")
+        }
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if let Ok(xdg_data) = std::env::var("XDG_DATA_HOME") {
+            if !xdg_data.trim().is_empty() {
+                return PathBuf::from(xdg_data).join("greenc");
+            }
+        }
+        if let Ok(home) = std::env::var("HOME") {
+            PathBuf::from(home)
+                .join(".local")
+                .join("share")
+                .join("greenc")
+        } else {
+            PathBuf::from("/tmp/greenc")
+        }
     }
 }
 
-/// Resolves legacy Python Green C home under %LOCALAPPDATA%\Green C.
+/// Resolves legacy Python Green C home (`%LOCALAPPDATA%\Green C` on Windows; falls back to `app_home()` on Unix).
 pub fn legacy_green_c_home() -> PathBuf {
-    if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
-        PathBuf::from(local_app_data).join(LEGACY_DATA_FOLDER_NAME)
-    } else {
-        PathBuf::from(r"C:\Green C")
+    #[cfg(windows)]
+    {
+        if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+            PathBuf::from(local_app_data).join(LEGACY_DATA_FOLDER_NAME)
+        } else {
+            PathBuf::from(r"C:\Green C")
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        app_home()
     }
 }
 

@@ -56,8 +56,16 @@ fn relocates_moved_zips_and_flags_missing_ones() {
     std::fs::write(new_dir.join("vault_rule1_a.zip"), b"zip").unwrap();
     std::fs::write(new_dir.join("vault_rule1_a.manifest.json"), b"{}").unwrap();
 
-    let moved = add_archive(&db, &old_dir.join("vault_rule1_a.zip"), VaultStatus::Quarantined);
-    let gone = add_archive(&db, &old_dir.join("vault_rule2_b.zip"), VaultStatus::Quarantined);
+    let moved = add_archive(
+        &db,
+        &old_dir.join("vault_rule1_a.zip"),
+        VaultStatus::Quarantined,
+    );
+    let gone = add_archive(
+        &db,
+        &old_dir.join("vault_rule2_b.zip"),
+        VaultStatus::Quarantined,
+    );
     let fine_zip = new_dir.join("vault_rule1_a.zip");
     let fine = add_archive(&db, &fine_zip, VaultStatus::Quarantined);
     // Already finished archives are history: never touched.
@@ -77,7 +85,10 @@ fn relocates_moved_zips_and_flags_missing_ones() {
     assert_eq!(g.status, VaultStatus::Missing);
     assert!(g.status_reason.contains("vault_rule2_b.zip"));
 
-    assert_eq!(db.get_vault_archive(fine).unwrap().unwrap().zip_path, fine_zip);
+    assert_eq!(
+        db.get_vault_archive(fine).unwrap().unwrap().zip_path,
+        fine_zip
+    );
     assert_eq!(
         db.get_vault_archive(purged).unwrap().unwrap().status,
         VaultStatus::Purged

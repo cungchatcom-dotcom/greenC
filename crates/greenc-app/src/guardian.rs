@@ -15,18 +15,18 @@ use greenc_core::models::{
     CleanCandidate, DriveQuota, FileManifestItem, QuotaLevel, QuotaRule, RelocationHealthStatus,
 };
 use greenc_core::task::TaskControl;
+use greenc_platform::handle::NativeFileLockProbe;
+use greenc_platform::power_session::{NativePowerSessionApi, PowerSessionApi};
+use greenc_platform::reparse::NativeReparsePointApi;
+use greenc_platform::traits::{
+    FileLockProbe, NativeProcessServiceProbe, ProcessServiceProbe, ReparsePointApi, Win32VolumeApi,
+};
+use greenc_platform::volume::NativeWin32VolumeApi;
 use greenc_relocate::recovery::RecoveryService;
 use greenc_vault::archiver::{ArchiveOptions, ArchiverPipeline};
 use greenc_vault::cleanup::{CleanupOptions, DeletionMethod, SafeCleaner};
 use greenc_vault::profiles::PresetProfiles;
 use greenc_vault::rollback::{RestoreOptions, RollbackEngine};
-use greenc_win32::handle::NativeFileLockProbe;
-use greenc_win32::power_session::{NativePowerSessionApi, PowerSessionApi};
-use greenc_win32::reparse::NativeReparsePointApi;
-use greenc_win32::traits::{
-    FileLockProbe, NativeProcessServiceProbe, ProcessServiceProbe, ReparsePointApi, Win32VolumeApi,
-};
-use greenc_win32::volume::NativeWin32VolumeApi;
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -108,7 +108,12 @@ impl std::fmt::Debug for BackgroundGuardian {
 impl BackgroundGuardian {
     pub fn new(state: AppState) -> Self {
         Self::with_deps(state, GuardianDeps::default(), GUARDIAN_TICK_INTERVAL)
-            .with_auto_clean_profiles(AUTO_CLEAN_PROFILE_IDS.iter().map(|s| s.to_string()).collect())
+            .with_auto_clean_profiles(
+                AUTO_CLEAN_PROFILE_IDS
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
+            )
     }
 
     /// Chooses which preset profiles automatic drive-quota cleanup may scan.
@@ -123,7 +128,7 @@ impl BackgroundGuardian {
             state,
             deps: Arc::new(deps),
             tick_interval,
-            system_drive_root: PathBuf::from(r"C:\"),
+            system_drive_root: PathBuf::from(greenc_platform::volume::get_system_drive_root()),
             last_low_disk_alert: Arc::new(Mutex::new(None)),
             quota_alert_state: Arc::new(Mutex::new(HashMap::new())),
             auto_clean_profiles: Arc::new(Vec::new()),
@@ -263,7 +268,10 @@ impl BackgroundGuardian {
             }
 
             // Check 1b: Per-drive quota evaluation -> warnings (cheap O(1) volume queries)
-            let drive_quotas = guardian_state.db.list_drive_quotas(true).unwrap_or_default();
+            let drive_quotas = guardian_state
+                .db
+                .list_drive_quotas(true)
+                .unwrap_or_default();
             let mut quota_states: Vec<(DriveQuota, u64, u64, QuotaLevel)> = Vec::new();
             for quota in drive_quotas {
                 let Ok((total, free)) = deps
@@ -884,6 +892,12 @@ fn collect_rule_files(
                 use std::os::windows::fs::MetadataExt;
                 const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
                 if (meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT) != 0 {
+                    continue;
+                }
+            }
+            #[cfg(not(windows))]
+            {
+                if meta.file_type().is_symlink() {
                     continue;
                 }
             }

@@ -2,11 +2,11 @@
 
 use crate::state::{AppState, TaskProgressEvent};
 use greenc_core::task::TaskControl;
-use greenc_relocate::compress::InPlaceCompactor;
-use greenc_relocate::vhdx::VhdxCompactor;
-use greenc_win32::traits::{
+use greenc_platform::traits::{
     NativeCompactionApi, NativeFileLockProbe, NativeProcessServiceProbe, WofAlgorithm,
 };
+use greenc_relocate::compress::InPlaceCompactor;
+use greenc_relocate::vhdx::VhdxCompactor;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;

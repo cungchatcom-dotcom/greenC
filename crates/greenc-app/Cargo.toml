@@ -3,11 +3,11 @@ name = "greenc-app"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
-license.workspace = true
+license-file.workspace = true
 
 [dependencies]
 greenc-core.workspace = true
-greenc-win32.workspace = true
+greenc-platform.workspace = true
 greenc-storage.workspace = true
 greenc-i18n.workspace = true
 greenc-scanner.workspace = true

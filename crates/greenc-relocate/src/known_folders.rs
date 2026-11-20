@@ -8,12 +8,12 @@ use greenc_core::models::{
     RelocationHealthStatus, RelocationRecord, RelocationStatus, RelocationStrategyKind,
 };
 use greenc_core::task::TaskControl;
-use greenc_storage::db::GreenCDb;
-use greenc_win32::traits::{ShellFolderApi, Win32VolumeApi};
-use greenc_win32::{
+use greenc_platform::traits::{ShellFolderApi, Win32VolumeApi};
+use greenc_platform::{
     FOLDERID_DESKTOP, FOLDERID_DOCUMENTS, FOLDERID_DOWNLOADS, FOLDERID_MUSIC, FOLDERID_PICTURES,
     FOLDERID_VIDEOS,
 };
+use greenc_storage::db::GreenCDb;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;

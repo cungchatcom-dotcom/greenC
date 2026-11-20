@@ -13,8 +13,11 @@ use std::sync::{Arc, Mutex};
 #[cfg(windows)]
 use std::os::windows::fs::MetadataExt;
 
+#[cfg(windows)]
 const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x00000400;
+#[cfg(windows)]
 const FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS: u32 = 0x00400000;
+#[cfg(windows)]
 const FILE_ATTRIBUTE_OFFLINE: u32 = 0x00001000;
 
 /// Unique physical file identity for hardlink deduplication.
@@ -28,7 +31,7 @@ impl FileIdentity {
     pub fn from_path(path: &Path) -> Option<Self> {
         #[cfg(windows)]
         {
-            if let Some(id) = greenc_win32::query_file_identity(path) {
+            if let Some(id) = greenc_platform::query_file_identity(path) {
                 if id.file_index != 0 {
                     return Some(Self {
                         volume_serial: id.volume_serial,
@@ -47,36 +50,28 @@ impl FileIdentity {
 }
 
 #[cfg(not(windows))]
-fn get_file_identity(_meta: &fs::Metadata, path: &Path) -> FileIdentity {
-    #[cfg(windows)]
-    {
-        if let Some(id) = greenc_win32::query_file_identity(path) {
-            if id.file_index != 0 {
-                return FileIdentity {
-                    volume_serial: id.volume_serial,
-                    file_index: id.file_index,
-                };
-            }
-        }
-    }
-
+fn get_file_identity(meta: &fs::Metadata, path: &Path) -> FileIdentity {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        return FileIdentity {
-            volume_serial: _meta.dev(),
-            file_index: _meta.ino(),
-        };
+        let _ = path;
+        FileIdentity {
+            volume_serial: meta.dev(),
+            file_index: meta.ino(),
+        }
     }
 
-    // Fallback: hash the path
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut hasher = DefaultHasher::new();
-    path.hash(&mut hasher);
-    FileIdentity {
-        volume_serial: 0,
-        file_index: hasher.finish(),
+    #[cfg(not(unix))]
+    {
+        let _ = meta;
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        path.hash(&mut hasher);
+        FileIdentity {
+            volume_serial: 0,
+            file_index: hasher.finish(),
+        }
     }
 }
 
@@ -230,7 +225,8 @@ fn walk_recursive(
 
             // Hardlink deduplication check
             #[cfg(windows)]
-            let is_hardlink_dup = if let Some(win_id) = greenc_win32::query_file_identity(&path) {
+            let is_hardlink_dup = if let Some(win_id) = greenc_platform::query_file_identity(&path)
+            {
                 if win_id.number_of_links > 1 && win_id.file_index != 0 {
                     let id = FileIdentity {
                         volume_serial: win_id.volume_serial,

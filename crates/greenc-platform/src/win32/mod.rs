@@ -1,0 +1,10 @@
+//! Native Windows (Win32) platform backend.
+
+pub mod handle;
+pub mod known_folders;
+pub mod mutex;
+pub mod power_session;
+pub mod reparse;
+pub mod restart_mgr;
+pub mod volume;
+pub mod wof_compact;
