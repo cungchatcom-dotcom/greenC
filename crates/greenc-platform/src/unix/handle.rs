@@ -13,6 +13,7 @@ use std::path::Path;
 pub struct Win32FileIdentity {
     pub volume_serial: u64,
     pub file_index: u64,
+    pub number_of_links: u32,
 }
 
 /// Canonicalizes `path` (when existing) and blocks mutations against critical Unix OS trees.
@@ -69,12 +70,13 @@ pub fn is_file_locked(path: &Path) -> bool {
     }
 }
 
-/// Queries physical file identity `(dev, ino)` for hardlink deduplication.
+/// Queries physical file identity `(dev, ino, nlink)` for hardlink deduplication.
 pub fn query_file_identity(path: &Path) -> Option<Win32FileIdentity> {
     let meta = std::fs::symlink_metadata(path).ok()?;
     Some(Win32FileIdentity {
         volume_serial: meta.dev(),
         file_index: meta.ino(),
+        number_of_links: meta.nlink() as u32,
     })
 }
 

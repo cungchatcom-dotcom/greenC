@@ -75,6 +75,7 @@ impl std::fmt::Display for RecommendedDrive {
 }
 
 /// Queries `(total_bytes, available_bytes)` for a mounted path via POSIX `statvfs`.
+#[allow(clippy::unnecessary_cast)]
 fn statvfs_space(path: &Path) -> Result<(u64, u64)> {
     let c_path = CString::new(path.as_os_str().as_bytes())
         .map_err(|_| GreenCError::InvalidPath(path.to_path_buf()))?;

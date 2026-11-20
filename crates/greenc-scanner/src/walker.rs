@@ -96,6 +96,7 @@ fn is_cloud_placeholder(meta: &fs::Metadata) -> bool {
     }
     #[cfg(not(windows))]
     {
+        let _ = meta;
         false
     }
 }
