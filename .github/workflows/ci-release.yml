@@ -281,8 +281,50 @@ jobs:
       - name: List Release Assets
         run: ls -lh release-assets
 
+      - name: Generate SHA256 Checksums & Release Notes Header
+        run: |
+          cd release-assets
+          sha256sum * > ../SHA256SUMS.txt
+          mv ../SHA256SUMS.txt .
+          VERSION="${GITHUB_REF_NAME#v}"
+          {
+            echo "## Install"
+            echo
+            echo '- **Windows (recommended):** `winget install CungChat.GreenC`'
+            echo "- **Windows installer:** \`GreenC-Setup-${VERSION}.exe\` (per-user, no admin rights)"
+            echo
+            echo "> **Windows SmartScreen:** the installer is not code-signed yet (signing via SignPath Foundation is in progress),"
+            echo "> so Windows may show *\"Windows protected your PC\"*. Click **More info → Run anyway**."
+            echo "> Installing through \`winget\` does not trigger this prompt."
+            echo
+            echo "### SHA256 checksums"
+            echo
+            echo "Verify in PowerShell: \`Get-FileHash .\\GreenC-Setup-${VERSION}.exe -Algorithm SHA256\`"
+            echo
+            echo '```'
+            cat SHA256SUMS.txt
+            echo '```'
+          } > ../release-header.md
+          cat ../release-header.md
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          body_path: release-header.md
           generate_release_notes: true
           files: release-assets/*
+
+  publish-winget:
+    name: Submit New Version to winget-pkgs
+    needs: publish-release
+    # Enable after the first manual submission (packaging/winget/) is merged into microsoft/winget-pkgs:
+    #   Settings → Variables → WINGET_ENABLED=true, Secrets → WINGET_TOKEN (classic PAT, public_repo scope)
+    if: startsWith(github.ref, 'refs/tags/v') && vars.WINGET_ENABLED == 'true'
+    runs-on: windows-latest
+    steps:
+      - name: Submit to winget-pkgs
+        uses: vedantmgoyal9/winget-releaser@v2
+        with:
+          identifier: CungChat.GreenC
+          installers-regex: 'GreenC-Setup-.*\.exe$'
+          token: ${{ secrets.WINGET_TOKEN }}

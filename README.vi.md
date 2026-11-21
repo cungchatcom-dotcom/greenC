@@ -6,7 +6,7 @@
 
 - **Trang chủ & Tải về:** https://greenc.cungchat.com
 - **Nền tảng:** Windows 10 / 11 (64-bit)
-- **Phiên bản:** 2.0.0 (Rust + Tauri v2 + Svelte 5)
+- **Phiên bản:** 2.1.0 (Rust + Tauri v2 + Svelte 5)
 - **Ngôn ngữ:** Tiếng Việt & English
 - **Giấy phép:** [Apache License 2.0](LICENSE)
 
@@ -79,7 +79,21 @@ Xem danh sách các gói ZIP64 đang lưu dự phòng trên ổ D và khôi ph�
 
 ## Tải về
 
-Tải bộ cài đặt Windows chính thức miễn phí (`GreenC-Setup-2.0.0.exe`, chỉ 5,6 MB) tại **[https://greenc.cungchat.com](https://greenc.cungchat.com)** *(yêu cầu tài khoản Cùng Chat miễn phí)*.
+**Cách 1 — winget (khuyên dùng, không bị SmartScreen cảnh báo):**
+
+```powershell
+winget install CungChat.GreenC
+```
+
+**Cách 2 — bộ cài đặt:** tải `GreenC-Setup-<phiên bản>.exe` (~5,6 MB, cài cho riêng người dùng, không cần quyền Admin) tại **[GitHub Releases](https://github.com/cungchatcom-dotcom/greenC/releases/latest)** hoặc **[https://greenc.cungchat.com](https://greenc.cungchat.com)**.
+
+> **Gặp màn hình xanh "Windows protected your PC" (SmartScreen)?** Bộ cài chưa được ký số — việc ký qua SignPath Foundation đang được xét duyệt. SmartScreen cảnh báo với mọi file `.exe` mới chưa ký. Bấm **More info (Thông tin thêm) → Run anyway (Vẫn chạy)**, hoặc cài bằng winget ở trên.
+>
+> Kiểm tra file tải về đúng là bản chính thức (so với `SHA256SUMS.txt` trong trang Release):
+>
+> ```powershell
+> Get-FileHash .\GreenC-Setup-<phiên bản>.exe -Algorithm SHA256
+> ```
 
 ---
 

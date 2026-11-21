@@ -6,7 +6,7 @@
 
 - **Official Website & Download:** https://greenc.cungchat.com
 - **Platform:** Windows 10 / 11 (64-bit)
-- **Version:** 2.0.0 (Rust + Tauri v2 + Svelte 5)
+- **Version:** 2.1.0 (Rust + Tauri v2 + Svelte 5)
 - **Languages:** English & Vietnamese
 - **License:** [Apache License 2.0](LICENSE)
 
@@ -79,7 +79,21 @@ Switch between **English** and **Vietnamese**, choose your backup drive and rete
 
 ## Download
 
-Get the free official Windows installer (`GreenC-Setup-2.0.0.exe`, 5.6 MB) at **[https://greenc.cungchat.com](https://greenc.cungchat.com)** (requires a free CungChat account).
+**Option 1 — winget (recommended, no SmartScreen prompt):**
+
+```powershell
+winget install CungChat.GreenC
+```
+
+**Option 2 — installer:** download `GreenC-Setup-<version>.exe` (~5.6 MB, per-user, no admin rights) from **[GitHub Releases](https://github.com/cungchatcom-dotcom/greenC/releases/latest)** or **[https://greenc.cungchat.com](https://greenc.cungchat.com)**.
+
+> **"Windows protected your PC" (SmartScreen)?** The installer is not code-signed yet — signing through SignPath Foundation is in progress. SmartScreen warns about every new unsigned `.exe`. Click **More info → Run anyway**, or use winget above.
+>
+> Verify the download matches the official build (compare with `SHA256SUMS.txt` in the release):
+>
+> ```powershell
+> Get-FileHash .\GreenC-Setup-<version>.exe -Algorithm SHA256
+> ```
 
 ---
 
