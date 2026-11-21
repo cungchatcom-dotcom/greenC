@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
 PackageIdentifier: CungChat.GreenC
-PackageVersion: 2.1.0
+PackageVersion: 2.1.1
 MinimumOSVersion: 10.0.18362.0
 InstallerType: inno
 Scope: user
@@ -17,7 +17,7 @@ AppsAndFeaturesEntries:
     ProductCode: '{6F1C2B7A-3E4D-4C5B-9A8E-7D2F1B0C9E51}_is1'
 Installers:
   - Architecture: x64
-    InstallerUrl: https://github.com/cungchatcom-dotcom/greenC/releases/download/v2.1.0/GreenC-Setup-2.1.0.exe
-    InstallerSha256: 61C495BFDF4AC2BC512A6BD561E515F26DAF3908BE4758130063A5162D3D1016
+    InstallerUrl: https://github.com/cungchatcom-dotcom/greenC/releases/download/v2.1.1/GreenC-Setup-2.1.1.exe
+    InstallerSha256: 1CE7B767CD7D677E11FB1D3B81F5C701F8B0D69AA65172D404FD81417C28F60C
 ManifestType: installer
 ManifestVersion: 1.6.0

@@ -22,13 +22,22 @@ The built-in updater (`commands/updater.rs`) downloads with reqwest, so the file
 
 ### First submission (one time, manual)
 
-Manifests for 2.1.0 are in `packaging/winget/manifests/c/CungChat/GreenC/2.1.0/`. From a Windows machine:
+Manifests for 2.1.1 are in `packaging/winget/manifests/c/CungChat/GreenC/2.1.1/`.
+
+From Linux/macOS, use [komac](https://github.com/russellbanks/Komac) (classic PAT with `public_repo` scope):
+
+```bash
+komac token update            # stores the PAT once
+komac submit packaging/winget/manifests/c/CungChat/GreenC/2.1.1
+```
+
+From a Windows machine:
 
 ```powershell
 winget install Microsoft.WingetCreate
-winget validate --manifest packaging\winget\manifests\c\CungChat\GreenC\2.1.0
-winget install --manifest packaging\winget\manifests\c\CungChat\GreenC\2.1.0   # local smoke test (needs: winget settings --enable LocalManifestFiles)
-wingetcreate submit --token <GITHUB_PAT> packaging\winget\manifests\c\CungChat\GreenC\2.1.0
+winget validate --manifest packaging\winget\manifests\c\CungChat\GreenC\2.1.1
+winget install --manifest packaging\winget\manifests\c\CungChat\GreenC\2.1.1   # local smoke test (needs: winget settings --enable LocalManifestFiles)
+wingetcreate submit --token <GITHUB_PAT> packaging\winget\manifests\c\CungChat\GreenC\2.1.1
 ```
 
 This opens a PR on `microsoft/winget-pkgs`. Watch it for validation bot comments; first reviews take a few days.
