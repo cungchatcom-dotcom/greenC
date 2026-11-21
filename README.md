@@ -8,7 +8,7 @@
 - **Platform:** Windows 10 / 11 (64-bit)
 - **Version:** 2.0.0 (Rust + Tauri v2 + Svelte 5)
 - **Languages:** English & Vietnamese
-- **License:** [PolyForm Noncommercial License 1.0.0](LICENSE)
+- **License:** [Apache License 2.0](LICENSE)
 
 ---
 
@@ -98,9 +98,8 @@ cargo run -p greenc-app
 
 ## License
 
-GreenC is distributed under the **[PolyForm Noncommercial License 1.0.0](LICENSE)** (`PolyForm-Noncommercial-1.0.0`).
+GreenC is open-source software licensed under the **[Apache License 2.0](LICENSE)** (`Apache-2.0`).
 
-- **Permitted:** Free for personal use, education, research, modification, and sharing for **any noncommercial purpose**.
-- **Restricted:** Commercial use, resale, paid services, or commercial bundling require separate written permission.
+- **Permitted:** Free for personal and commercial use, modification, distribution, patent use, and private use under the terms of the Apache License 2.0.
 
-For commercial licensing or support, contact **cungchat.com@gmail.com**.
+For support or inquiries, contact **cungchat.com@gmail.com**.

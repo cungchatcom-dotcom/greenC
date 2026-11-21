@@ -8,7 +8,7 @@
 - **Nền tảng:** Windows 10 / 11 (64-bit)
 - **Phiên bản:** 2.0.0 (Rust + Tauri v2 + Svelte 5)
 - **Ngôn ngữ:** Tiếng Việt & English
-- **Giấy phép:** [PolyForm Noncommercial License 1.0.0](LICENSE)
+- **Giấy phép:** [Apache License 2.0](LICENSE)
 
 ---
 
@@ -98,9 +98,8 @@ cargo run -p greenc-app
 
 ## Giấy phép sử dụng
 
-GreenC được phát hành theo giấy phép **[PolyForm Noncommercial License 1.0.0](LICENSE)** (`PolyForm-Noncommercial-1.0.0`).
+GreenC là phần mềm mã nguồn mở phát hành theo giấy phép **[Apache License 2.0](LICENSE)** (`Apache-2.0`).
 
-- **Được phép:** Sử dụng miễn phí cho mục đích cá nhân, học tập, nghiên cứu, chỉnh sửa và chia sẻ lại cho **mọi mục đích phi thương mại**.
-- **Không được phép (khi chưa có sự đồng ý bằng văn bản):** Kinh doanh, bán lại, phân phối thu phí hoặc đóng gói thương mại.
+- **Được phép:** Sử dụng miễn phí cho cả mục đích cá nhân và thương mại, chỉnh sửa, phân phối và đóng góp theo các điều khoản của giấy phép Apache 2.0.
 
-Liên hệ cấp phép thương mại hoặc hỗ trợ: **cungchat.com@gmail.com**.
+Liên hệ hỗ trợ: **cungchat.com@gmail.com**.
