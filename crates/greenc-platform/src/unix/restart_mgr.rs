@@ -117,7 +117,7 @@ impl RestartManagerApi for NativeRestartManagerApi {
 pub struct MockRestartManagerApi {
     pub locked_by_path: Arc<Mutex<HashMap<PathBuf, Vec<LockingProcessInfo>>>>,
     pub pid_services: Arc<Mutex<HashMap<u32, (String, String)>>>,
-    pub running_services: Arc<Mutex<std::collections::HashSet<String>>>,
+    pub running_services: Arc<Mutex<HashMap<String, bool>>>,
 }
 
 impl MockRestartManagerApi {
@@ -125,29 +125,27 @@ impl MockRestartManagerApi {
         Self::default()
     }
 
-    pub fn add_lock(&self, path: PathBuf, info: LockingProcessInfo) {
+    pub fn register_lock(&self, path: &Path, info: LockingProcessInfo) {
         self.locked_by_path
             .lock()
             .unwrap()
-            .entry(path)
+            .entry(path.to_path_buf())
             .or_default()
             .push(info);
     }
 
-    pub fn add_pid_service(&self, pid: u32, short_name: String, display_name: String) {
+    pub fn register_pid_service(&self, pid: u32, short_name: &str, display_name: &str) {
         self.pid_services
             .lock()
             .unwrap()
-            .insert(pid, (short_name, display_name));
+            .insert(pid, (short_name.to_string(), display_name.to_string()));
     }
 
-    pub fn set_service_running(&self, service_name: &str, running: bool) {
-        let mut set = self.running_services.lock().unwrap();
-        if running {
-            set.insert(service_name.to_ascii_lowercase());
-        } else {
-            set.remove(&service_name.to_ascii_lowercase());
-        }
+    pub fn set_service_running(&self, short_name: &str, running: bool) {
+        self.running_services
+            .lock()
+            .unwrap()
+            .insert(short_name.to_ascii_lowercase(), running);
     }
 }
 
@@ -157,7 +155,7 @@ impl RestartManagerApi for MockRestartManagerApi {
         let mut results = Vec::new();
         for p in paths {
             if let Some(entries) = map.get(*p) {
-                results.extend(entries.clone());
+                results.extend(entries.iter().cloned());
             }
         }
         Ok(results)
@@ -172,6 +170,8 @@ impl RestartManagerApi for MockRestartManagerApi {
             .running_services
             .lock()
             .unwrap()
-            .contains(&service_name.to_ascii_lowercase()))
+            .get(&service_name.to_ascii_lowercase())
+            .copied()
+            .unwrap_or(false))
     }
 }

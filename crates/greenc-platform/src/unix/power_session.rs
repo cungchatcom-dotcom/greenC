@@ -224,8 +224,11 @@ pub struct MockPowerSessionApi {
 }
 
 impl MockPowerSessionApi {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(state: PowerSessionState) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(state)),
+            autostart_entries: Arc::new(Mutex::new(std::collections::HashMap::new())),
+        }
     }
 
     pub fn set_state(&self, state: PowerSessionState) {
