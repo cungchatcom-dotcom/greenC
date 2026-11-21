@@ -16,6 +16,8 @@ use windows::Win32::UI::Shell::{
 };
 
 const RUN_REGISTRY_SUBKEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+const STARTUP_APPROVED_SUBKEY: &str =
+    r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run";
 
 /// Snapshot of system power and fullscreen/presentation session state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -173,6 +175,26 @@ pub fn set_autostart_registry_native(app_name: &str, exe_path: &Path, enabled: b
                 code: set_err.0,
                 message: "RegSetValueExW failed for autostart".to_string(),
             });
+        }
+        // Clear any Task Manager "StartupApproved" disabled override so Windows honors the Run entry.
+        let approved_subkey_w = to_wide_null(STARTUP_APPROVED_SUBKEY);
+        let mut approved_raw = HKEY::default();
+        // SAFETY: Best-effort open & delete of per-user StartupApproved override; missing key/value is ignored.
+        let approved_open = unsafe {
+            RegOpenKeyExW(
+                HKEY_CURRENT_USER,
+                PCWSTR(approved_subkey_w.as_ptr()),
+                0,
+                KEY_SET_VALUE,
+                &mut approved_raw,
+            )
+        };
+        if approved_open.is_ok() {
+            if let Some(approved_key) = OwnedRegKey::new(approved_raw) {
+                unsafe {
+                    let _ = RegDeleteValueW(approved_key.raw(), PCWSTR(value_name_w.as_ptr()));
+                }
+            }
         }
     } else {
         // SAFETY: Deleting a missing value returns `ERROR_FILE_NOT_FOUND` (2), which is harmless.

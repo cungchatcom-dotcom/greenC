@@ -580,5 +580,10 @@
   "Đang kiểm tra...": "Checking...",
   "Bạn đang dùng phiên bản mới nhất": "You are on the latest version",
   "Đã bật khởi động cùng hệ điều hành.": "Start with OS enabled.",
-  "Đã tắt khởi động cùng hệ điều hành.": "Start with OS disabled."
+  "Đã tắt khởi động cùng hệ điều hành.": "Start with OS disabled.",
+  "Có thay đổi chưa lưu": "Unsaved changes",
+  "Lưu cài đặt": "Save settings",
+  "Đã lưu cài đặt — Khởi động cùng hệ điều hành đang bật.": "Settings saved — Start with OS is enabled.",
+  "Đã lưu cài đặt.": "Settings saved.",
+  "Đang tải danh sách quy tắc...": "Loading quota rules..."
 }

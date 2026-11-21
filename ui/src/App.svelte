@@ -82,6 +82,13 @@
       autostartEnabled = updated.autostart_enabled;
     } catch (err) {
       console.error("Failed to toggle autostart:", err);
+      activeAlert = {
+        kind: "autostart_error",
+        severity: "critical",
+        title: t("Khởi động cùng hệ điều hành"),
+        detail: err instanceof Error ? err.message : String(err),
+        archive_id: null,
+      };
     } finally {
       togglingAutostart = false;
     }
