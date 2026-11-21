@@ -30,13 +30,34 @@ pub fn discover_zalo_profile(
     local_appdata: Option<&Path>,
     running_exe_dirs: &HashSet<PathBuf>,
 ) -> Option<DiscoveredAppProfile> {
-    let roaming = std::env::var_os("APPDATA").map(PathBuf::from)?;
+    let cfg_path = config_file.map(Path::to_path_buf).or_else(|| {
+        std::env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME").map(|h| {
+                    let home = PathBuf::from(h);
+                    if cfg!(target_os = "macos") {
+                        home.join("Library").join("Application Support")
+                    } else {
+                        home.join(".config")
+                    }
+                })
+            })
+            .map(|base| base.join("ZaloData").join("config.json"))
+    })?;
     let local = local_appdata
         .map(Path::to_path_buf)
-        .or_else(|| std::env::var_os("LOCALAPPDATA").map(PathBuf::from))?;
-    let cfg_path = config_file
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| roaming.join("ZaloData").join("config.json"));
+        .or_else(|| std::env::var_os("LOCALAPPDATA").map(PathBuf::from))
+        .or_else(|| {
+            std::env::var_os("HOME").map(|h| {
+                let home = PathBuf::from(h);
+                if cfg!(target_os = "macos") {
+                    home.join("Library").join("Application Support")
+                } else {
+                    home.join(".local").join("share")
+                }
+            })
+        })?;
 
     let mut reclaimable = Vec::new();
     let mut protected = Vec::new();
