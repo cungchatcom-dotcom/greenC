@@ -50,6 +50,7 @@
 
   let settings = $state<AppSettingsDto | null>(null);
   let drives = $state<DriveInfo[]>([]);
+  let refreshingDrives = $state(false);
   let rules = $state<QuotaRuleStatusDto[]>([]);
   let loadingRules = $state(true);
   let rulesLoadError = $state<string | null>(null);
@@ -70,7 +71,9 @@
   let draftPauseBattery = $state(true);
   let draftLowDiskGb = $state(10);
   let savingGuardian = $state(false);
-  let guardianFeedback = $state<{ kind: "ok" | "err"; text: string } | null>(null);
+  let guardianFeedback = $state<{ kind: "ok" | "err"; text: string } | null>(
+    null,
+  );
 
   const hasGuardianChanges = $derived(
     settings !== null &&
@@ -82,10 +85,7 @@
   // Sync from sidebar quick-toggle only when the sidebar prop changes independently
   let lastSyncedProp = $state<boolean | undefined>(undefined);
   $effect(() => {
-    if (
-      autostartEnabled !== undefined &&
-      autostartEnabled !== lastSyncedProp
-    ) {
+    if (autostartEnabled !== undefined && autostartEnabled !== lastSyncedProp) {
       lastSyncedProp = autostartEnabled;
       if (settings && settings.autostart_enabled !== autostartEnabled) {
         settings = { ...settings, autostart_enabled: autostartEnabled };
@@ -143,8 +143,42 @@
     void loadRulesAsync();
   }
 
+  async function refreshDrives() {
+    if (refreshingDrives) return;
+    refreshingDrives = true;
+    try {
+      const boot = await getBootstrapState();
+      drives = boot.drives ?? [];
+    } catch (err: unknown) {
+      console.error("Failed to refresh drives:", err);
+    } finally {
+      refreshingDrives = false;
+    }
+  }
+
+  function dataRootForDrive(root: string): string {
+    const sep = root.includes("\\") || /^[A-Za-z]:$/.test(root) ? "\\" : "/";
+    const normalized =
+      root.endsWith("\\") || root.endsWith("/") ? root : `${root}${sep}`;
+    return `${normalized}GreenC`;
+  }
+
+  function formatDrivePrefix(d: DriveInfo): string {
+    if (d.root.startsWith("/") || !/^[A-Za-z]$/.test(d.drive_letter ?? "")) {
+      return d.root;
+    }
+    return `${d.drive_letter}:`;
+  }
+
   onMount(() => {
     loadAll();
+    const handleWindowFocus = () => {
+      void refreshDrives();
+    };
+    window.addEventListener("focus", handleWindowFocus);
+    return () => {
+      window.removeEventListener("focus", handleWindowFocus);
+    };
   });
 
   async function onLanguageChange(newLang: string) {
@@ -420,21 +454,48 @@
     </div>
 
     <div class="flex flex-col sm:flex-row gap-2.5">
-      <select
-        onchange={(e) => {
-          const letter = (e.currentTarget as HTMLSelectElement).value;
-          if (letter) newDataRoot = `${letter}:\\GreenC`;
-        }}
-        class="px-3 py-2 rounded-lg border border-border bg-subtle text-xs font-semibold text-primary"
-      >
-        <option value="">{t("Chọn nhanh ổ đĩa...")}</option>
-        {#each drives.filter((d) => d.is_eligible) as d}
-          <option value={d.drive_letter}>
-            {d.drive_letter}: ({formatSize(d.free_bytes)}
-            {t("trống")})
-          </option>
-        {/each}
-      </select>
+      <div class="flex items-center gap-1.5">
+        <select
+          onchange={(e) => {
+            const target = e.currentTarget as HTMLSelectElement;
+            const root = target.value;
+            if (root) {
+              newDataRoot = dataRootForDrive(root);
+              target.value = "";
+            }
+          }}
+          class="px-3 py-2 rounded-lg border border-border bg-subtle text-xs font-semibold text-primary max-w-[280px]"
+        >
+          <option value="">{t("Chọn nhanh ổ đĩa...")}</option>
+          {#each drives.filter((d) => d.is_eligible) as d}
+            <option value={d.root}>
+              {formatDrivePrefix(d)}{d.label ? ` ${d.label}` : ""} ({formatSize(
+                d.free_bytes,
+              )}
+              {t("trống")})
+            </option>
+          {/each}
+          {#each drives.filter((d) => !d.is_eligible) as d}
+            <option value="" disabled>
+              {formatDrivePrefix(d)}{d.label ? ` ${d.label}` : ""} — {d.ineligible_reason ??
+                d.filesystem}
+            </option>
+          {/each}
+        </select>
+
+        <button
+          type="button"
+          onclick={() => void refreshDrives()}
+          disabled={refreshingDrives}
+          title={t("Làm mới danh sách ổ đĩa")}
+          aria-label={t("Làm mới danh sách ổ đĩa")}
+          class="p-2 rounded-lg border border-border bg-subtle hover:bg-card text-secondary hover:text-primary disabled:opacity-50 transition-colors"
+        >
+          <RefreshCw
+            class={`h-3.5 w-3.5 ${refreshingDrives ? "animate-spin text-accent" : ""}`}
+          />
+        </button>
+      </div>
 
       <input
         type="text"
@@ -494,7 +555,9 @@
         <span>{t("Chạy ngầm thông minh & Lá chắn ổ C:")}</span>
       </div>
       {#if hasGuardianChanges}
-        <span class="px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-400 text-[11px] font-semibold">
+        <span
+          class="px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-400 text-[11px] font-semibold"
+        >
           {t("Có thay đổi chưa lưu")}
         </span>
       {/if}
@@ -564,11 +627,15 @@
             oninput={() => (guardianFeedback = null)}
             class="w-20 px-2.5 py-1.5 rounded-lg border border-border bg-subtle text-center font-bold text-primary tabular-numbers"
           />
-          <span dir="ltr" class="text-secondary font-medium ltr-isolate">GB</span>
+          <span dir="ltr" class="text-secondary font-medium ltr-isolate"
+            >GB</span
+          >
         </div>
       </div>
 
-      <div class="flex items-center justify-between gap-3 pt-3 border-t border-border flex-wrap">
+      <div
+        class="flex items-center justify-between gap-3 pt-3 border-t border-border flex-wrap"
+      >
         <div class="min-w-0 flex-1">
           {#if guardianFeedback}
             <div
