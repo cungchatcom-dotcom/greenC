@@ -637,3 +637,18 @@ pub async fn run_sandbox_demo(
     .await
     .map_err(|e| format!("Sandbox demo join error: {e}"))?
 }
+
+/// Unloads the main WebView window into background system tray mode (`< 15 MB` RAM)
+/// while keeping `BackgroundGuardian` active.
+#[tauri::command]
+pub fn hide_to_tray(app: AppHandle) -> std::result::Result<bool, String> {
+    use tauri::Manager;
+    if let Some(win) = app.get_webview_window(crate::tray::MAIN_WINDOW_LABEL) {
+        if let Err(err) = win.destroy() {
+            tracing::warn!("hide_to_tray destroy fallback to hide(): {err}");
+            win.hide().map_err(|e| e.to_string())?;
+        }
+        return Ok(true);
+    }
+    Ok(false)
+}

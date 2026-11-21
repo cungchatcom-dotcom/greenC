@@ -44,22 +44,28 @@
   let demoResult = $state<SandboxDemoResultDto | null>(null);
 
   async function loadAll() {
-    try {
-      const [cfg, boot, ruleList] = await Promise.all([
-        getAppSettings(),
-        getBootstrapState(),
-        listQuotaRules()
-      ]);
+    const [cfgRes, bootRes, ruleRes] = await Promise.allSettled([
+      getAppSettings(),
+      getBootstrapState(),
+      listQuotaRules()
+    ]);
+
+    if (bootRes.status === 'fulfilled') {
+      drives = bootRes.value.drives ?? [];
+    }
+    if (cfgRes.status === 'fulfilled') {
+      const cfg = cfgRes.value;
       settings = cfg;
-      drives = boot.drives;
-      rules = ruleList;
-      newDataRoot = cfg.data_root || 'D:\\GreenC';
+      newDataRoot = cfg.data_root || (drives[0]?.root ? `${drives[0].root}GreenC` : 'D:\\GreenC');
       i18n.init(cfg.language, cfg.translations, cfg.theme_mode);
-    } catch (err: unknown) {
+    } else {
       statusBanner = {
         kind: 'err',
-        text: err instanceof Error ? err.message : String(err)
+        text: cfgRes.reason instanceof Error ? cfgRes.reason.message : String(cfgRes.reason)
       };
+    }
+    if (ruleRes.status === 'fulfilled') {
+      rules = ruleRes.value;
     }
   }
 
@@ -330,8 +336,8 @@
     <div class="space-y-3 text-xs">
       <label class="flex items-center justify-between gap-4 cursor-pointer">
         <div>
-          <div class="font-semibold text-primary">{t('Khởi động cùng Windows (chạy ẩn ở khay hệ thống)')}</div>
-          <div class="text-secondary">{t('Tự giải phóng WebView2 khi đóng cửa sổ để giữ RAM chạy ngầm dưới 15 MB.')}</div>
+          <div class="font-semibold text-primary">{t('Khởi động cùng hệ điều hành')}</div>
+          <div class="text-secondary">{t('Chạy ngầm ở khay hệ thống (< 15 MB RAM) để tự bảo vệ ổ đĩa mỗi ngày.')}</div>
         </div>
         <input
           type="checkbox"

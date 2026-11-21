@@ -1,8 +1,23 @@
-<!-- ui/src/lib/components/FirstRunModal.svelte -->
+<!-- ui/src/lib/components/FirstRunModal.svelte: 2-Step Goal-First Onboarding -->
 <script lang="ts">
   import { t, formatSize } from '$lib/i18n.svelte';
-  import { completeFirstRun, type DriveInfo } from '$lib/api';
-  import { HardDrive, AlertTriangle, CheckCircle, Clock } from 'lucide-svelte';
+  import {
+    completeFirstRun,
+    saveDriveQuota,
+    updateSettings,
+    type DriveInfo
+  } from '$lib/api';
+  import BrandLogo from '$lib/components/BrandLogo.svelte';
+  import {
+    HardDrive,
+    AlertTriangle,
+    CheckCircle,
+    Clock,
+    Target,
+    ShieldCheck,
+    ArrowRight,
+    ArrowLeft
+  } from 'lucide-svelte';
 
   interface Props {
     drives: DriveInfo[];
@@ -15,27 +30,41 @@
   let {
     drives,
     recommendedDrive,
-    initialRetentionDays = 14,
+    initialRetentionDays = 7,
     onCompleted,
     onDefer
   }: Props = $props();
 
-  // Find optimal default drive
-  let initialDrive = $derived(
-    recommendedDrive ||
-    drives.find((d) => d.is_eligible && !d.is_system)?.drive_letter ||
-    drives.find((d) => d.is_eligible)?.drive_letter ||
-    'C'
-  );
+  let step = $state<1 | 2>(1);
 
+  // Step 1: Goal state (protect system drive by default)
+  let systemDrive = $derived(drives.find((d) => d.is_system) ?? drives[0] ?? null);
+  let goalDriveRoot = $state('');
+  $effect(() => {
+    if (!goalDriveRoot && systemDrive) {
+      goalDriveRoot = systemDrive.root;
+    }
+  });
+  let goalMaxPct = $state(80);
+  let goalAutoClean = $state(true);
+  let goalWarnPct = $derived(Math.max(40, goalMaxPct - 5));
+  let goalTargetPct = $derived(Math.max(35, goalMaxPct - 10));
+
+  // Step 2: Vault storage & Autostart
+  let initialVaultDrive = $derived(
+    recommendedDrive ||
+      drives.find((d) => d.is_eligible && !d.is_system)?.drive_letter ||
+      drives.find((d) => d.is_eligible)?.drive_letter ||
+      'C'
+  );
   let selectedDrive = $state('');
   $effect(() => {
-    if (!selectedDrive && initialDrive) {
-      selectedDrive = initialDrive;
+    if (!selectedDrive && initialVaultDrive) {
+      selectedDrive = initialVaultDrive;
     }
   });
 
-  let retentionDays = $state(14);
+  let retentionDays = $state(7);
   let retentionInitialized = false;
   $effect(() => {
     const initial = initialRetentionDays;
@@ -44,22 +73,39 @@
       retentionInitialized = true;
     }
   });
+  let enableAutostart = $state(true);
+
   let isSubmitting = $state(false);
   let errorMessage = $state<string | null>(null);
 
-  // Derived selected target data root
-  let targetDataRoot = $derived(`${selectedDrive || 'C'}:\\GreenC\\`);
-
-  async function handleConfirm(driveToUse: string) {
+  async function handleFinish() {
     if (isSubmitting) return;
     isSubmitting = true;
     errorMessage = null;
 
     try {
-      await completeFirstRun(driveToUse, retentionDays);
+      await completeFirstRun(selectedDrive || initialVaultDrive, retentionDays);
+      if (goalDriveRoot) {
+        await saveDriveQuota({
+          drive_root: goalDriveRoot,
+          limit_bytes: 0,
+          warn_ratio: goalWarnPct / 100,
+          clean_ratio: goalMaxPct / 100,
+          target_ratio: goalTargetPct / 100,
+          auto_clean: goalAutoClean,
+          auto_backup: false,
+          backup_dir: null,
+          enabled: true
+        });
+      }
+      try {
+        await updateSettings({ autostart_enabled: enableAutostart });
+      } catch {
+        // Non-fatal if OS blocks autostart registration in sandboxed env
+      }
       onCompleted();
-    } catch (err: any) {
-      errorMessage = err?.message || String(err);
+    } catch (err: unknown) {
+      errorMessage = err instanceof Error ? err.message : String(err);
       isSubmitting = false;
     }
   }
@@ -68,23 +114,32 @@
     if (onDefer) {
       onDefer();
     } else {
-      const fallbackDrive = recommendedDrive || initialDrive;
-      handleConfirm(fallbackDrive);
+      handleFinish();
     }
   }
 </script>
 
-<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
-  <div class="w-full max-w-xl rounded-xl border border-border bg-card p-6 shadow-2xl flex flex-col gap-5 animate-in fade-in zoom-in-95 duration-200 max-h-full overflow-y-auto">
-    <!-- Header -->
-    <div class="space-y-1">
-      <h2 class="text-xl font-bold text-primary flex items-center gap-2">
-        <HardDrive class="h-5 w-5 text-accent" />
-        {t('Chọn nơi lưu dữ liệu')}
-      </h2>
-      <p class="text-sm text-secondary leading-relaxed">
-        {t('{app} chuyển dữ liệu ứng dụng và Kho dự phòng sang ổ này để giải phóng ổ C:. Có thể đổi lại trong Cài đặt.', { app: 'GreenC' })}
-      </p>
+<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/55 backdrop-blur-sm p-4">
+  <div class="w-full max-w-xl rounded-2xl border border-border bg-card p-6 shadow-2xl flex flex-col gap-5 max-h-full overflow-y-auto">
+    <!-- Brand + Stepper Header -->
+    <div class="flex items-center justify-between gap-3">
+      <div class="flex items-center gap-2.5">
+        <BrandLogo size={32} />
+        <div>
+          <div class="text-sm font-bold text-primary">GreenC</div>
+          <div class="text-[11px] text-secondary">
+            {t('Đặt hạn mức một lần, ổ đĩa luôn xanh mỗi ngày')}
+          </div>
+        </div>
+      </div>
+      <div class="flex items-center gap-1.5 text-[11px] font-semibold">
+        <span class={`px-2.5 py-1 rounded-full ${step === 1 ? 'bg-accent text-white' : 'bg-accent/15 text-accent'}`}>
+          1. {t('Mục tiêu')}
+        </span>
+        <span class={`px-2.5 py-1 rounded-full ${step === 2 ? 'bg-accent text-white' : 'bg-subtle text-secondary'}`}>
+          2. {t('Kho an toàn')}
+        </span>
+      </div>
     </div>
 
     {#if errorMessage}
@@ -94,121 +149,210 @@
       </div>
     {/if}
 
-    <!-- Drive Cards Radio Group -->
-    <div class="space-y-2.5 max-h-[280px] overflow-y-auto pr-1">
-      {#each drives as drive}
-        {@const isSelected = selectedDrive === drive.drive_letter}
-        {@const usedRatio = drive.total_bytes > 0 ? (drive.total_bytes - drive.free_bytes) / drive.total_bytes : 0}
-        {@const isDanger = usedRatio >= 0.90}
+    {#if step === 1}
+      <!-- STEP 1: Set Drive Goal -->
+      <div class="space-y-4">
+        <div class="space-y-1">
+          <h2 class="text-lg font-bold text-primary flex items-center gap-2">
+            <Target class="h-5 w-5 text-accent" />
+            {t('Đặt mục tiêu giữ ổ đĩa luôn xanh')}
+          </h2>
+          <p class="text-xs text-secondary leading-relaxed">
+            {t('Chỉ cần chọn ổ đĩa và mức dung lượng tối đa bạn muốn giữ. Mọi hoạt động dọn dẹp và báo cáo sẽ xoay quanh mục tiêu này.')}
+          </p>
+        </div>
 
-        <label
-          class={`flex items-start gap-3.5 p-3.5 rounded-lg border transition-all cursor-pointer ${
-            !drive.is_eligible
-              ? 'opacity-60 bg-subtle/50 border-border cursor-not-allowed'
-              : isSelected
-              ? 'border-accent bg-accent/5 ring-1 ring-accent'
-              : 'border-border bg-card hover:bg-subtle'
-          }`}
-        >
-          <input
-            type="radio"
-            name="driveSelection"
-            value={drive.drive_letter}
-            checked={isSelected}
-            disabled={!drive.is_eligible}
-            onchange={() => (selectedDrive = drive.drive_letter)}
-            class="mt-1 h-4 w-4 text-accent border-border focus:ring-accent"
-          />
-
-          <div class="flex-1 space-y-2">
-            <div class="flex items-center justify-between">
-              <div class="flex items-center gap-2">
-                <span class="font-bold text-primary">{drive.drive_letter}:</span>
-                <span class="text-sm text-secondary">{drive.label || t('Ổ đĩa cục bộ')}</span>
-              </div>
-
-              <!-- Badges -->
-              <div class="flex items-center gap-1.5">
-                {#if !drive.is_eligible}
-                  <span class="px-2 py-0.5 rounded text-[11px] font-medium bg-danger/10 text-danger border border-danger/20">
-                    {t('Không dùng được')}
-                  </span>
-                {:else if recommendedDrive === drive.drive_letter}
-                  <span class="px-2 py-0.5 rounded text-[11px] font-medium bg-accent/15 text-accent border border-accent/30 flex items-center gap-1">
-                    <CheckCircle class="h-3 w-3" />
-                    {t('Đề xuất')}
-                  </span>
-                {:else if drive.is_system}
-                  <span class="px-2 py-0.5 rounded text-[11px] font-medium bg-subtle text-secondary border border-border">
-                    {t('Ổ hệ thống')}
-                  </span>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5 max-h-[190px] overflow-y-auto pr-1">
+          {#each drives as d (d.root)}
+            {@const isSelected = goalDriveRoot === d.root}
+            {@const usedPct = d.total_bytes > 0 ? Math.round(((d.total_bytes - d.free_bytes) / d.total_bytes) * 100) : 0}
+            <button
+              type="button"
+              onclick={() => (goalDriveRoot = d.root)}
+              class={`text-start p-3 rounded-xl border transition-all space-y-1.5 ${
+                isSelected
+                  ? 'border-accent bg-accent/10 ring-1 ring-accent'
+                  : 'border-border bg-subtle/40 hover:bg-subtle'
+              }`}
+            >
+              <div class="flex items-center justify-between gap-2">
+                <div class="flex items-center gap-1.5 min-w-0">
+                  <HardDrive class="h-4 w-4 text-accent shrink-0" />
+                  <span dir="ltr" class="font-mono font-bold text-primary truncate">{d.root}</span>
+                  {#if d.is_system}
+                    <span class="px-1.5 py-0.5 rounded text-[10px] bg-accent/15 text-accent font-semibold">
+                      {t('Ổ hệ thống')}
+                    </span>
+                  {/if}
+                </div>
+                {#if isSelected}
+                  <CheckCircle class="h-4 w-4 text-accent shrink-0" />
                 {/if}
               </div>
-            </div>
+              <div class="h-1.5 rounded-full bg-border overflow-hidden">
+                <div class={`h-full rounded-full ${usedPct >= 90 ? 'bg-danger' : 'bg-accent'}`} style="width: {usedPct}%"></div>
+              </div>
+              <div class="text-[11px] text-secondary tabular-numbers">
+                {t('Còn trống {free} / {total}', { free: formatSize(d.free_bytes), total: formatSize(d.total_bytes) })} ({usedPct}%)
+              </div>
+            </button>
+          {/each}
+        </div>
 
-            <!-- Capacity Progress Bar -->
-            <div class="w-full bg-border/40 h-1.5 rounded-full overflow-hidden">
-              <div
-                class={`h-full transition-all duration-300 ${isDanger ? 'bg-danger' : 'bg-accent'}`}
-                style="width: {Math.round(usedRatio * 100)}%"
-              ></div>
-            </div>
+        <!-- Goal Slider -->
+        <div class="rounded-xl border border-accent/25 bg-accent/5 p-4 space-y-3">
+          <div class="flex items-center justify-between">
+            <span class="text-xs font-semibold text-primary">
+              {t('Giữ ổ luôn xanh dưới mức')}
+            </span>
+            <span class="text-xl font-bold text-accent tabular-numbers">{goalMaxPct}%</span>
+          </div>
+          <input
+            type="range"
+            min="55"
+            max="90"
+            step="5"
+            bind:value={goalMaxPct}
+            class="w-full accent-accent cursor-pointer"
+          />
+          <div class="flex justify-between text-[11px] text-secondary tabular-numbers">
+            <span>{t('Cảnh báo ở {pct}%', { pct: goalWarnPct })}</span>
+            <span>{t('Tự động dọn về {pct}%', { pct: goalTargetPct })}</span>
+          </div>
 
-            <div class="flex items-center justify-between text-xs text-secondary tabular-numbers">
-              {#if drive.is_eligible}
-                <span>{t('Còn trống {free} / {total}', { free: formatSize(drive.free_bytes), total: formatSize(drive.total_bytes) })}</span>
-                <span>{Math.round(usedRatio * 100)}%</span>
-              {:else}
-                <span class="text-danger">{drive.ineligible_reason || t('Định dạng không được hỗ trợ')}</span>
+          <label class="flex items-center gap-2.5 pt-2 border-t border-border/60 text-xs text-primary cursor-pointer">
+            <input type="checkbox" bind:checked={goalAutoClean} class="h-4 w-4 rounded border-border text-accent" />
+            <span>{t('Tự động dọn file rác vào Kho an toàn khi vượt mức này')}</span>
+          </label>
+        </div>
+
+        <div class="flex items-center justify-between pt-1">
+          <button
+            type="button"
+            onclick={handleLater}
+            class="text-xs text-secondary hover:text-primary font-medium"
+          >
+            {t('Để sau')}
+          </button>
+          <button
+            type="button"
+            onclick={() => (step = 2)}
+            class="inline-flex items-center gap-1.5 px-5 py-2.5 rounded-lg bg-accent hover:bg-accent-hover text-white text-xs font-semibold shadow-sm"
+          >
+            {t('Tiếp tục')}
+            <ArrowRight class="h-4 w-4" />
+          </button>
+        </div>
+      </div>
+    {:else}
+      <!-- STEP 2: Canary Vault Storage & Background Protection -->
+      <div class="space-y-4">
+        <div class="space-y-1">
+          <h2 class="text-lg font-bold text-primary flex items-center gap-2">
+            <ShieldCheck class="h-5 w-5 text-accent" />
+            {t('Chọn nơi lưu dữ liệu')}
+          </h2>
+          <p class="text-xs text-secondary leading-relaxed">
+            {t('Mọi file dọn dẹp được nén và cất vào Kho an toàn trước khi xóa — bạn có thể khôi phục nguyên vẹn bất cứ lúc nào.')}
+          </p>
+        </div>
+
+        <div class="space-y-2 max-h-[200px] overflow-y-auto pr-1">
+          {#each drives as drive (drive.root)}
+            {@const isSelected = selectedDrive === drive.drive_letter}
+            {@const usedRatio = drive.total_bytes > 0 ? (drive.total_bytes - drive.free_bytes) / drive.total_bytes : 0}
+            <label
+              class={`flex items-center justify-between gap-3 p-3 rounded-xl border transition-all cursor-pointer ${
+                !drive.is_eligible
+                  ? 'opacity-50 bg-subtle/40 border-border cursor-not-allowed'
+                  : isSelected
+                  ? 'border-accent bg-accent/10 ring-1 ring-accent'
+                  : 'border-border bg-subtle/30 hover:bg-subtle'
+              }`}
+            >
+              <div class="flex items-center gap-3 min-w-0">
+                <input
+                  type="radio"
+                  name="vaultDrive"
+                  value={drive.drive_letter}
+                  checked={isSelected}
+                  disabled={!drive.is_eligible}
+                  onchange={() => (selectedDrive = drive.drive_letter)}
+                  class="h-4 w-4 text-accent border-border"
+                />
+                <div class="min-w-0">
+                  <div class="text-xs font-bold text-primary flex items-center gap-1.5">
+                    <span dir="ltr" class="font-mono">{drive.root}</span>
+                    <span class="font-normal text-secondary truncate">{drive.label || t('Ổ đĩa cục bộ')}</span>
+                  </div>
+                  <div class="text-[11px] text-secondary tabular-numbers">
+                    {#if drive.is_eligible}
+                      {t('Còn trống {free} / {total}', { free: formatSize(drive.free_bytes), total: formatSize(drive.total_bytes) })} ({Math.round(usedRatio * 100)}%)
+                    {:else}
+                      <span class="text-danger">{drive.ineligible_reason || t('Không dùng được')}</span>
+                    {/if}
+                  </div>
+                </div>
+              </div>
+              {#if drive.is_eligible && recommendedDrive === drive.drive_letter}
+                <span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-accent/15 text-accent shrink-0">
+                  {t('Đề xuất')}
+                </span>
               {/if}
+            </label>
+          {/each}
+        </div>
+
+        <div class="rounded-xl border border-border bg-subtle/40 p-3.5 space-y-3 text-xs">
+          <div class="flex items-center justify-between gap-3">
+            <div class="flex items-center gap-2 text-primary font-medium">
+              <Clock class="h-4 w-4 text-accent" />
+              <span>{t('Giữ bản sao lưu an toàn trong')}</span>
+            </div>
+            <div class="flex items-center gap-1.5">
+              <input
+                type="number"
+                min="1"
+                max="90"
+                bind:value={retentionDays}
+                class="w-16 rounded-lg border border-border bg-card px-2 py-1 text-center font-bold text-primary tabular-numbers"
+              />
+              <span class="text-secondary">{t('ngày')}</span>
             </div>
           </div>
-        </label>
-      {/each}
-    </div>
 
-    <!-- Retention Days Setting -->
-    <div class="flex items-center gap-3 p-3 rounded-lg bg-subtle border border-border text-sm">
-      <Clock class="h-4 w-4 text-secondary shrink-0" />
-      <span class="text-primary">{t('Giữ bản dự phòng trong')}</span>
-      <input
-        type="number"
-        dir="ltr"
-        min="1"
-        max="90"
-        bind:value={retentionDays}
-        class="w-16 px-2 py-1 text-center font-bold rounded border border-border bg-card text-primary tabular-numbers focus:border-accent focus:ring-1 focus:ring-accent outline-none"
-      />
-      <span class="text-secondary">{t('ngày trước khi xóa vĩnh viễn')}</span>
-    </div>
+          <label class="flex items-center justify-between gap-3 pt-2.5 border-t border-border/60 cursor-pointer">
+            <div>
+              <div class="font-semibold text-primary">{t('Khởi động cùng hệ điều hành')}</div>
+              <div class="text-[11px] text-secondary">{t('Chạy ngầm ở khay hệ thống (< 15 MB RAM) để tự bảo vệ ổ đĩa mỗi ngày.')}</div>
+            </div>
+            <input
+              type="checkbox"
+              bind:checked={enableAutostart}
+              class="h-4 w-4 rounded border-border text-accent shrink-0"
+            />
+          </label>
+        </div>
 
-    <!-- Target Data Directory Preview -->
-    <div class="text-xs text-secondary px-1">
-      <span class="font-medium text-primary">{t('Thư mục: {path}', { path: targetDataRoot })}</span>
-    </div>
-
-    <!-- Footer Actions -->
-    <div class="flex items-center justify-end gap-2.5 pt-2 border-t border-border">
-      <button
-        type="button"
-        onclick={handleLater}
-        disabled={isSubmitting}
-        class="px-4 py-2 rounded-lg font-medium text-sm text-secondary hover:text-primary hover:bg-subtle transition-colors disabled:opacity-50"
-      >
-        {t('Để sau')}
-      </button>
-
-      <button
-        type="button"
-        onclick={() => handleConfirm(selectedDrive)}
-        disabled={isSubmitting || !selectedDrive}
-        class="px-5 py-2 rounded-lg font-medium text-sm bg-accent hover:bg-accent-hover text-white shadow-sm transition-colors flex items-center gap-2 disabled:opacity-50"
-      >
-        {#if isSubmitting}
-          <div class="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent"></div>
-        {/if}
-        {t('Tiếp tục')}
-      </button>
-    </div>
+        <div class="flex items-center justify-between pt-1">
+          <button
+            type="button"
+            onclick={() => (step = 1)}
+            class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-border text-xs text-secondary hover:text-primary"
+          >
+            <ArrowLeft class="h-3.5 w-3.5" />
+            {t('Quay lại')}
+          </button>
+          <button
+            type="button"
+            disabled={isSubmitting}
+            onclick={handleFinish}
+            class="inline-flex items-center gap-1.5 px-5 py-2.5 rounded-lg bg-accent hover:bg-accent-hover text-white text-xs font-semibold shadow-sm disabled:opacity-50"
+          >
+            {isSubmitting ? t('Đang thiết lập...') : t('Bắt đầu bảo vệ ổ đĩa')}
+          </button>
+        </div>
+      </div>
+    {/if}
   </div>
 </div>

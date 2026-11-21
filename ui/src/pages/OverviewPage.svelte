@@ -15,6 +15,7 @@
   import SpaceTreemap from '$lib/components/SpaceTreemap.svelte';
   import DailyBarChart from '$lib/components/DailyBarChart.svelte';
   import ExpandableTableCard from '$lib/components/ExpandableTableCard.svelte';
+  import GoalContextStrip from '$lib/components/GoalContextStrip.svelte';
   import {
     HardDrive,
     AlertCircle,
@@ -26,10 +27,12 @@
   } from 'lucide-svelte';
 
   interface Props {
+    goalRefreshKey?: number;
     onNavigateCleanup?: () => void;
+    onNavigateSettings?: () => void;
   }
 
-  let { onNavigateCleanup }: Props = $props();
+  let { goalRefreshKey = 0, onNavigateCleanup, onNavigateSettings }: Props = $props();
 
   let selectedDrive = $state('C');
   let availableDrives = $state<DriveInfo[]>([]);
@@ -120,6 +123,14 @@
 </script>
 
 <div class="flex flex-col gap-6 p-6 max-w-7xl mx-auto overflow-y-auto">
+  <!-- Objective-Driven Hero Card -->
+  <GoalContextStrip
+    mode="hero"
+    refreshKey={goalRefreshKey}
+    onActionCleanup={onNavigateCleanup}
+    onConfigureGoal={onNavigateSettings}
+  />
+
   <!-- Page Header -->
   <div class="flex items-center justify-between">
     <div>

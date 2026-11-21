@@ -99,6 +99,7 @@ pub fn run() {
             commands::drive_quota::save_drive_quota,
             commands::drive_quota::delete_drive_quota,
             commands::rules_settings::run_sandbox_demo,
+            commands::rules_settings::hide_to_tray,
         ])
         .setup(move |app| {
             let state = app.state::<AppState>().inner().clone();

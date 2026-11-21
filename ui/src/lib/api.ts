@@ -752,3 +752,7 @@ export async function deleteDriveQuota(quotaId: number): Promise<boolean> {
   return await invoke<boolean>('delete_drive_quota', { quotaId });
 }
 
+export async function hideToTray(): Promise<boolean> {
+  return await invoke<boolean>('hide_to_tray');
+}
+
