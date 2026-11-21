@@ -1,5 +1,8 @@
 name: GreenC v2 CI & Release Pipeline
 
+permissions:
+  contents: write
+
 on:
   push:
     branches: [main]
@@ -165,13 +168,19 @@ jobs:
       - name: Build macOS DMG Bundle (Tauri v2)
         run: pnpm dlx @tauri-apps/cli@2 build --config crates/greenc-app/tauri.conf.json --bundles dmg
 
+      - name: Stage Canonical macOS Release File
+        run: |
+          mkdir -p dist-macos
+          DMG=$(ls target/release/bundle/dmg/*.dmg | head -n 1)
+          VERSION="${GITHUB_REF_NAME#v}"
+          cp "$DMG" "dist-macos/GreenC-${VERSION}-macOS.dmg"
+          cp target/release/greenc-cli "dist-macos/greenc-cli-macos"
+
       - name: Upload macOS Release Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: GreenC-macOS-DMG
-          path: |
-            target/release/bundle/dmg/*.dmg
-            target/release/greenc-cli
+          path: dist-macos/*
 
   release-linux:
     name: Build Linux DEB & AppImage Release
@@ -224,11 +233,39 @@ jobs:
       - name: Build Linux DEB & AppImage Bundles (Tauri v2)
         run: pnpm dlx @tauri-apps/cli@2 build --config crates/greenc-app/tauri.conf.json --bundles deb,appimage
 
+      - name: Stage Canonical Linux Release Files
+        run: |
+          mkdir -p dist-linux
+          VERSION="${GITHUB_REF_NAME#v}"
+          DEB=$(ls target/release/bundle/deb/*.deb | head -n 1)
+          APPIMG=$(ls target/release/bundle/appimage/*.AppImage | head -n 1)
+          cp "$DEB" "dist-linux/GreenC-${VERSION}-Linux.deb"
+          cp "$APPIMG" "dist-linux/GreenC-${VERSION}-Linux.AppImage"
+          cp target/release/greenc-cli "dist-linux/greenc-cli-linux"
+
       - name: Upload Linux Release Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: GreenC-Linux-Packages
-          path: |
-            target/release/bundle/deb/*.deb
-            target/release/bundle/appimage/*.AppImage
-            target/release/greenc-cli
+          path: dist-linux/*
+
+  publish-release:
+    name: Publish GitHub Release (Windows, macOS, Linux)
+    needs: [release-windows, release-macos, release-linux]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download All Release Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: List Release Assets
+        run: ls -lh release-assets
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: release-assets/*

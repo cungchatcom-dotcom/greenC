@@ -2,7 +2,7 @@
 ; Built by scripts\build.ps1, which passes /DAppVersion=X.Y.Z (read from Cargo.toml).
 
 #ifndef AppVersion
-  #define AppVersion "2.0.0"
+  #define AppVersion "2.1.0"
 #endif
 
 #define AppName "GreenC"
