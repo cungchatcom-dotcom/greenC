@@ -197,14 +197,15 @@ fn test_treemap_degenerate_1000_tiny_tiles() {
 
 #[test]
 fn test_treemap_degenerate_zero_byte_tiles_filtered() {
-    let mut root = SpaceNode::empty(Path::new("C:\\"));
+    let base = Path::new("/root");
+    let mut root = SpaceNode::empty(base);
     root.physical_bytes = 500;
 
-    let mut z1 = SpaceNode::empty(Path::new("C:\\zero1"));
+    let mut z1 = SpaceNode::empty(&base.join("zero1"));
     z1.physical_bytes = 0;
-    let mut r1 = SpaceNode::empty(Path::new("C:\\real"));
+    let mut r1 = SpaceNode::empty(&base.join("real"));
     r1.physical_bytes = 500;
-    let mut z2 = SpaceNode::empty(Path::new("C:\\zero2"));
+    let mut z2 = SpaceNode::empty(&base.join("zero2"));
     z2.physical_bytes = 0;
 
     root.children = vec![z1, r1, z2];
