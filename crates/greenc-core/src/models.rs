@@ -517,10 +517,44 @@ impl DriveQuota {
     }
 }
 
-/// Normalizes a user-supplied drive root to `X:\` (upper-case letter, trailing backslash).
-/// Returns `None` when the text is not a drive root such as `C`, `c:` or `C:\`.
+/// Extracts an uppercase Windows drive letter if `raw` begins with `<letter>:`.
+fn windows_drive_letter(raw: &str) -> Option<char> {
+    let bytes = raw.as_bytes();
+    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        Some((bytes[0] as char).to_ascii_uppercase())
+    } else {
+        None
+    }
+}
+
+/// Normalizes a user-supplied drive root:
+/// - Windows drives (`C`, `c:`, `C:\`, `C:/`) -> `C:\`
+/// - Unix mount points (`/`, `/home`, `/home/`, `/Volumes/Data`) -> `/` or `/home`
+///
+/// Returns `None` for non-root Windows paths (`C:\Users`), relative paths, or invalid paths.
 pub fn normalize_drive_root(input: &str) -> Option<String> {
     let t = input.trim();
+    if t.is_empty() {
+        return None;
+    }
+
+    if t.starts_with('/') {
+        if t.starts_with("//") || t.contains('\\') || t.contains('\0') {
+            return None;
+        }
+        let stripped = t.trim_end_matches('/');
+        if stripped.is_empty() {
+            return Some("/".to_string());
+        }
+        if stripped[1..]
+            .split('/')
+            .any(|seg| seg.is_empty() || seg == "." || seg == "..")
+        {
+            return None;
+        }
+        return Some(stripped.to_string());
+    }
+
     let mut chars = t.chars();
     let letter = chars.next()?;
     if !letter.is_ascii_alphabetic() {
@@ -530,6 +564,62 @@ pub fn normalize_drive_root(input: &str) -> Option<String> {
     match rest.as_str() {
         "" | ":" | ":\\" | ":/" => Some(format!("{}:\\", letter.to_ascii_uppercase())),
         _ => None,
+    }
+}
+
+/// Returns `true` when `path` resides on the same filesystem/volume as `drive_root`.
+///
+/// Handles Windows drive letters case-insensitively (`C:\` vs `c:/foo`) and Unix mount points
+/// using POSIX device IDs (`st_dev`) when paths exist on disk, falling back to segment-aware
+/// path prefix matching when paths are synthetic/nonexistent.
+pub fn is_same_volume(path: &std::path::Path, drive_root: &std::path::Path) -> bool {
+    let path_str = path.to_string_lossy();
+    let root_str = drive_root.to_string_lossy();
+
+    let win_p = windows_drive_letter(&path_str);
+    let win_r = windows_drive_letter(&root_str);
+    if win_p.is_some() || win_r.is_some() {
+        return win_p.is_some() && win_p == win_r;
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if let Ok(root_meta) = std::fs::metadata(drive_root) {
+            let mut cur = Some(path);
+            while let Some(candidate) = cur {
+                if let Ok(cand_meta) = std::fs::metadata(candidate) {
+                    // Do not let a nonexistent path under a fake mount collapse to `/`.
+                    if candidate != std::path::Path::new("/")
+                        || drive_root == std::path::Path::new("/")
+                    {
+                        return cand_meta.dev() == root_meta.dev();
+                    }
+                    break;
+                }
+                cur = candidate.parent();
+            }
+        }
+    }
+
+    let norm = |s: &str| {
+        let replaced = s.trim().replace('\\', "/");
+        let trimmed = replaced.trim_end_matches('/');
+        if trimmed.is_empty() && replaced.starts_with('/') {
+            "/".to_string()
+        } else {
+            trimmed.to_string()
+        }
+    };
+    let p_norm = norm(&path_str);
+    let r_norm = norm(&root_str);
+    if r_norm.is_empty() || p_norm.is_empty() {
+        return false;
+    }
+    if r_norm == "/" {
+        p_norm == "/" || p_norm.starts_with('/')
+    } else {
+        p_norm == r_norm || p_norm.starts_with(&format!("{r_norm}/"))
     }
 }
 
@@ -544,8 +634,7 @@ impl DriveQuota {
             .backup_dir
             .as_ref()
             .ok_or_else(|| "Cần chọn thư mục sao lưu".to_string())?;
-        let key = |s: &str| s.chars().take(2).collect::<String>().to_ascii_uppercase();
-        if key(&dir.to_string_lossy()) == key(&self.drive_root) {
+        if is_same_volume(dir, std::path::Path::new(&self.drive_root)) {
             return Err("Thư mục sao lưu phải nằm trên ổ khác với ổ được bảo vệ".to_string());
         }
         Ok(())
@@ -594,5 +683,60 @@ mod drive_quota_tests {
         let q = q.normalized();
         assert!(q.target_ratio < q.clean_ratio && q.warn_ratio <= q.clean_ratio);
         assert_eq!(q.level(0, 0), QuotaLevel::Ok);
+    }
+
+    #[test]
+    fn normalize_drive_root_supports_windows_and_unix_mounts() {
+        assert_eq!(normalize_drive_root("c"), Some("C:\\".to_string()));
+        assert_eq!(normalize_drive_root(" d: "), Some("D:\\".to_string()));
+        assert_eq!(normalize_drive_root("E:/"), Some("E:\\".to_string()));
+        assert_eq!(normalize_drive_root("/"), Some("/".to_string()));
+        assert_eq!(normalize_drive_root("///"), None);
+        assert_eq!(normalize_drive_root("/home"), Some("/home".to_string()));
+        assert_eq!(normalize_drive_root("/home/"), Some("/home".to_string()));
+        assert_eq!(
+            normalize_drive_root("/Volumes/Data/"),
+            Some("/Volumes/Data".to_string())
+        );
+
+        assert_eq!(normalize_drive_root("C:\\Users"), None);
+        assert_eq!(normalize_drive_root("C:/Users"), None);
+        assert_eq!(normalize_drive_root("/home/../etc"), None);
+        assert_eq!(normalize_drive_root("//server/share"), None);
+        assert_eq!(normalize_drive_root("/bad\\path"), None);
+        assert_eq!(normalize_drive_root("1:"), None);
+        assert_eq!(normalize_drive_root(""), None);
+    }
+
+    #[test]
+    fn is_same_volume_handles_windows_and_unix_paths() {
+        use std::path::Path;
+
+        assert!(is_same_volume(Path::new("C:/bk"), Path::new("C:\\")));
+        assert!(is_same_volume(Path::new("c:\\Users\\a"), Path::new("C:\\")));
+        assert!(!is_same_volume(Path::new("D:\\bk"), Path::new("C:\\")));
+        assert!(!is_same_volume(Path::new("/tmp/bk"), Path::new("Q:/")));
+
+        // Synthetic Unix mounts: segment-boundary prefix match prevents /mnt/a matching /mnt/a2
+        assert!(is_same_volume(
+            Path::new("/nonexistent_mnt/disk1/bk"),
+            Path::new("/nonexistent_mnt/disk1")
+        ));
+        assert!(!is_same_volume(
+            Path::new("/nonexistent_mnt/disk10/bk"),
+            Path::new("/nonexistent_mnt/disk1")
+        ));
+        assert!(!is_same_volume(
+            Path::new("/nonexistent_mnt/disk2/bk"),
+            Path::new("/nonexistent_mnt/disk1")
+        ));
+
+        let mut q = DriveQuota::new("/nonexistent_mnt/disk1");
+        q.auto_backup = true;
+        q.backup_dir = Some(PathBuf::from("/nonexistent_mnt/disk1/bk"));
+        assert!(q.validate_backup().is_err());
+
+        q.backup_dir = Some(PathBuf::from("/nonexistent_mnt/disk2/bk"));
+        assert!(q.validate_backup().is_ok());
     }
 }

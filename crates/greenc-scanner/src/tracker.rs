@@ -71,10 +71,27 @@ impl DiskTracker {
         }
     }
 
-    /// Normalizes `"c"`, `"C:"`, or `"C:\\"` into `"C:\\"`.
+    /// Normalizes Windows drives (`"c"`, `"C:"`, or `"C:\\"`) into `"C:\\"`,
+    /// and Unix mount points (`"/"`, `"/home/"`, `"/Volumes/Data"`) into canonical paths.
     pub fn normalize_drive(drive: &str) -> String {
-        let trimmed = drive.trim().trim_end_matches(['\\', '/']);
-        let letter = trimmed.chars().next().unwrap_or('C').to_ascii_uppercase();
+        let trimmed = drive.trim();
+        if trimmed.starts_with('/') {
+            let stripped = trimmed.trim_end_matches('/');
+            return if stripped.is_empty() {
+                "/".to_string()
+            } else {
+                stripped.to_string()
+            };
+        }
+        let clean = trimmed.trim_end_matches(['\\', '/']);
+        if clean.is_empty() {
+            return if cfg!(unix) {
+                "/".to_string()
+            } else {
+                "C:\\".to_string()
+            };
+        }
+        let letter = clean.chars().next().unwrap_or('C').to_ascii_uppercase();
         format!("{letter}:\\")
     }
 
@@ -324,7 +341,54 @@ impl DiskTracker {
 
     pub fn default_candidate_roots(drive_norm: &str) -> Vec<PathBuf> {
         let mut roots = Vec::new();
-        if drive_norm.starts_with("C:") {
+        if drive_norm.starts_with('/') {
+            let mount_path = Path::new(drive_norm);
+            if let Ok(home) = std::env::var("HOME") {
+                let h = PathBuf::from(home);
+                for sub in [
+                    "Downloads",
+                    ".cache",
+                    ".local/share",
+                    ".npm",
+                    ".gradle",
+                    ".cargo",
+                    "Library/Caches",
+                ] {
+                    let cand = h.join(sub);
+                    if cand.exists() && greenc_core::models::is_same_volume(&cand, mount_path) {
+                        roots.push(cand);
+                    }
+                }
+            }
+            if drive_norm == "/" {
+                for sys_tmp in ["/tmp", "/var/tmp"] {
+                    let p = PathBuf::from(sys_tmp);
+                    if p.exists() && greenc_core::models::is_same_volume(&p, mount_path) {
+                        roots.push(p);
+                    }
+                }
+            } else if roots.is_empty() {
+                if let Ok(entries) = fs::read_dir(mount_path) {
+                    for entry in entries.flatten() {
+                        let p = entry.path();
+                        let name = entry.file_name().to_string_lossy().to_lowercase();
+                        if p.is_dir()
+                            && !matches!(
+                                name.as_str(),
+                                "lost+found"
+                                    | ".trash"
+                                    | ".trashes"
+                                    | ".spotlight-v100"
+                                    | ".fseventsd"
+                                    | "greenc"
+                            )
+                        {
+                            roots.push(p);
+                        }
+                    }
+                }
+            }
+        } else if drive_norm.starts_with("C:") {
             if let Ok(appdata) = std::env::var("APPDATA") {
                 let p = PathBuf::from(appdata);
                 for sub in ["ZaloData", "DingTalk", "Telegram Desktop", "npm-cache"] {

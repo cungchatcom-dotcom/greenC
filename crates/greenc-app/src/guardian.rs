@@ -719,16 +719,8 @@ pub struct DriveQuotaOutcome {
     pub backup_problem: Option<String>,
 }
 
-fn drive_key(p: &Path) -> String {
-    p.to_string_lossy()
-        .chars()
-        .take(2)
-        .collect::<String>()
-        .to_ascii_uppercase()
-}
-
 fn same_drive(a: &Path, b: &Path) -> bool {
-    drive_key(a) == drive_key(b)
+    greenc_core::models::is_same_volume(a, b)
 }
 
 /// Copies a Vault archive (zip + manifest) into `backup_dir`. Refuses a backup folder that lives on

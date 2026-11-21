@@ -140,3 +140,41 @@ fn test_disk_tracker_daily_snapshots_and_drilldown() {
     let drill_after = tracker.get_daily_drilldown("C:\\", &today_str).unwrap();
     assert_eq!(drill_after.folders[0].total_delta_bytes, 64 * 1024);
 }
+
+#[test]
+fn test_disk_tracker_unix_mount_normalization_and_scan() {
+    assert_eq!(DiskTracker::normalize_drive("/"), "/");
+    assert_eq!(DiskTracker::normalize_drive("/home/"), "/home");
+    assert_eq!(DiskTracker::normalize_drive("/mnt/data/"), "/mnt/data");
+    assert_eq!(DiskTracker::normalize_drive("c"), "C:\\");
+
+    let tmp = TempDir::new().unwrap();
+    let db = Arc::new(GreenCDb::open(tmp.path().join("unix_tracker.db")).unwrap());
+    let scan_root = tmp.path().join("cache");
+    fs::create_dir_all(&scan_root).unwrap();
+    fs::write(scan_root.join("blob.cache"), vec![3u8; 128 * 1024]).unwrap();
+
+    let mock_vol = Arc::new(MockVolumeApi::new(vec![DriveInfo {
+        root: PathBuf::from("/home"),
+        drive_letter: 'H',
+        label: "home".to_string(),
+        filesystem: "EXT4".to_string(),
+        total_bytes: 100 * 1024 * 1024 * 1024,
+        free_bytes: 40 * 1024 * 1024 * 1024,
+        is_system: false,
+        is_eligible: true,
+        ineligible_reason: None,
+    }]));
+
+    let tracker = DiskTracker::with_dependencies(
+        db,
+        AttributionEngine::new(Arc::new(MockRestartManagerApi::new())),
+        mock_vol,
+    );
+    let snapshots = tracker
+        .scan_drive_history_with_roots("/home/", 3, std::slice::from_ref(&scan_root), None)
+        .unwrap();
+    assert_eq!(snapshots.len(), 3);
+    assert_eq!(snapshots.last().unwrap().drive_letter, "/home");
+    assert!(snapshots.last().unwrap().net_change_bytes >= 128 * 1024);
+}

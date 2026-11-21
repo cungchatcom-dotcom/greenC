@@ -262,3 +262,71 @@ fn cli_quota_set_list_remove_and_validation() {
     );
     assert_ne!(rm2.exit_code, EXIT_SUCCESS);
 }
+
+#[test]
+fn cli_quota_supports_unix_mount_points() {
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("greenc_unix.db");
+
+    let set_root = run_args(
+        &[
+            "greenc",
+            "quota",
+            "set",
+            "--drive",
+            "/",
+            "--warn",
+            "70",
+            "--clean",
+            "80",
+            "--target",
+            "75",
+            "--auto-clean",
+            "--json",
+        ],
+        &db_path,
+    );
+    assert_eq!(
+        set_root.exit_code, EXIT_SUCCESS,
+        "stderr: {}",
+        set_root.stderr
+    );
+
+    let set_home = run_args(
+        &[
+            "greenc",
+            "quota",
+            "set",
+            "--drive",
+            "/home/",
+            "--warn",
+            "70",
+            "--clean",
+            "80",
+            "--target",
+            "75",
+            "--auto-clean",
+            "--json",
+        ],
+        &db_path,
+    );
+    assert_eq!(
+        set_home.exit_code, EXIT_SUCCESS,
+        "stderr: {}",
+        set_home.stderr
+    );
+
+    let list = run_args(&["greenc", "quota", "list", "--json"], &db_path);
+    assert_eq!(list.exit_code, EXIT_SUCCESS);
+    let v: serde_json::Value = serde_json::from_str(&list.stdout).unwrap();
+    let rows = v["quotas"].as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["drive_root"], "/");
+    assert_eq!(rows[1]["drive_root"], "/home");
+
+    let rm = run_args(
+        &["greenc", "quota", "remove", "--drive", "/home/", "--json"],
+        &db_path,
+    );
+    assert_eq!(rm.exit_code, EXIT_SUCCESS);
+}

@@ -51,11 +51,15 @@ pub const EXIT_OPERATIONAL_ERROR: i32 = 1;
 pub const EXIT_PRECONDITION_BLOCKED: i32 = 2;
 pub const EXIT_CANCELLED: i32 = 130;
 
+fn default_system_drive() -> String {
+    greenc_platform::volume::get_system_drive_root()
+}
+
 #[derive(Parser, Debug)]
 #[command(
     name = "greenc",
     version,
-    about = "GreenC CLI — Safe Disk Space Guardian for Windows"
+    about = "GreenC CLI — Safe Disk Space Guardian"
 )]
 pub struct Cli {
     /// Emit machine-readable JSON output on stdout.
@@ -70,12 +74,12 @@ pub struct Cli {
 pub enum Commands {
     /// Prints drive usage, burn-rate forecast, Vault summary, active quota rules, and relocation health.
     Status {
-        #[arg(long, default_value = r"C:\")]
+        #[arg(long, default_value_t = default_system_drive())]
         drive: String,
     },
     /// Scans drive daily deltas, attribution ledger, and top physical space consumers.
     Scan {
-        #[arg(long, default_value = r"C:\")]
+        #[arg(long, default_value_t = default_system_drive())]
         drive: String,
         #[arg(long, default_value_t = 14)]
         days: u32,
@@ -1070,7 +1074,7 @@ fn execute_inner(cli: Cli, db_path: &Path, ctrl: &Arc<TaskControl>) -> Result<se
                 let root = normalize_drive_root(&drive).ok_or_else(|| {
                     GreenCError::PreconditionBlocked {
                         operation: "quota".to_string(),
-                        reason: format!("Invalid drive '{drive}' (expected e.g. C:\\)"),
+                        reason: format!("Invalid drive '{drive}' (expected e.g. C:\\ or /)"),
                     }
                 })?;
                 let mut q = DriveQuota::new(root.clone());
@@ -1102,7 +1106,7 @@ fn execute_inner(cli: Cli, db_path: &Path, ctrl: &Arc<TaskControl>) -> Result<se
                 let root = normalize_drive_root(&drive).ok_or_else(|| {
                     GreenCError::PreconditionBlocked {
                         operation: "quota".to_string(),
-                        reason: format!("Invalid drive '{drive}' (expected e.g. C:\\)"),
+                        reason: format!("Invalid drive '{drive}' (expected e.g. C:\\ or /)"),
                     }
                 })?;
                 let existing = db

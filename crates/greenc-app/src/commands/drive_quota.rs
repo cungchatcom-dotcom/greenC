@@ -88,7 +88,7 @@ pub fn quota_status(quota: &DriveQuota, volume: &dyn Win32VolumeApi) -> DriveQuo
 /// Validates the input and turns it into a normalized [`DriveQuota`].
 pub fn build_quota(input: &DriveQuotaInputDto) -> Result<DriveQuota, String> {
     let root = normalize_drive_root(&input.drive_root)
-        .ok_or_else(|| "Ổ đĩa không hợp lệ (ví dụ: C:\\)".to_string())?;
+        .ok_or_else(|| "Ổ đĩa không hợp lệ (ví dụ: C:\\ hoặc /)".to_string())?;
 
     let mut q = DriveQuota::new(root.clone());
     q.id = input.id;
@@ -189,6 +189,8 @@ mod tests {
         assert_eq!(normalize_drive_root("c"), Some("C:\\".to_string()));
         assert_eq!(normalize_drive_root(" d: "), Some("D:\\".to_string()));
         assert_eq!(normalize_drive_root("E:\\"), Some("E:\\".to_string()));
+        assert_eq!(normalize_drive_root("/"), Some("/".to_string()));
+        assert_eq!(normalize_drive_root("/home/"), Some("/home".to_string()));
         assert_eq!(normalize_drive_root("C:\\Users"), None);
         assert_eq!(normalize_drive_root("1:"), None);
         assert_eq!(normalize_drive_root(""), None);

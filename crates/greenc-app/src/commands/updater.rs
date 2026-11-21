@@ -177,7 +177,10 @@ pub async fn download_and_install_update(
         .map_err(|e| format!("Không thể tải bộ cài mới: {e}"))?;
 
     if !resp.status().is_success() {
-        return Err(format!("Tải bộ cài thất bại (HTTP {})", resp.status().as_u16()));
+        return Err(format!(
+            "Tải bộ cài thất bại (HTTP {})",
+            resp.status().as_u16()
+        ));
     }
 
     let update_dir = std::env::temp_dir().join("greenc-update");
