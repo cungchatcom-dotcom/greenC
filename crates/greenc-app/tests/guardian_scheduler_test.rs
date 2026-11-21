@@ -398,3 +398,41 @@ fn guardian_spawn_works_outside_a_tokio_runtime_like_tauri_setup() {
     std::thread::sleep(Duration::from_millis(50));
     token.cancel();
 }
+
+#[tokio::test]
+async fn guardian_heavy_rule_scan_respects_cooldown() {
+    let dir = tempdir().unwrap();
+    let (state, guardian, _) = make_test_guardian(dir.path(), 80, PowerSessionState::default());
+
+    let app_cache = dir.path().join("CoolCache");
+    std::fs::create_dir_all(&app_cache).unwrap();
+    std::fs::write(app_cache.join("a.tmp"), vec![1u8; 4096]).unwrap();
+
+    state
+        .db
+        .save_quota_rule(&QuotaRule {
+            id: None,
+            app_name: "CoolApp".to_string(),
+            process_name: String::new(),
+            service_name: String::new(),
+            target_paths: vec![app_cache],
+            max_bytes: 10 * 1024 * 1024,
+            watermark_ratio: 0.85,
+            retention_days: 7,
+            min_file_age_seconds: 0,
+            exclude_patterns: Vec::new(),
+            protected_files: Vec::new(),
+            enabled: true,
+            created_at: Utc::now(),
+        })
+        .unwrap();
+
+    let first = guardian.run_cycle().await.unwrap();
+    assert_eq!(first.rules_evaluated, 1, "first tick must evaluate rules");
+
+    let second = guardian.run_cycle().await.unwrap();
+    assert_eq!(
+        second.rules_evaluated, 0,
+        "immediate second tick must skip heavy rule walk while on cooldown"
+    );
+}

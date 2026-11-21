@@ -40,6 +40,12 @@ pub const GUARDIAN_TICK_INTERVAL: Duration = Duration::from_secs(45);
 /// Minimum cooldown between repeated low-disk shield alerts (`15 minutes`).
 const LOW_DISK_ALERT_COOLDOWN: Duration = Duration::from_secs(15 * 60);
 
+/// Minimum cooldown between heavy directory-walking `QuotaRule` sweeps (`5 minutes`).
+const HEAVY_RULE_SCAN_COOLDOWN: Duration = Duration::from_secs(5 * 60);
+
+/// Minimum cooldown between automatic drive-quota cleanup sweeps per drive (`15 minutes`).
+const DRIVE_QUOTA_CLEAN_COOLDOWN: Duration = Duration::from_secs(15 * 60);
+
 /// Telemetry returned by a single deterministic guardian cycle (used by unit/integration tests).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GuardianCycleReport {
@@ -90,7 +96,9 @@ pub struct BackgroundGuardian {
     tick_interval: Duration,
     system_drive_root: PathBuf,
     last_low_disk_alert: Arc<Mutex<Option<Instant>>>,
+    last_heavy_rule_scan: Arc<Mutex<Option<Instant>>>,
     quota_alert_state: Arc<Mutex<HashMap<String, (QuotaLevel, Instant)>>>,
+    quota_clean_state: Arc<Mutex<HashMap<String, Instant>>>,
     /// Preset profile ids scanned by automatic drive-quota cleanup. Empty = never scan the host.
     auto_clean_profiles: Arc<Vec<String>>,
     alerts_log: Arc<Mutex<Vec<WatchdogAlertEvent>>>,
@@ -130,7 +138,9 @@ impl BackgroundGuardian {
             tick_interval,
             system_drive_root: PathBuf::from(greenc_platform::volume::get_system_drive_root()),
             last_low_disk_alert: Arc::new(Mutex::new(None)),
+            last_heavy_rule_scan: Arc::new(Mutex::new(None)),
             quota_alert_state: Arc::new(Mutex::new(HashMap::new())),
+            quota_clean_state: Arc::new(Mutex::new(HashMap::new())),
             auto_clean_profiles: Arc::new(Vec::new()),
             alerts_log: Arc::new(Mutex::new(Vec::new())),
         }
@@ -155,6 +165,8 @@ impl BackgroundGuardian {
         // Tauri `setup()` runs outside any Tokio context: use Tauri's global runtime, not `tokio::spawn`.
         tauri::async_runtime::spawn(async move {
             let mut interval = tokio::time::interval(self.tick_interval);
+            // Never burst missed ticks back-to-back if a cycle takes longer than `tick_interval`.
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             // Skip immediate t=0 burst so UI startup stays < 180 ms cold-start.
             interval.tick().await;
 
@@ -214,7 +226,9 @@ impl BackgroundGuardian {
         let deps = Arc::clone(&self.deps);
         let sys_root = self.system_drive_root.clone();
         let last_alert_ref = Arc::clone(&self.last_low_disk_alert);
+        let last_rule_scan_ref = Arc::clone(&self.last_heavy_rule_scan);
         let quota_alert_ref = Arc::clone(&self.quota_alert_state);
+        let quota_clean_ref = Arc::clone(&self.quota_clean_state);
         let auto_clean_ids = Arc::clone(&self.auto_clean_profiles);
         let alerts_log_ref = Arc::clone(&self.alerts_log);
         let ctrl_worker = Arc::clone(&cycle_ctrl);
@@ -396,53 +410,83 @@ impl BackgroundGuardian {
                 }
             }
 
-            // Check 5: Rolling QuotaRule Enforcement (down to watermark_ratio = 85%)
-            let rules = guardian_state.db.list_quota_rules(true).unwrap_or_default();
+            // Check 5: Rolling QuotaRule Enforcement (down to watermark_ratio = 85%), throttled
+            // to `HEAVY_RULE_SCAN_COOLDOWN` so dozens of rules do not spin CPU every 45 seconds.
             let vault_dir = settings
                 .vault_dir(&default_vault_dir())
                 .unwrap_or_else(|_| default_vault_dir());
 
-            for rule in rules {
-                if ctrl_worker.is_cancelled() || guardian_state.has_foreground_tasks() {
-                    report.preempted_by_foreground = true;
-                    break;
+            let should_scan_rules = {
+                let guard = last_rule_scan_ref.lock();
+                match *guard {
+                    Some(prev) => prev.elapsed() >= HEAVY_RULE_SCAN_COOLDOWN,
+                    None => true,
                 }
-                report.rules_evaluated += 1;
+            };
 
-                match enforce_single_quota_rule(
-                    &rule,
-                    &vault_dir,
-                    &guardian_state,
-                    &deps,
-                    &ctrl_worker,
-                ) {
-                    Ok(freed) if freed > 0 => {
-                        report.rules_enforced += 1;
-                        report.bytes_reclaimed += freed;
-                        let today = chrono::Local::now()
-                            .date_naive()
-                            .format("%Y-%m-%d")
-                            .to_string();
-                        let _ = guardian_state.db.record_reclaimed_bytes(
-                            &sys_root.to_string_lossy(),
-                            &today,
-                            freed,
-                        );
-                    }
-                    Ok(_) => {}
-                    Err(GreenCError::Cancelled) => {
+            if should_scan_rules {
+                let rules = guardian_state.db.list_quota_rules(true).unwrap_or_default();
+
+                for rule in rules {
+                    if ctrl_worker.is_cancelled() || guardian_state.has_foreground_tasks() {
                         report.preempted_by_foreground = true;
                         break;
                     }
-                    Err(err) => {
-                        tracing::debug!("QuotaRule '{}' skipped this tick: {err}", rule.app_name);
+                    report.rules_evaluated += 1;
+
+                    match enforce_single_quota_rule(
+                        &rule,
+                        &vault_dir,
+                        &guardian_state,
+                        &deps,
+                        &ctrl_worker,
+                    ) {
+                        Ok(freed) if freed > 0 => {
+                            report.rules_enforced += 1;
+                            report.bytes_reclaimed += freed;
+                            let today = chrono::Local::now()
+                                .date_naive()
+                                .format("%Y-%m-%d")
+                                .to_string();
+                            let _ = guardian_state.db.record_reclaimed_bytes(
+                                &sys_root.to_string_lossy(),
+                                &today,
+                                freed,
+                            );
+                        }
+                        Ok(_) => {}
+                        Err(GreenCError::Cancelled) => {
+                            report.preempted_by_foreground = true;
+                            break;
+                        }
+                        Err(err) => {
+                            tracing::debug!(
+                                "QuotaRule '{}' skipped this tick: {err}",
+                                rule.app_name
+                            );
+                        }
                     }
                 }
+
+                // Stamp cooldown even after a partial sweep so repeated foreground preemption
+                // does not restart scanning from rule #1 every 45 seconds.
+                *last_rule_scan_ref.lock() = Some(Instant::now());
             }
 
-            // Check 6: Drive-quota auto-clean (+ auto-backup) for drives at the critical level
+            // Check 6: Drive-quota auto-clean (+ auto-backup) for drives at the critical level,
+            // throttled per drive to `DRIVE_QUOTA_CLEAN_COOLDOWN` so persistent critical drives
+            // do not loop endlessly over the same folders.
             for (quota, total, free, level) in quota_states {
+                let key = quota.drive_root.to_ascii_uppercase();
                 if level != QuotaLevel::Critical || !quota.auto_clean {
+                    continue;
+                }
+                let on_clean_cooldown = {
+                    let map = quota_clean_ref.lock();
+                    map.get(&key)
+                        .is_some_and(|at| at.elapsed() < DRIVE_QUOTA_CLEAN_COOLDOWN)
+                };
+                if on_clean_cooldown {
                     continue;
                 }
                 if ctrl_worker.is_cancelled() || guardian_state.has_foreground_tasks() {
@@ -460,7 +504,10 @@ impl BackgroundGuardian {
                         report.preempted_by_foreground = true;
                         break;
                     }
-                    Err(_) => continue,
+                    Err(_) => {
+                        quota_clean_ref.lock().insert(key, Instant::now());
+                        continue;
+                    }
                 };
                 match enforce_drive_quota(
                     &quota,
@@ -472,40 +519,46 @@ impl BackgroundGuardian {
                     &deps,
                     &ctrl_worker,
                 ) {
-                    Ok(out) if out.bytes_freed > 0 => {
-                        report.drive_quota_cleanups += 1;
-                        report.bytes_reclaimed += out.bytes_freed;
-                        let today = chrono::Local::now()
-                            .date_naive()
-                            .format("%Y-%m-%d")
-                            .to_string();
-                        let _ = guardian_state.db.record_reclaimed_bytes(
-                            &quota.drive_root,
-                            &today,
-                            out.bytes_freed,
-                        );
-                        pending_alerts.push(WatchdogAlertEvent {
-                            kind: "drive_quota_cleanup".to_string(),
-                            severity: "info".to_string(),
-                            title: format!(
-                                "Đã tự dọn {:.1} GB trên ổ {}",
-                                out.bytes_freed as f64 / 1_073_741_824.0,
-                                quota.drive_root
-                            ),
-                            detail: match (&out.backed_up_to, &out.backup_problem) {
-                                (Some(p), _) => format!("Đã sao lưu gói Vault tới {}", p.display()),
-                                (None, Some(why)) => format!("Chưa sao lưu được: {why}"),
-                                _ => "Dữ liệu được giữ trong Vault, có thể khôi phục.".to_string(),
-                            },
-                            archive_id: None,
-                        });
+                    Ok(out) => {
+                        quota_clean_ref.lock().insert(key, Instant::now());
+                        if out.bytes_freed > 0 {
+                            report.drive_quota_cleanups += 1;
+                            report.bytes_reclaimed += out.bytes_freed;
+                            let today = chrono::Local::now()
+                                .date_naive()
+                                .format("%Y-%m-%d")
+                                .to_string();
+                            let _ = guardian_state.db.record_reclaimed_bytes(
+                                &quota.drive_root,
+                                &today,
+                                out.bytes_freed,
+                            );
+                            pending_alerts.push(WatchdogAlertEvent {
+                                kind: "drive_quota_cleanup".to_string(),
+                                severity: "info".to_string(),
+                                title: format!(
+                                    "Đã tự dọn {:.1} GB trên ổ {}",
+                                    out.bytes_freed as f64 / 1_073_741_824.0,
+                                    quota.drive_root
+                                ),
+                                detail: match (&out.backed_up_to, &out.backup_problem) {
+                                    (Some(p), _) => {
+                                        format!("Đã sao lưu gói Vault tới {}", p.display())
+                                    }
+                                    (None, Some(why)) => format!("Chưa sao lưu được: {why}"),
+                                    _ => "Dữ liệu được giữ trong Vault, có thể khôi phục."
+                                        .to_string(),
+                                },
+                                archive_id: None,
+                            });
+                        }
                     }
-                    Ok(_) => {}
                     Err(GreenCError::Cancelled) => {
                         report.preempted_by_foreground = true;
                         break;
                     }
                     Err(err) => {
+                        quota_clean_ref.lock().insert(key, Instant::now());
                         tracing::debug!(
                             "Drive quota {} skipped this tick: {err}",
                             quota.drive_root
