@@ -756,3 +756,28 @@ export async function hideToTray(): Promise<boolean> {
   return await invoke<boolean>('hide_to_tray');
 }
 
+export interface UpdateCheckDto {
+  current_version: string;
+  latest_version: string;
+  has_update: boolean;
+  release_url: string;
+  download_url: string | null;
+  asset_name: string | null;
+  release_notes: string;
+  published_at: string | null;
+}
+
+export async function checkForUpdates(): Promise<UpdateCheckDto> {
+  return await invoke<UpdateCheckDto>('check_for_updates');
+}
+
+export async function downloadAndInstallUpdate(
+  downloadUrl: string,
+  assetName: string
+): Promise<string> {
+  return await invoke<string>('download_and_install_update', {
+    downloadUrl,
+    assetName,
+  });
+}
+

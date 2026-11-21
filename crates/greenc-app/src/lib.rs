@@ -100,6 +100,8 @@ pub fn run() {
             commands::drive_quota::delete_drive_quota,
             commands::rules_settings::run_sandbox_demo,
             commands::rules_settings::hide_to_tray,
+            commands::updater::check_for_updates,
+            commands::updater::download_and_install_update,
         ])
         .setup(move |app| {
             let state = app.state::<AppState>().inner().clone();
@@ -125,6 +127,15 @@ pub fn run() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("failed to run GreenC Tauri application");
+        .build(tauri::generate_context!())
+        .expect("failed to build GreenC Tauri application")
+        .run(|_app_handle, event| {
+            if let tauri::RunEvent::ExitRequested { api, code, .. } = event {
+                // Keep the background daemon alive in the system tray when the main window
+                // is closed or unloaded via "Chạy ngầm". Explicit `app_handle.exit(0)` passes `Some(0)`.
+                if code.is_none() {
+                    api.prevent_exit();
+                }
+            }
+        });
 }

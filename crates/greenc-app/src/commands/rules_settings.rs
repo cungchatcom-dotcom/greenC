@@ -256,13 +256,34 @@ pub async fn update_settings(
     }
 
     if let Some(enabled) = patch.autostart_enabled {
+        let mut os_err: Option<String> = None;
+        if let Ok(exe_path) = std::env::current_exe() {
+            let power_api = NativePowerSessionApi;
+            if let Err(err) = power_api.set_autostart(APP_NAME, &exe_path, enabled) {
+                os_err = Some(err.to_string());
+            }
+        }
+        // Fallback to tauri-plugin-autostart if native registration failed.
+        if os_err.is_some() {
+            use tauri_plugin_autostart::ManagerExt;
+            let manager = app.autolaunch();
+            let fallback_res = if enabled {
+                manager.enable()
+            } else {
+                manager.disable()
+            };
+            if fallback_res.is_ok() {
+                os_err = None;
+            }
+        }
+        if let Some(err_msg) = os_err {
+            return Err(format!(
+                "Không thể cập nhật khởi động cùng hệ điều hành: {err_msg}"
+            ));
+        }
         settings
             .set_autostart_enabled(enabled)
             .map_err(|e| e.to_string())?;
-        if let Ok(exe_path) = std::env::current_exe() {
-            let power_api = NativePowerSessionApi;
-            let _ = power_api.set_autostart(APP_NAME, &exe_path, enabled);
-        }
     }
 
     if let Some(shield_gb) = patch.low_disk_shield_gb {
@@ -639,15 +660,21 @@ pub async fn run_sandbox_demo(
 }
 
 /// Unloads the main WebView window into background system tray mode (`< 15 MB` RAM)
-/// while keeping `BackgroundGuardian` active.
+/// while keeping `BackgroundGuardian` active in the system tray.
 #[tauri::command]
 pub fn hide_to_tray(app: AppHandle) -> std::result::Result<bool, String> {
     use tauri::Manager;
     if let Some(win) = app.get_webview_window(crate::tray::MAIN_WINDOW_LABEL) {
-        if let Err(err) = win.destroy() {
-            tracing::warn!("hide_to_tray destroy fallback to hide(): {err}");
-            win.hide().map_err(|e| e.to_string())?;
-        }
+        // Hide immediately so the IPC call resolves cleanly, then destroy WebView2 after 150 ms
+        // to reclaim browser memory while `RunEvent::ExitRequested` keeps the tray daemon alive.
+        let _ = win.hide();
+        let app_clone = app.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            if let Some(w) = app_clone.get_webview_window(crate::tray::MAIN_WINDOW_LABEL) {
+                let _ = w.destroy();
+            }
+        });
         return Ok(true);
     }
     Ok(false)

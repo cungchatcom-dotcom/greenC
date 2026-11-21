@@ -16,6 +16,7 @@ greenc-relocate.workspace = true
 tauri.workspace = true
 tauri-plugin-autostart.workspace = true
 tauri-plugin-notification.workspace = true
+reqwest.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 parking_lot.workspace = true

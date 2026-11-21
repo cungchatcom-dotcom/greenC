@@ -5,6 +5,7 @@ pub mod history;
 pub mod overview;
 pub mod relocate;
 pub mod rules_settings;
+pub mod updater;
 pub mod vault;
 
 pub use cleanup::control_task;

@@ -11,11 +11,15 @@
     saveQuotaRule,
     runSandboxDemo,
     getBootstrapState,
+    checkForUpdates,
+    downloadAndInstallUpdate,
     type AppSettingsDto,
     type QuotaRuleStatusDto,
     type DriveInfo,
-    type SandboxDemoResultDto
+    type SandboxDemoResultDto,
+    type UpdateCheckDto
   } from '$lib/api';
+  import BrandLogo from '$lib/components/BrandLogo.svelte';
   import DriveQuotaCard from '$lib/components/DriveQuotaCard.svelte';
   import QuotaRuleModal,{ type QuotaRulePrefill } from '$lib/components/QuotaRuleModal.svelte';
   import {
@@ -29,8 +33,18 @@
     FlaskConical,
     Info,
     CheckCircle2,
-    AlertTriangle
+    AlertTriangle,
+    RefreshCw,
+    Download
   } from 'lucide-svelte';
+
+  let {
+    autostartEnabled = undefined,
+    onAutostartChanged
+  }: {
+    autostartEnabled?: boolean;
+    onAutostartChanged?: (enabled: boolean) => void;
+  } = $props();
 
   let settings = $state<AppSettingsDto | null>(null);
   let drives = $state<DriveInfo[]>([]);
@@ -42,6 +56,16 @@
   let showRuleModal = $state(false);
   let demoRunning = $state(false);
   let demoResult = $state<SandboxDemoResultDto | null>(null);
+  let checkingUpdate = $state(false);
+  let installingUpdate = $state(false);
+  let updateResult = $state<UpdateCheckDto | null>(null);
+  let updateCheckError = $state<string | null>(null);
+
+  $effect(() => {
+    if (settings && autostartEnabled !== undefined && settings.autostart_enabled !== autostartEnabled) {
+      settings = { ...settings, autostart_enabled: autostartEnabled };
+    }
+  });
 
   async function loadAll() {
     const [cfgRes, bootRes, ruleRes] = await Promise.allSettled([
@@ -94,25 +118,78 @@
   }
 
   async function onToggleAutostart(enabled: boolean) {
-    const updated = await updateSettings({ autostart_enabled: enabled });
-    settings = updated;
+    statusBanner = null;
+    try {
+      const updated = await updateSettings({ autostart_enabled: enabled });
+      settings = updated;
+      onAutostartChanged?.(updated.autostart_enabled);
+      statusBanner = {
+        kind: 'ok',
+        text: updated.autostart_enabled
+          ? t('Đã bật khởi động cùng hệ điều hành.')
+          : t('Đã tắt khởi động cùng hệ điều hành.')
+      };
+    } catch (err: unknown) {
+      statusBanner = {
+        kind: 'err',
+        text: err instanceof Error ? err.message : String(err)
+      };
+      await loadAll();
+    }
   }
 
   async function onToggleBatteryPause(pause: boolean) {
-    const updated = await updateSettings({ pause_on_battery_fullscreen: pause });
-    settings = updated;
+    try {
+      const updated = await updateSettings({ pause_on_battery_fullscreen: pause });
+      settings = updated;
+    } catch (err: unknown) {
+      statusBanner = { kind: 'err', text: String(err) };
+    }
   }
 
   async function onRetentionChange(days: number) {
-    const clamped = Math.min(90, Math.max(1, Number(days) || 7));
-    const updated = await updateSettings({ retention_days_default: clamped });
-    settings = updated;
+    try {
+      const clamped = Math.min(90, Math.max(1, Number(days) || 7));
+      const updated = await updateSettings({ retention_days_default: clamped });
+      settings = updated;
+    } catch (err: unknown) {
+      statusBanner = { kind: 'err', text: String(err) };
+    }
   }
 
   async function onLowDiskShieldChange(gb: number) {
-    const clamped = Math.min(100, Math.max(2, Number(gb) || 10));
-    const updated = await updateSettings({ low_disk_shield_gb: clamped });
-    settings = updated;
+    try {
+      const clamped = Math.min(100, Math.max(2, Number(gb) || 10));
+      const updated = await updateSettings({ low_disk_shield_gb: clamped });
+      settings = updated;
+    } catch (err: unknown) {
+      statusBanner = { kind: 'err', text: String(err) };
+    }
+  }
+
+  async function handleCheckUpdates() {
+    if (checkingUpdate) return;
+    checkingUpdate = true;
+    updateCheckError = null;
+    try {
+      updateResult = await checkForUpdates();
+    } catch (err: unknown) {
+      updateCheckError = err instanceof Error ? err.message : String(err);
+    } finally {
+      checkingUpdate = false;
+    }
+  }
+
+  async function handleInstallUpdate() {
+    if (!updateResult?.download_url || !updateResult?.asset_name || installingUpdate) return;
+    installingUpdate = true;
+    updateCheckError = null;
+    try {
+      await downloadAndInstallUpdate(updateResult.download_url, updateResult.asset_name);
+    } catch (err: unknown) {
+      updateCheckError = err instanceof Error ? err.message : String(err);
+      installingUpdate = false;
+    }
   }
 
   async function handleMoveDataRoot() {
@@ -511,35 +588,79 @@
     {/if}
   </section>
 
-  <!-- Card 6: About GreenC (Cùng Chat · cungchat.com) -->
-  <section class="rounded-xl border border-border bg-card p-5 shadow-sm flex items-center justify-between flex-wrap gap-4">
-    <div class="flex items-center gap-3">
-      <div class="h-10 w-10 rounded-xl bg-accent flex items-center justify-center text-white font-bold text-lg shadow-sm">
-        G
+  <!-- Card 6: About GreenC & Updates (Cùng Chat · cungchat.com) -->
+  <section class="rounded-xl border border-border bg-card p-5 shadow-sm space-y-3">
+    <div class="flex items-center justify-between flex-wrap gap-4">
+      <div class="flex items-center gap-3">
+        <BrandLogo size={40} />
+        <div>
+          <div class="flex items-center gap-2">
+            <span class="font-bold text-base text-primary">GreenC</span>
+            <span dir="ltr" class="px-2 py-0.5 rounded bg-subtle border border-border text-[11px] text-secondary ltr-isolate">
+              v{settings?.app_version ?? '2.1.0'} · Rust Engine
+            </span>
+          </div>
+          <div class="text-xs text-secondary mt-0.5 flex items-center gap-1.5">
+            <Info class="h-3.5 w-3.5 text-accent" />
+            <span>{t('Phát triển bởi')} <strong>Cùng Chat</strong></span>
+            <span>·</span>
+            <a
+              href="https://cungchat.com"
+              target="_blank"
+              rel="noreferrer"
+              dir="ltr"
+              class="text-accent hover:underline font-medium ltr-isolate"
+            >
+              cungchat.com
+            </a>
+          </div>
+        </div>
       </div>
-      <div>
-        <div class="flex items-center gap-2">
-          <span class="font-bold text-base text-primary">GreenC</span>
-          <span dir="ltr" class="px-2 py-0.5 rounded bg-subtle border border-border text-[11px] text-secondary ltr-isolate">
-            v{settings?.app_version ?? '2.0.0'} · Rust Engine
-          </span>
-        </div>
-        <div class="text-xs text-secondary mt-0.5 flex items-center gap-1.5">
-          <Info class="h-3.5 w-3.5 text-accent" />
-          <span>{t('Phát triển bởi')} <strong>Cùng Chat</strong></span>
-          <span>·</span>
-          <a
-            href="https://cungchat.com"
-            target="_blank"
-            rel="noreferrer"
-            dir="ltr"
-            class="text-accent hover:underline font-medium ltr-isolate"
+
+      <div class="flex items-center gap-2">
+        <button
+          type="button"
+          disabled={checkingUpdate}
+          onclick={handleCheckUpdates}
+          class="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-border bg-subtle hover:bg-card text-xs font-semibold text-primary disabled:opacity-60 transition-colors"
+        >
+          <RefreshCw class={`h-3.5 w-3.5 text-accent ${checkingUpdate ? 'animate-spin' : ''}`} />
+          <span>{checkingUpdate ? t('Đang kiểm tra...') : t('Kiểm tra cập nhật')}</span>
+        </button>
+
+        {#if updateResult?.has_update && updateResult.download_url && updateResult.asset_name}
+          <button
+            type="button"
+            disabled={installingUpdate}
+            onclick={handleInstallUpdate}
+            class="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-accent hover:bg-accent-hover text-white text-xs font-semibold shadow-sm disabled:opacity-60"
           >
-            cungchat.com
-          </a>
-        </div>
+            <Download class="h-3.5 w-3.5" />
+            <span>{installingUpdate ? t('Đang tải bản cập nhật...') : `${t('Cập nhật ngay')} v${updateResult.latest_version}`}</span>
+          </button>
+        {/if}
       </div>
     </div>
+
+    {#if updateCheckError}
+      <div class="rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-xs text-danger">
+        {updateCheckError}
+      </div>
+    {:else if updateResult}
+      <div class="rounded-lg border border-accent/25 bg-accent/5 px-3 py-2 text-xs text-primary flex items-center justify-between gap-2 flex-wrap">
+        {#if updateResult.has_update}
+          <span>
+            <strong>{t('Có phiên bản mới')} v{updateResult.latest_version}</strong>
+            ({t('Hiện tại')}: v{updateResult.current_version})
+          </span>
+        {:else}
+          <span class="flex items-center gap-1.5 text-accent font-medium">
+            <CheckCircle2 class="h-3.5 w-3.5" />
+            {t('Bạn đang dùng phiên bản mới nhất')} (v{updateResult.current_version})
+          </span>
+        {/if}
+      </div>
+    {/if}
   </section>
 </div>
 
