@@ -145,29 +145,47 @@ fn test_tool_catalog_and_app_catalog_definitions() {
     assert!(app_ids.contains(&"telegram"));
     assert!(app_ids.contains(&"discord"));
     assert!(app_ids.contains(&"slack"));
-    assert!(app_ids.contains(&"capcut"));
     assert!(app_ids.contains(&"jetbrains"));
-    assert!(app_ids.contains(&"zalo"));
-    assert!(app_ids.contains(&"wsl2"));
     assert!(app_ids.contains(&"docker"));
 
-    // Verify WSL2 process list includes vmmem and vmmemwsl
-    let wsl = apps.iter().find(|a| a.app_id == "wsl2").unwrap();
-    assert!(wsl
-        .process_names
-        .iter()
-        .any(|p| p.eq_ignore_ascii_case("vmmem.exe")));
-    assert!(wsl
-        .process_names
-        .iter()
-        .any(|p| p.eq_ignore_ascii_case("vmmemwsl.exe")));
+    #[cfg(windows)]
+    {
+        assert!(app_ids.contains(&"capcut"));
+        assert!(app_ids.contains(&"zalo"));
+        assert!(app_ids.contains(&"wsl2"));
 
-    // Verify Docker process list includes Docker Desktop.exe
-    let docker = apps.iter().find(|a| a.app_id == "docker").unwrap();
-    assert!(docker
-        .process_names
-        .iter()
-        .any(|p| p.eq_ignore_ascii_case("docker desktop.exe")));
+        // Verify WSL2 process list includes vmmem and vmmemwsl
+        let wsl = apps.iter().find(|a| a.app_id == "wsl2").unwrap();
+        assert!(wsl
+            .process_names
+            .iter()
+            .any(|p| p.eq_ignore_ascii_case("vmmem.exe")));
+        assert!(wsl
+            .process_names
+            .iter()
+            .any(|p| p.eq_ignore_ascii_case("vmmemwsl.exe")));
+
+        // Verify Docker process list includes Docker Desktop.exe
+        let docker = apps.iter().find(|a| a.app_id == "docker").unwrap();
+        assert!(docker
+            .process_names
+            .iter()
+            .any(|p| p.eq_ignore_ascii_case("docker desktop.exe")));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        assert!(app_ids.contains(&"xcode_derived"));
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let docker = apps.iter().find(|a| a.app_id == "docker").unwrap();
+        assert!(docker
+            .process_names
+            .iter()
+            .any(|p| p.eq_ignore_ascii_case("dockerd")));
+    }
 }
 
 #[test]

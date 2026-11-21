@@ -67,15 +67,24 @@ fn test_progress_throttling() {
 
     let reporter = ProgressReporter::new("test_task".to_string(), 1000, 100, callback);
 
+    let start = std::time::Instant::now();
     // Rapid reports without force_emit
     for i in 0..50 {
         reporter.report("scanning", "item.txt", i * 20, i * 2, false);
         thread::sleep(Duration::from_millis(2));
     }
+    let elapsed_ms = start.elapsed().as_millis() as usize;
 
-    // Reports should be throttled to ~1-3 emissions over 100ms
+    // Reports should be throttled to at most ~1 emission per 100ms window (accounting for VM timer jitter)
+    let max_expected = (elapsed_ms / 100) + 3;
     let count = call_count.load(Ordering::SeqCst);
-    assert!(count <= 4, "Expected throttled calls <= 4, got {}", count);
+    assert!(
+        count <= max_expected && count < 50,
+        "Expected throttled calls <= {} (and < 50) over {}ms, got {}",
+        max_expected,
+        elapsed_ms,
+        count
+    );
 
     // Forced emit should always fire
     reporter.report("scanning", "final.txt", 1000, 100, true);
