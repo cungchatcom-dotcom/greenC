@@ -256,13 +256,16 @@ pub async fn update_settings(
     }
 
     if let Some(enabled) = patch.autostart_enabled {
-        let mut os_err: Option<String> = None;
-        if let Ok(exe_path) = std::env::current_exe() {
-            let power_api = NativePowerSessionApi;
-            if let Err(err) = power_api.set_autostart(APP_NAME, &exe_path, enabled) {
-                os_err = Some(err.to_string());
+        let mut os_err: Option<String> = match std::env::current_exe() {
+            Ok(exe_path) => {
+                let power_api = NativePowerSessionApi;
+                power_api
+                    .set_autostart(APP_NAME, &exe_path, enabled)
+                    .err()
+                    .map(|e| e.to_string())
             }
-        }
+            Err(err) => Some(format!("Không thể xác định đường dẫn thực thi: {err}")),
+        };
         // Fallback to tauri-plugin-autostart if native registration failed.
         if os_err.is_some() {
             use tauri_plugin_autostart::ManagerExt;
@@ -672,7 +675,9 @@ pub fn hide_to_tray(app: AppHandle) -> std::result::Result<bool, String> {
         tauri::async_runtime::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(150)).await;
             if let Some(w) = app_clone.get_webview_window(crate::tray::MAIN_WINDOW_LABEL) {
-                let _ = w.destroy();
+                if !w.is_visible().unwrap_or(false) {
+                    let _ = w.destroy();
+                }
             }
         });
         return Ok(true);

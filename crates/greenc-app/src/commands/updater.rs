@@ -170,7 +170,7 @@ pub async fn download_and_install_update(
         .build()
         .map_err(|e| format!("Không thể khởi tạo trình tải cập nhật: {e}"))?;
 
-    let resp = client
+    let mut resp = client
         .get(&download_url)
         .send()
         .await
@@ -180,17 +180,30 @@ pub async fn download_and_install_update(
         return Err(format!("Tải bộ cài thất bại (HTTP {})", resp.status().as_u16()));
     }
 
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| format!("Lỗi đọc dữ liệu bộ cài: {e}"))?;
-
     let update_dir = std::env::temp_dir().join("greenc-update");
-    std::fs::create_dir_all(&update_dir)
+    tokio::fs::create_dir_all(&update_dir)
+        .await
         .map_err(|e| format!("Không thể tạo thư mục tạm cho bản cập nhật: {e}"))?;
     let dest_path = update_dir.join(safe_name);
-    std::fs::write(&dest_path, &bytes)
-        .map_err(|e| format!("Không thể lưu tệp cài đặt mới: {e}"))?;
+
+    {
+        use tokio::io::AsyncWriteExt;
+        let mut file = tokio::fs::File::create(&dest_path)
+            .await
+            .map_err(|e| format!("Không thể tạo tệp cài đặt mới: {e}"))?;
+        while let Some(chunk) = resp
+            .chunk()
+            .await
+            .map_err(|e| format!("Lỗi đọc dữ liệu bộ cài: {e}"))?
+        {
+            file.write_all(&chunk)
+                .await
+                .map_err(|e| format!("Không thể lưu tệp cài đặt mới: {e}"))?;
+        }
+        file.flush()
+            .await
+            .map_err(|e| format!("Không thể hoàn tất ghi tệp cài đặt: {e}"))?;
+    }
 
     #[cfg(target_os = "windows")]
     {

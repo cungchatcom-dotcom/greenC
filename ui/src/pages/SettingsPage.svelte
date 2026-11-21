@@ -188,6 +188,7 @@
       await downloadAndInstallUpdate(updateResult.download_url, updateResult.asset_name);
     } catch (err: unknown) {
       updateCheckError = err instanceof Error ? err.message : String(err);
+    } finally {
       installingUpdate = false;
     }
   }
@@ -628,16 +629,28 @@
           <span>{checkingUpdate ? t('Đang kiểm tra...') : t('Kiểm tra cập nhật')}</span>
         </button>
 
-        {#if updateResult?.has_update && updateResult.download_url && updateResult.asset_name}
-          <button
-            type="button"
-            disabled={installingUpdate}
-            onclick={handleInstallUpdate}
-            class="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-accent hover:bg-accent-hover text-white text-xs font-semibold shadow-sm disabled:opacity-60"
-          >
-            <Download class="h-3.5 w-3.5" />
-            <span>{installingUpdate ? t('Đang tải bản cập nhật...') : `${t('Cập nhật ngay')} v${updateResult.latest_version}`}</span>
-          </button>
+        {#if updateResult?.has_update}
+          {#if updateResult.download_url && updateResult.asset_name}
+            <button
+              type="button"
+              disabled={installingUpdate}
+              onclick={handleInstallUpdate}
+              class="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-accent hover:bg-accent-hover text-white text-xs font-semibold shadow-sm disabled:opacity-60"
+            >
+              <Download class="h-3.5 w-3.5" />
+              <span>{installingUpdate ? t('Đang tải bản cập nhật...') : `${t('Cập nhật ngay')} v${updateResult.latest_version}`}</span>
+            </button>
+          {:else}
+            <a
+              href={updateResult.release_url}
+              target="_blank"
+              rel="noreferrer"
+              class="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-accent hover:bg-accent-hover text-white text-xs font-semibold shadow-sm"
+            >
+              <Download class="h-3.5 w-3.5" />
+              <span>{t('Tải bản mới')}</span>
+            </a>
+          {/if}
         {/if}
       </div>
     </div>

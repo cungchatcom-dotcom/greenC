@@ -103,6 +103,7 @@
       );
     } catch (err) {
       updateError = err instanceof Error ? err.message : String(err);
+    } finally {
       installingUpdate = false;
     }
   }
