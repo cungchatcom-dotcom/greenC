@@ -119,9 +119,22 @@ jobs:
           Copy-Item -Path target/release/greenc-cli.exe -Destination dist/GreenC/greenc-cli.exe -Force
 
       - name: Compile Inno Setup Installer
-        uses: Minithra/innosetup-action@v1
-        with:
-          filepath: packaging/greenc.iss
+        shell: pwsh
+        run: |
+          $iscc = Get-Command iscc -ErrorAction SilentlyContinue
+          if (-not $iscc) {
+            $candidate = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+            if (Test-Path $candidate) {
+              $isccPath = $candidate
+            } else {
+              choco install innosetup -y
+              $isccPath = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+            }
+          } else {
+            $isccPath = $iscc.Source
+          }
+          $ver = "${{ github.ref_name }}".TrimStart('v')
+          & $isccPath "/DAppVersion=$ver" packaging/greenc.iss
 
       - name: Upload Windows Release Artifacts
         uses: actions/upload-artifact@v4
@@ -166,7 +179,8 @@ jobs:
         run: cargo build --release -p greenc-cli
 
       - name: Build macOS DMG Bundle (Tauri v2)
-        run: pnpm dlx @tauri-apps/cli@2 build --config crates/greenc-app/tauri.conf.json --bundles dmg
+        working-directory: crates/greenc-app
+        run: pnpm dlx @tauri-apps/cli@2 build --bundles dmg
 
       - name: Stage Canonical macOS Release File
         run: |
@@ -231,7 +245,10 @@ jobs:
         run: cargo build --release -p greenc-cli
 
       - name: Build Linux DEB & AppImage Bundles (Tauri v2)
-        run: pnpm dlx @tauri-apps/cli@2 build --config crates/greenc-app/tauri.conf.json --bundles deb,appimage
+        working-directory: crates/greenc-app
+        env:
+          NO_STRIP: "true"
+        run: pnpm dlx @tauri-apps/cli@2 build --bundles deb,appimage
 
       - name: Stage Canonical Linux Release Files
         run: |
