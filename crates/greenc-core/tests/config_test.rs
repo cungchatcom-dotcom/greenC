@@ -45,12 +45,24 @@ fn test_retention_bounds_and_paths() {
 
     assert_eq!(MIN_VAULT_RESERVE_BYTES, 512 * 1024 * 1024);
 
-    let drive = Path::new("D:\\");
-    let root = data_root_for(drive);
-    assert_eq!(root, Path::new("D:\\GreenC"));
+    #[cfg(windows)]
+    {
+        let drive = Path::new("D:\\");
+        let root = data_root_for(drive);
+        assert_eq!(root, Path::new("D:\\GreenC"));
+    }
+    #[cfg(unix)]
+    {
+        let drive = Path::new("/Volumes/Data");
+        let root = data_root_for(drive);
+        assert_eq!(root, Path::new("/Volumes/Data/GreenC"));
+    }
 
     let app_dir = app_home();
-    assert!(app_dir.to_string_lossy().contains("GreenC"));
+    assert!(app_dir
+        .to_string_lossy()
+        .to_ascii_lowercase()
+        .contains("greenc"));
 
     let db_path = default_db_path();
     assert!(db_path.to_string_lossy().ends_with("greenc.db"));
