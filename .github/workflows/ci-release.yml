@@ -180,7 +180,7 @@ jobs:
 
       - name: Build macOS DMG Bundle (Tauri v2)
         working-directory: crates/greenc-app
-        run: pnpm dlx @tauri-apps/cli@2 build --bundles dmg
+        run: pnpm dlx --package=@tauri-apps/cli@2 tauri build --bundles dmg
 
       - name: Stage Canonical macOS Release File
         run: |
@@ -248,7 +248,7 @@ jobs:
         working-directory: crates/greenc-app
         env:
           NO_STRIP: "true"
-        run: pnpm dlx @tauri-apps/cli@2 build --bundles deb,appimage
+        run: pnpm dlx --package=@tauri-apps/cli@2 tauri build --bundles deb,appimage
 
       - name: Stage Canonical Linux Release Files
         run: |
