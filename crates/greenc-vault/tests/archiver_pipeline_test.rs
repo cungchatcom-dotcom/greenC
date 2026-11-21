@@ -9,7 +9,9 @@ use greenc_vault::cleanup::{CleanupOptions, DeletionMethod, SafeCleaner};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(windows)]
+use std::path::PathBuf;
 use std::time::SystemTime;
 use tempfile::tempdir;
 
