@@ -193,7 +193,7 @@
       </button>
 
       <div dir="ltr" class="text-xs text-disabled px-2 ltr-isolate">
-        GreenC v{bootstrap?.app_version ?? "2.0.0"} (Rust)
+        GreenC v{bootstrap?.app_version ?? "2.1.1"} (Rust)
       </div>
     </div>
   </aside>
