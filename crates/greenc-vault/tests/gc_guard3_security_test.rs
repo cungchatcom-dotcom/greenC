@@ -1,5 +1,8 @@
 //! Security & crash-recovery TDD tests for GC-GUARD3 (Items 1-5).
-#![cfg_attr(not(unix), allow(unused_imports, dead_code, unused_variables))]
+#![cfg_attr(
+    not(unix),
+    allow(unused_imports, dead_code, unused_variables, clippy::needless_update)
+)]
 
 use chrono::Utc;
 use greenc_core::error::Result;

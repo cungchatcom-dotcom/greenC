@@ -1,5 +1,8 @@
 //! Regression & TDD tests for GC-GUARD2 review fixes (Items 1-7).
-#![cfg_attr(not(unix), allow(unused_imports, dead_code, unused_variables))]
+#![cfg_attr(
+    not(unix),
+    allow(unused_imports, dead_code, unused_variables, clippy::needless_update)
+)]
 
 use chrono::{Duration as ChronoDuration, Utc};
 use greenc_core::error::Result;
