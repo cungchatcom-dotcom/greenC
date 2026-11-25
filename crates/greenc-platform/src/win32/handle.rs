@@ -210,7 +210,10 @@ pub fn is_owned_by_current_user(path: &Path) -> std::io::Result<bool> {
         .map_err(|e| std::io::Error::other(format!("GetTokenInformation failed: {e}")))?;
     }
     // SAFETY: Buffer was filled by `GetTokenInformation(TokenUser)` and starts with `TOKEN_USER`.
-    let current_sid: PSID = unsafe { (*(token_buf.as_ptr().cast::<TOKEN_USER>())).User.Sid };
+    let current_sid: PSID =
+        unsafe { std::ptr::read_unaligned(token_buf.as_ptr().cast::<TOKEN_USER>()) }
+            .User
+            .Sid;
 
     let wide = path_to_wide(path);
     // SAFETY: `wide` is NUL-terminated UTF-16; `FILE_FLAG_OPEN_REPARSE_POINT` prevents following
@@ -236,7 +239,7 @@ pub fn is_owned_by_current_user(path: &Path) -> std::io::Result<bool> {
         GetKernelObjectSecurity(
             obj_guard.raw(),
             OWNER_SECURITY_INFORMATION.0,
-            None,
+            PSECURITY_DESCRIPTOR::default(),
             0,
             &mut sd_len,
         )
@@ -253,7 +256,7 @@ pub fn is_owned_by_current_user(path: &Path) -> std::io::Result<bool> {
         GetKernelObjectSecurity(
             obj_guard.raw(),
             OWNER_SECURITY_INFORMATION.0,
-            Some(sd_ptr),
+            sd_ptr,
             sd_len,
             &mut sd_len,
         )

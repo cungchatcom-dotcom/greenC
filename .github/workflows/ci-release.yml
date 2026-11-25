@@ -65,6 +65,8 @@ jobs:
 
       - name: Run Clippy Lints
         shell: bash
+        env:
+          CARGO_TERM_COLOR: never
         run: |
           set -o pipefail
           if ! cargo clippy --workspace --all-targets --message-format short -- -D warnings 2>&1 | tee clippy.log; then
