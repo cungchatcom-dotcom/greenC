@@ -7,7 +7,25 @@ Ghi thay đổi mới vào mục **Unreleased**. Khi phát hành, `scripts/versi
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-11-25
+
+### Thêm
+- **Zalo: dọn và chuyển ổ.** Tự dọn là tuỳ chọn, mặc định tắt. Dọn bộ đệm và các bản cài cũ của Zalo (giữ bản đang dùng và bản liền trước; không đụng tin nhắn, ảnh, tệp, đăng nhập). Chuyển dữ liệu chat sang ổ khác có kiểm chứng từng tệp, giữ bản gốc 24 giờ, có hoàn tác và tự phục hồi khi bị ngắt giữa chừng.
+- `greenc-cli zalo`: xem tình trạng, dọn và chuyển dữ liệu Zalo từ dòng lệnh.
+- Mã nguồn và quy trình đóng gói MSIX cho Microsoft Store (chưa phát hành trên Store).
+
 ### Thay đổi
+- Dọn tự động theo hạn mức được viết lại: bỏ qua bộ đệm của công cụ đang chạy (Gradle, Maven, npm…), dọn theo từng đơn vị trọn vẹn, đo dung lượng thực sự giải phóng, và nghỉ giữa các lần khi không còn gì để dọn.
+- Đọc chỉ mục bộ đệm không còn làm đổi thời điểm truy cập của tệp.
+
+### Sửa
+- Windows: bật khởi động cùng máy thất bại khi khoá Registry Run chưa tồn tại.
+- Windows: các mục đã chờ xoá không bao giờ được xoá thật.
+- Windows: đường dẫn dạng `\\?\` bị coi là ổ khác.
+
+## [2.1.2] - 2026-11-21
+
+### Thay đổi (từ 2.0.0 bản Python tới 2.1.2)
 - **Viết lại toàn bộ bằng Rust + Tauri v2 + Svelte 5** (bản v2.0.0), thay thế hoàn toàn bản Python. Bản Python cũ nằm ở nhánh `python-legacy` (chỉ có trên máy, chưa đẩy lên remote).
 - Hạn mức dung lượng theo từng ổ đĩa làm căn cứ cảnh báo, sao lưu Vault và dọn dẹp tự động.
 - Tự sửa đường dẫn gói Vault khi thư mục Vault đã đổi chỗ; gói mất tệp ZIP được đánh dấu MISSING.

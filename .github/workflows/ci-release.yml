@@ -407,6 +407,8 @@ jobs:
         run: ls -lh release-assets
 
       - name: Generate SHA256 Checksums & Release Notes Header
+        env:
+          WINGET_ENABLED: ${{ vars.WINGET_ENABLED }}
         run: |
           cd release-assets
           sha256sum * > ../SHA256SUMS.txt
@@ -415,12 +417,16 @@ jobs:
           {
             echo "## Install"
             echo
-            echo '- **Windows (recommended):** `winget install CungChat.GreenC`'
+            if [ "$WINGET_ENABLED" = "true" ]; then
+              echo '- **Windows (recommended):** `winget install CungChat.GreenC`'
+            fi
             echo "- **Windows installer:** \`GreenC-Setup-${VERSION}.exe\` (per-user, no admin rights)"
             echo
             echo "> **Windows SmartScreen:** the installer is not code-signed yet (signing via SignPath Foundation is in progress),"
             echo "> so Windows may show *\"Windows protected your PC\"*. Click **More info → Run anyway**."
-            echo "> Installing through \`winget\` does not trigger this prompt."
+            if [ "$WINGET_ENABLED" = "true" ]; then
+              echo "> Installing through \`winget\` does not trigger this prompt."
+            fi
             echo
             echo "### SHA256 checksums"
             echo
