@@ -2,9 +2,10 @@
 <Package
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
   xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
   xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
   xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
-  IgnorableNamespaces="uap desktop rescap">
+  IgnorableNamespaces="uap uap3 desktop rescap">
 
   <Identity
     Name="@IDENTITY_NAME@"
@@ -59,6 +60,16 @@
             Enabled="false"
             DisplayName="GreenC" />
         </desktop:Extension>
+
+        <!-- Lets users run `greenc-cli` from a terminal in the Store edition. -->
+        <uap3:Extension
+          Category="windows.appExecutionAlias"
+          Executable="greenc-cli.exe"
+          EntryPoint="Windows.FullTrustApplication">
+          <uap3:AppExecutionAlias>
+            <desktop:ExecutionAlias Alias="greenc-cli.exe" />
+          </uap3:AppExecutionAlias>
+        </uap3:Extension>
       </Extensions>
     </Application>
   </Applications>

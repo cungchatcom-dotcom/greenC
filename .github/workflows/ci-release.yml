@@ -132,7 +132,7 @@ jobs:
   build-msix:
     name: Build Microsoft Store MSIX Package (x64)
     needs: quality-gate
-    if: github.event_name == 'workflow_dispatch' || (startsWith(github.ref, 'refs/tags/v') && vars.STORE_IDENTITY_NAME != '')
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/feat/microsoft-store' || (startsWith(github.ref, 'refs/tags/v') && vars.STORE_IDENTITY_NAME != '')
     runs-on: windows-latest
     steps:
       - name: Checkout Repository
@@ -185,7 +185,12 @@ jobs:
           }
           & packaging/msix/build-msix.ps1 @params
 
+      - name: Install and smoke-test the package (self-signed, throwaway runner)
+        shell: pwsh
+        run: packaging/msix/smoke-test.ps1
+
       - name: Upload MSIX Store Artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: GreenC-MSIX-Store
