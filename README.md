@@ -6,7 +6,7 @@
 
 - **Official Website & Download:** https://greenc.cungchat.com
 - **Platform:** Windows 10 / 11 (64-bit)
-- **Version:** 2.2.0 (Rust + Tauri v2 + Svelte 5)
+- **Version:** 2.2.1 (Rust + Tauri v2 + Svelte 5)
 - **Languages:** English & Vietnamese
 - **License:** [Apache License 2.0](LICENSE)
 

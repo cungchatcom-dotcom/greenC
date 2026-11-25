@@ -7,6 +7,8 @@ Ghi thay đổi mới vào mục **Unreleased**. Khi phát hành, `scripts/versi
 
 ## [Unreleased]
 
+## [2.2.1] - 2026-11-25
+
 ### Sửa
 - Windows: cài đè im lặng (`winget upgrade`) không còn thất bại khi GreenC đang chạy; bộ cài tự đóng rồi mở lại GreenC, và từ chối khi GreenC đang dọn hoặc chuyển dữ liệu.
 
