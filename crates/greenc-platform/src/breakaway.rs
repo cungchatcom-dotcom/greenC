@@ -34,7 +34,8 @@ pub const PROC_THREAD_ATTRIBUTE_DESKTOP_APP_POLICY: usize = 0x0002_0012;
 pub const PROC_THREAD_ATTRIBUTE_HANDLE_LIST: usize = 0x0002_0002;
 
 /// Win32 `PROCESS_CREATION_DESKTOP_APP_BREAKAWAY_ENABLE_PROCESS_TREE` (`0x01`).
-/// Requests that the created process (and its descendants) run outside the MSIX desktop app runtime.
+/// The created process starts its own children outside the MSIX desktop app runtime. It does not by
+/// itself move the created process out, which is why the helper image is copied out of the package.
 pub const PROCESS_CREATION_DESKTOP_APP_BREAKAWAY_ENABLE_PROCESS_TREE: u32 = 0x0000_0001;
 
 /// Dedicated exit code emitted by `greenc-cli __restore-helper` when it detects that it is still
@@ -208,7 +209,19 @@ impl BreakawayHelperClient for NativeBreakawayHelperClient {
         job_dir: &PrivateBreakawayJobDir,
         stdin_json: &[u8],
     ) -> Result<BreakawayExecOutput> {
-        let exe = locate_restore_helper_exe()?;
+        let packaged_exe = locate_restore_helper_exe()?;
+        // An image inside the package directory keeps the package identity, so run a private copy
+        // from the job directory. The helper re-checks its identity before touching the disk.
+        let copy_dir = job_dir.path().join("helper");
+        create_private_leaf_dir(&copy_dir)?;
+        let exe = copy_dir.join(packaged_exe.file_name().unwrap_or_default());
+        // Read + write instead of `fs::copy`, which would carry over the package file's attributes.
+        std::fs::write(&exe, std::fs::read(&packaged_exe)?)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o700))?;
+        }
         spawn_restore_helper_breakaway(&exe, job_dir, stdin_json)
     }
 }

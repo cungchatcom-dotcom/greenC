@@ -68,7 +68,8 @@ try {
     Write-Output "::notice::vault restore: exit=$restoreExit real=$real virt=$virt"
 
     if ($restoreExit -ne 0) {
-        throw "vault restore exited with code $restoreExit (real=$real virt=$virt)"
+        $brief = $restoreOut -replace '\s+', ' '
+        throw "vault restore exited with code $restoreExit (real=$real virt=$virt) $($brief.Substring(0, [Math]::Min(900, $brief.Length)))"
     }
     if (-not $real) {
         throw "vault restore failed to restore REAL AppData file (real=False, virt=$virt)"
