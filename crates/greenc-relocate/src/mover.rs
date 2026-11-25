@@ -37,7 +37,7 @@ pub struct MoveOptions {
 }
 
 /// `true` when `path` is, contains or lies inside a Zalo folder, whatever catalog entry offered it.
-fn holds_zalo_data(path: &Path) -> bool {
+pub(crate) fn holds_zalo_data(path: &Path) -> bool {
     let is_zalo_name = |name: &std::ffi::OsStr| {
         name.to_string_lossy()
             .to_lowercase()
@@ -68,6 +68,16 @@ fn holds_zalo_data(path: &Path) -> bool {
         };
         within(&d, &p) || within(&p, &d)
     })
+}
+
+/// `true` when a relocation record represents Zalo data — either by `app_id`
+/// (`"zalo"`, `"advanced_zalo*"`) or because `source_path` or `target_path` holds Zalo data (F3).
+pub(crate) fn record_holds_zalo_data(record: &RelocationRecord) -> bool {
+    let id_lower = record.app_id.to_ascii_lowercase();
+    id_lower == "zalo"
+        || id_lower.starts_with("advanced_zalo")
+        || holds_zalo_data(&record.source_path)
+        || holds_zalo_data(&record.target_path)
 }
 
 pub struct TransactionalMover;
@@ -423,9 +433,9 @@ impl TransactionalMover {
 
         // Dedicated safe Zalo Undo path: strict copy, full verification, pre-swap re-check of
         // Zalo closed + target size/mtime unchanged, and 24h target retention instead of delete.
-        if record.app_id.eq_ignore_ascii_case("zalo")
-            && record.strategy == RelocationStrategyKind::Junction
-        {
+        // F3: dispatch by `record_holds_zalo_data` (checks `app_id`, `advanced_zalo*`, and
+        // `holds_zalo_data(source/target)`) so Zalo data is never deleted via generic undo.
+        if record_holds_zalo_data(&record) && record.strategy == RelocationStrategyKind::Junction {
             return ZaloRelocator::undo_zalo_relocation_locked(
                 &mut record,
                 source_drive,
@@ -481,15 +491,49 @@ impl TransactionalMover {
                         target_path: target_path.clone(),
                     };
                     let req_bytes = serde_json::to_vec(&req)?;
+
+                    // F11: Persist durable `Moving` state BEFORE launching the out-of-package undo
+                    // helper so a crash mid-swap is always visible to crash recovery.
+                    let prev_status = record.status;
+                    let prev_health = record.health_status;
+                    let prev_detail = record.detail.clone();
+                    let prev_moving_path = record.moving_path.clone();
+                    record.status = RelocationStatus::Moving;
+                    record.detail =
+                        Some("Đang hoàn tác chuyển thư mục ngoài gói MSIX...".to_string());
+                    db.save_relocation_durable(&record)?;
+
+                    let revert_after_helper_err = |rec: &mut RelocationRecord, err_note: &str| {
+                        let junction_intact = reparse_api.is_reparse_point(&source_path)
+                            && reparse_api
+                                .get_junction_target(&source_path)
+                                .is_ok_and(|jt| {
+                                    greenc_core::models::same_windows_path(&jt, &target_path)
+                                });
+                        if junction_intact {
+                            rec.status = prev_status;
+                            rec.health_status = prev_health;
+                            rec.moving_path = prev_moving_path.clone();
+                            rec.detail = prev_detail.clone();
+                        } else {
+                            rec.status = RelocationStatus::NeedsReview;
+                            rec.health_status = RelocationHealthStatus::LinkBroken;
+                            rec.detail = Some(err_note.to_string());
+                        }
+                        let _ = db.save_relocation_durable(rec);
+                    };
+
                     let exec_out = match breakaway_client.execute(&job_dir, &req_bytes) {
                         Ok(out) => out,
                         Err(err) => {
+                            let reason = format_breakaway_unavailable_guidance(
+                                "hoàn tác chuyển thư mục",
+                                &err.to_string(),
+                            );
+                            revert_after_helper_err(&mut record, &reason);
                             return Err(GreenCError::PreconditionBlocked {
                                 operation: "undo_relocation_store_breakaway".to_string(),
-                                reason: format_breakaway_unavailable_guidance(
-                                    "hoàn tác chuyển thư mục",
-                                    &err.to_string(),
-                                ),
+                                reason,
                             });
                         }
                     };
@@ -501,34 +545,42 @@ impl TransactionalMover {
                                 .unwrap_or_else(|| {
                                     "Tiến trình trợ giúp vẫn còn trong gói MSIX".to_string()
                                 });
+                        let reason = format_breakaway_unavailable_guidance(
+                            "hoàn tác chuyển thư mục",
+                            &detail,
+                        );
+                        revert_after_helper_err(&mut record, &reason);
                         return Err(GreenCError::PreconditionBlocked {
                             operation: "undo_relocation_store_breakaway".to_string(),
-                            reason: format_breakaway_unavailable_guidance(
-                                "hoàn tác chuyển thư mục",
-                                &detail,
-                            ),
+                            reason,
                         });
                     }
-                    let resp: RestoreHelperResponse = serde_json::from_str(&exec_out.stdout)
-                        .map_err(|e| {
-                            GreenCError::Relocation(format!(
+                    let resp: RestoreHelperResponse = match serde_json::from_str(&exec_out.stdout) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            let msg = format!(
                                 "Phản hồi hoàn tác ngoài gói không hợp lệ (exit={}): {e}; dữ liệu tại '{}' được giữ nguyên",
                                 exec_out.exit_code,
                                 target_path.display()
-                            ))
-                        })?;
+                            );
+                            revert_after_helper_err(&mut record, &msg);
+                            return Err(GreenCError::Relocation(msg));
+                        }
+                    };
                     if !resp.running_outside_package
                         || resp.error_code.as_deref() == Some("still_in_package")
                     {
                         let detail = resp.error.unwrap_or_else(|| {
                             "Không xác nhận được trạng thái ngoài gói MSIX".to_string()
                         });
+                        let reason = format_breakaway_unavailable_guidance(
+                            "hoàn tác chuyển thư mục",
+                            &detail,
+                        );
+                        revert_after_helper_err(&mut record, &reason);
                         return Err(GreenCError::PreconditionBlocked {
                             operation: "undo_relocation_store_breakaway".to_string(),
-                            reason: format_breakaway_unavailable_guidance(
-                                "hoàn tác chuyển thư mục",
-                                &detail,
-                            ),
+                            reason,
                         });
                     }
                     if exec_out.exit_code != 0
@@ -538,22 +590,41 @@ impl TransactionalMover {
                         let detail = resp
                             .error
                             .unwrap_or_else(|| format!("exit code {}", exec_out.exit_code));
-                        return Err(GreenCError::Relocation(format!(
+                        let msg = format!(
                             "Hoàn tác chuyển thư mục ngoài gói MSIX thất bại (dữ liệu tại '{}' được giữ nguyên): {detail}",
                             target_path.display()
-                        )));
+                        );
+                        revert_after_helper_err(&mut record, &msg);
+                        return Err(GreenCError::Relocation(msg));
                     }
 
                     // Only delete secondary-disk copy AFTER outside-package verification passed!
-                    if !record.target_user_repaired {
-                        remove_dir_all_safe(&target_path);
+                    // F11: NEVER swallow target deletion failure — mark `NeedsReview` and return Err.
+                    if !record.target_user_repaired
+                        && fs::symlink_metadata(to_extended_io_path(&target_path)).is_ok()
+                    {
+                        if let Err(del_err) = fs::remove_dir_all(to_extended_io_path(&target_path))
+                        {
+                            record.status = RelocationStatus::NeedsReview;
+                            record.health_status = RelocationHealthStatus::Healthy;
+                            record.moving_path = None;
+                            record.detail = Some(format!(
+                                "Hoàn tác về '{}' thành công nhưng không xoá được bản sao cũ tại '{}' ({del_err}); cần người dùng kiểm tra.",
+                                source_path.display(),
+                                target_path.display()
+                            ));
+                            let _ = db.save_relocation_durable(&record);
+                            return Err(GreenCError::Io(del_err));
+                        }
                     }
                     record.status = RelocationStatus::Undone;
+                    record.health_status = RelocationHealthStatus::Healthy;
+                    record.moving_path = None;
                     record.detail = Some(
                         "Hoàn tác di chuyển về AppData thật thành công (đã xác minh ngoài gói MSIX)"
                             .to_string(),
                     );
-                    db.save_relocation(&record)?;
+                    db.save_relocation_durable(&record)?;
                     return Ok(record);
                 }
 
@@ -875,7 +946,16 @@ pub fn execute_undo_relocation_dir_job(
         );
     }
 
-    let restore_tmp = source_parent.join(format!("restoring.{}", uuid::Uuid::new_v4()));
+    // F11: Use per-record/source temp name (`<source_name>.greenc-restoring.<uuid>`) so
+    // crash recovery scopes it strictly to this record and never blocks unrelated apps.
+    let source_name = source_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("folder");
+    let restore_tmp = source_parent.join(format!(
+        "{source_name}.greenc-restoring.{}",
+        uuid::Uuid::new_v4()
+    ));
     let ctrl = TaskControl::new();
     if let Err(e) = verified_copy_tree_strict(target_path, &restore_tmp, &ctrl, |_, _| {}) {
         remove_dir_all_safe(&restore_tmp);
@@ -891,8 +971,27 @@ pub fn execute_undo_relocation_dir_job(
         );
     }
 
-    // Vacate `source_path` safely: only remove a junction or an empty directory, NEVER delete user data.
-    if reparse_api.is_reparse_point(source_path) {
+    // Vacate `source_path` safely: only remove a junction pointing to `target_path` or an empty
+    // directory; NEVER delete user data or a foreign junction.
+    let was_junction = reparse_api.is_reparse_point(source_path);
+    if was_junction {
+        let matches_target = reparse_api
+            .get_junction_target(source_path)
+            .is_ok_and(|jt| greenc_core::models::same_windows_path(&jt, target_path));
+        if !matches_target {
+            remove_dir_all_safe(&restore_tmp);
+            return (
+                2,
+                RestoreHelperResponse::failed(
+                    "junction_target_mismatch",
+                    format!(
+                        "Liên kết tại '{}' không trỏ tới '{}'; từ chối gỡ liên kết bên ngoài",
+                        source_path.display(),
+                        target_path.display()
+                    ),
+                ),
+            );
+        }
         if let Err(e) = reparse_api.delete_junction(source_path) {
             remove_dir_all_safe(&restore_tmp);
             return (
@@ -923,12 +1022,29 @@ pub fn execute_undo_relocation_dir_job(
     }
 
     if let Err(e) = fs::rename(&restore_tmp, source_path) {
+        // F11: Rebuild the deleted junction immediately when rename fails so the app is never
+        // stranded without `source_path`!
+        let mut rebuild_note = String::new();
+        if was_junction {
+            match reparse_api.create_junction(source_path, target_path) {
+                Ok(()) => {
+                    remove_dir_all_safe(&restore_tmp);
+                    rebuild_note = " (đã dựng lại liên kết cũ an toàn)".to_string();
+                }
+                Err(j_err) => {
+                    rebuild_note = format!(
+                        " và không dựng lại được liên kết cũ ({j_err}); giữ nguyên bản tạm '{}'",
+                        restore_tmp.display()
+                    );
+                }
+            }
+        }
         return (
             1,
             RestoreHelperResponse::failed(
                 "rename_failed",
                 format!(
-                    "Không đổi tên được bản hoàn tác về '{}': {e}",
+                    "Không đổi tên được bản hoàn tác về '{}': {e}{rebuild_note}",
                     source_path.display()
                 ),
             ),

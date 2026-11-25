@@ -37,7 +37,8 @@ use greenc_platform::app_lifecycle::{
     ZALO_MANUAL_QUIT_MESSAGE,
 };
 use greenc_platform::traits::{
-    FileLockProbe, ProcessServiceProbe, ReparsePointApi, ShellFolderApi, Win32VolumeApi,
+    FileLockProbe, NativeProcessServiceProbe, ProcessServiceProbe, ReparsePointApi, ShellFolderApi,
+    Win32VolumeApi,
 };
 use greenc_platform::RelocationLock;
 use greenc_scanner::zalo::{
@@ -544,7 +545,7 @@ pub fn discover_zalo_safety_copies(
     let mut fallback_source_path: Option<PathBuf> = data_dir.map(Path::to_path_buf);
     if let Ok(relocs) = db.list_relocations(None) {
         for rec in relocs {
-            if rec.app_id.eq_ignore_ascii_case("zalo") {
+            if crate::mover::record_holds_zalo_data(&rec) {
                 if fallback_source_path.is_none() {
                     fallback_source_path = Some(rec.source_path.clone());
                 }
@@ -822,10 +823,10 @@ impl TreeFingerprint {
     }
 }
 
-/// Fail-closed recursive file collector:
-/// - Propagates EVERY `read_dir`, entry, and metadata/permission error (NEVER uses `.flatten()`).
-/// - Fails immediately on ANY symlink, NTFS junction, reparse point, or special file.
-fn collect_relative_files(root: &Path, must_exist: bool) -> Result<BTreeMap<PathBuf, u64>> {
+fn collect_relative_files_with_meta(
+    root: &Path,
+    must_exist: bool,
+) -> Result<BTreeMap<PathBuf, (u64, Option<SystemTime>)>> {
     let mut map = BTreeMap::new();
     let root_io = to_extended_io_path(root);
     let root_meta = match fs::symlink_metadata(&root_io) {
@@ -876,7 +877,7 @@ fn collect_relative_files(root: &Path, must_exist: bool) -> Result<BTreeMap<Path
                     .strip_prefix(root)
                     .map_err(|_| GreenCError::InvalidPath(p.clone()))?
                     .to_path_buf();
-                map.insert(rel, meta.len());
+                map.insert(rel, (meta.len(), meta.modified().ok()));
             } else {
                 return Err(GreenCError::PreconditionBlocked {
                     operation: "zalo_verify".to_string(),
@@ -889,6 +890,17 @@ fn collect_relative_files(root: &Path, must_exist: bool) -> Result<BTreeMap<Path
         }
     }
     Ok(map)
+}
+
+/// Fail-closed recursive file collector:
+/// - Propagates EVERY `read_dir`, entry, and metadata/permission error (NEVER uses `.flatten()`).
+/// - Fails immediately on ANY symlink, NTFS junction, reparse point, or special file.
+fn collect_relative_files(root: &Path, must_exist: bool) -> Result<BTreeMap<PathBuf, u64>> {
+    let with_meta = collect_relative_files_with_meta(root, must_exist)?;
+    Ok(with_meta
+        .into_iter()
+        .map(|(k, (len, _))| (k, len))
+        .collect())
 }
 
 /// Strictly verifies a copied `Zalo Data` directory BEFORE any original may ever be deleted:
@@ -1197,16 +1209,25 @@ fn is_sqlite_sidecar_name(name: &str) -> bool {
     lower.ends_with("-wal") || lower.ends_with("-shm") || lower.ends_with("-journal")
 }
 
-fn is_sqlite_db_candidate(rel: &Path, reference_file: &Path) -> bool {
-    let ext_match = rel.extension().and_then(|e| e.to_str()).is_some_and(|e| {
-        e.eq_ignore_ascii_case("db")
-            || e.eq_ignore_ascii_case("sqlite")
-            || e.eq_ignore_ascii_case("sqlite3")
-    });
-    if ext_match {
-        return true;
-    }
-    let io_path = to_extended_io_path(reference_file);
+/// Exact typed confirmation phrase accepted as the explicit force-delete escape hatch so a user
+/// is never permanently stuck unable to remove an unwanted safety copy (F5).
+pub const ZALO_FORCE_DELETE_CONFIRM_PHRASE: &str = "XOA BAN SAO ZALO";
+
+fn is_valid_force_delete_phrase(input: &str) -> bool {
+    let normalized: String = input
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_uppercase();
+    normalized == ZALO_FORCE_DELETE_CONFIRM_PHRASE || normalized == "XOÁ BẢN SAO ZALO"
+}
+
+/// Detects unencrypted SQLite 3 database files strictly by the 16-byte magic header
+/// (`"SQLite format 3\0"`), NEVER by file extension (`.db`/`.sqlite`/`.sqlite3`) (F5).
+/// Encrypted SQLite (e.g. SQLCipher) and non-SQLite files return `false` and fall back to
+/// the size + mtime rule.
+pub(crate) fn has_sqlite3_magic_header(path: &Path) -> bool {
+    let io_path = to_extended_io_path(path);
     let Ok(mut f) = fs::File::open(&io_path) else {
         return false;
     };
@@ -1214,26 +1235,177 @@ fn is_sqlite_db_candidate(rel: &Path, reference_file: &Path) -> bool {
     f.read_exact(&mut header).is_ok() && &header == b"SQLite format 3\0"
 }
 
-fn verify_sqlite_db_openable(path: &Path, operation: &str) -> Result<()> {
-    let io_path = to_extended_io_path(path);
-    let flags =
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
-    let conn = rusqlite::Connection::open_with_flags(&io_path, flags).map_err(|e| {
+/// Exponential back-off delays (seconds) when the automatic purge gate fails so Guardian's
+/// 45-second tick does not repeatedly copy & verify multi-GB Zalo databases on every tick.
+const PURGE_GATE_BACKOFF_SECS: &[i64] = &[300, 900, 3600, 21600];
+
+fn purge_gate_backoff_key(retained_id: i64) -> String {
+    format!("zalo_purge_gate_backoff:{retained_id}")
+}
+
+/// Reads the persisted `(failure_count, next_retry_at)` back-off state for a retained original.
+pub fn purge_gate_backoff_state(db: &GreenCDb, retained_id: i64) -> Option<(u32, DateTime<Utc>)> {
+    let raw = db
+        .get_setting(&purge_gate_backoff_key(retained_id))
+        .ok()
+        .flatten()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let (count_s, ts_s) = trimmed.split_once('|')?;
+    let count: u32 = count_s.parse().ok()?;
+    let next_retry = DateTime::parse_from_rfc3339(ts_s).ok()?.with_timezone(&Utc);
+    Some((count, next_retry))
+}
+
+fn record_purge_gate_failure(db: &GreenCDb, retained_id: i64, now: DateTime<Utc>) -> (u32, i64) {
+    let prev_failures = purge_gate_backoff_state(db, retained_id)
+        .map(|(c, _)| c)
+        .unwrap_or(0);
+    let failures = prev_failures.saturating_add(1);
+    let idx = (failures.saturating_sub(1) as usize).min(PURGE_GATE_BACKOFF_SECS.len() - 1);
+    let delay_secs = PURGE_GATE_BACKOFF_SECS[idx];
+    let next_retry = now + ChronoDuration::seconds(delay_secs);
+    let val = format!("{failures}|{}", next_retry.to_rfc3339());
+    let _ = db.set_setting(&purge_gate_backoff_key(retained_id), &val);
+    (failures, delay_secs)
+}
+
+fn clear_purge_gate_backoff(db: &GreenCDb, retained_id: i64) {
+    let _ = db.set_setting(&purge_gate_backoff_key(retained_id), "");
+}
+
+struct TempVerifyDir {
+    path: PathBuf,
+}
+
+impl TempVerifyDir {
+    fn create_outside(forbidden_roots: &[&Path], operation: &str) -> Result<Self> {
+        let base = std::env::temp_dir();
+        let dir = base.join(format!("greenc-zalo-db-verify-{}", uuid::Uuid::new_v4()));
+        let dir_norm = norm_path_key(&dir);
+        for root in forbidden_roots {
+            let root_norm = norm_path_key(root);
+            if !root_norm.is_empty()
+                && (dir_norm == root_norm || dir_norm.starts_with(&format!("{root_norm}/")))
+            {
+                return Err(GreenCError::PreconditionBlocked {
+                    operation: operation.to_string(),
+                    reason: format!(
+                        "Thư mục tạm xác minh '{}' nằm bên trong thư mục Zalo '{}'; từ chối mở SQLite.",
+                        dir.display(),
+                        root.display()
+                    ),
+                });
+            }
+        }
+        fs::create_dir_all(&dir)?;
+        Ok(Self { path: dir })
+    }
+}
+
+impl Drop for TempVerifyDir {
+    fn drop(&mut self) {
+        remove_dir_all_safe(&self.path);
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct SqliteSnapshotStats {
+    page_count: u64,
+    used_pages: u64,
+    user_tables: Vec<String>,
+    total_rows: u64,
+}
+
+fn ensure_zalo_closed_for_db_copy(
+    proc_probe: &dyn ProcessServiceProbe,
+    operation: &str,
+) -> Result<()> {
+    for proc_name in ZALO_PROCESS_NAMES {
+        if proc_probe.is_process_running(proc_name)
+            || proc_probe.is_process_running(&proc_name.to_lowercase())
+        {
+            return Err(GreenCError::PreconditionBlocked {
+                operation: operation.to_string(),
+                reason: format!(
+                    "Zalo ({proc_name}) đang chạy; hoãn sao chép cơ sở dữ liệu để xác minh (GreenC không bao giờ mở trực tiếp DB sống bằng SQLite)."
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Copies a SQLite database AND its `-wal`/`-journal` sidecars (never `-shm`) into a private
+/// temporary directory strictly outside any Zalo directory — ONLY while Zalo is closed — and
+/// inspects integrity, page counts, and row counts on that private copy.
+/// NEVER opens the live database file with SQLite!
+fn inspect_sqlite_via_isolated_copy(
+    db_path: &Path,
+    forbidden_roots: &[&Path],
+    proc_probe: &dyn ProcessServiceProbe,
+    operation: &str,
+) -> Result<SqliteSnapshotStats> {
+    ensure_zalo_closed_for_db_copy(proc_probe, operation)?;
+
+    let temp_dir = TempVerifyDir::create_outside(forbidden_roots, operation)?;
+    let temp_db = temp_dir.path.join("snapshot.db");
+
+    fs::copy(to_extended_io_path(db_path), &temp_db).map_err(|e| {
         GreenCError::PreconditionBlocked {
             operation: operation.to_string(),
             reason: format!(
-                "Không thể mở cơ sở dữ liệu SQLite '{}' để xác minh: {e}",
-                path.display()
+                "Không thể sao chép cơ sở dữ liệu '{}' ra thư mục tạm để xác minh: {e}",
+                db_path.display()
             ),
         }
     })?;
+
+    if let Some(fname) = db_path.file_name().and_then(|n| n.to_str()) {
+        for suffix in ["-wal", "-journal"] {
+            let sidecar_src = db_path.with_file_name(format!("{fname}{suffix}"));
+            let sidecar_io = to_extended_io_path(&sidecar_src);
+            if let Ok(meta) = fs::symlink_metadata(&sidecar_io) {
+                if meta.is_file() && !meta.file_type().is_symlink() {
+                    let sidecar_dst = temp_dir.path.join(format!("snapshot.db{suffix}"));
+                    fs::copy(&sidecar_io, &sidecar_dst).map_err(|e| {
+                        GreenCError::PreconditionBlocked {
+                            operation: operation.to_string(),
+                            reason: format!(
+                                "Không thể sao chép tệp phụ '{suffix}' của '{}' để xác minh: {e}",
+                                db_path.display()
+                            ),
+                        }
+                    })?;
+                }
+            }
+        }
+    }
+
+    // Re-check that Zalo did not start mid-copy (which could yield an inconsistent db+wal snapshot).
+    ensure_zalo_closed_for_db_copy(proc_probe, operation)?;
+
+    let flags =
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    let conn = rusqlite::Connection::open_with_flags(&temp_db, flags).map_err(|e| {
+        GreenCError::PreconditionBlocked {
+            operation: operation.to_string(),
+            reason: format!(
+                "Không thể mở bản sao tạm của cơ sở dữ liệu SQLite '{}' để xác minh: {e}",
+                db_path.display()
+            ),
+        }
+    })?;
+
     let check: String = conn
         .query_row("PRAGMA quick_check(1);", [], |r| r.get(0))
         .map_err(|e| GreenCError::PreconditionBlocked {
             operation: operation.to_string(),
             reason: format!(
                 "Cơ sở dữ liệu SQLite '{}' không đọc/xác minh được (PRAGMA quick_check): {e}",
-                path.display()
+                db_path.display()
             ),
         })?;
     if !check.eq_ignore_ascii_case("ok") {
@@ -1241,37 +1413,237 @@ fn verify_sqlite_db_openable(path: &Path, operation: &str) -> Result<()> {
             operation: operation.to_string(),
             reason: format!(
                 "Cơ sở dữ liệu SQLite '{}' lỗi toàn vẹn ({check})",
-                path.display()
+                db_path.display()
             ),
         });
     }
-    Ok(())
+
+    let page_count: u64 = conn
+        .query_row("PRAGMA page_count;", [], |r| r.get::<_, i64>(0))
+        .map_err(|e| GreenCError::PreconditionBlocked {
+            operation: operation.to_string(),
+            reason: format!(
+                "Không đọc được số trang SQLite (PRAGMA page_count) của '{}': {e}",
+                db_path.display()
+            ),
+        })?
+        .max(0) as u64;
+
+    let freelist_count: u64 = conn
+        .query_row("PRAGMA freelist_count;", [], |r| r.get::<_, i64>(0))
+        .unwrap_or(0)
+        .max(0) as u64;
+    let used_pages = page_count.saturating_sub(freelist_count);
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name;",
+        )
+        .map_err(|e| GreenCError::PreconditionBlocked {
+            operation: operation.to_string(),
+            reason: format!(
+                "Không đọc được danh sách bảng SQLite của '{}': {e}",
+                db_path.display()
+            ),
+        })?;
+    let user_tables: Vec<String> = stmt
+        .query_map([], |r| r.get::<_, String>(0))
+        .map_err(|e| GreenCError::PreconditionBlocked {
+            operation: operation.to_string(),
+            reason: format!(
+                "Không liệt kê được bảng SQLite của '{}': {e}",
+                db_path.display()
+            ),
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| GreenCError::PreconditionBlocked {
+            operation: operation.to_string(),
+            reason: format!("Lỗi đọc tên bảng SQLite của '{}': {e}", db_path.display()),
+        })?;
+    drop(stmt);
+
+    let mut total_rows = 0u64;
+    for tbl in &user_tables {
+        let escaped = tbl.replace('"', "\"\"");
+        let sql = format!("SELECT COUNT(*) FROM \"{escaped}\";");
+        let count: u64 = conn
+            .query_row(&sql, [], |r| r.get::<_, i64>(0))
+            .map_err(|e| GreenCError::PreconditionBlocked {
+                operation: operation.to_string(),
+                reason: format!(
+                    "Không đếm được số dòng bảng '{tbl}' trong '{}': {e}",
+                    db_path.display()
+                ),
+            })?
+            .max(0) as u64;
+        total_rows = total_rows.saturating_add(count);
+    }
+
+    drop(conn);
+    drop(temp_dir);
+
+    Ok(SqliteSnapshotStats {
+        page_count,
+        used_pages,
+        user_tables,
+        total_rows,
+    })
 }
 
-/// Fail-closed gate verifying `live_dir` covers every message database present in `copy_dir`
-/// on disk (ignoring `-wal`/`-shm`/`-journal` sidecars and NOT counting `media/` files):
+fn verify_sqlite_live_against_copy(
+    live_file: &Path,
+    copy_file: Option<&Path>,
+    forbidden_roots: &[&Path],
+    proc_probe: &dyn ProcessServiceProbe,
+    operation: &str,
+) -> Result<Vec<String>> {
+    let live_stats =
+        inspect_sqlite_via_isolated_copy(live_file, forbidden_roots, proc_probe, operation)?;
+
+    if live_stats.page_count == 0 {
+        return Err(GreenCError::PreconditionBlocked {
+            operation: operation.to_string(),
+            reason: format!(
+                "Cơ sở dữ liệu SQLite đang dùng '{}' có 0 trang (trống/bị làm rỗng).",
+                live_file.display()
+            ),
+        });
+    }
+
+    let mut copy_richer_reasons = Vec::new();
+    if let Some(cf) = copy_file {
+        if !greenc_core::models::same_windows_path(live_file, cf) {
+            if let Ok(copy_stats) =
+                inspect_sqlite_via_isolated_copy(cf, forbidden_roots, proc_probe, operation)
+            {
+                if !copy_stats.user_tables.is_empty() && live_stats.user_tables.is_empty() {
+                    return Err(GreenCError::PreconditionBlocked {
+                        operation: operation.to_string(),
+                        reason: format!(
+                            "Cơ sở dữ liệu SQLite '{}' bị mất toàn bộ bảng dữ liệu so với bản sao ({} bảng).",
+                            live_file.display(),
+                            copy_stats.user_tables.len()
+                        ),
+                    });
+                }
+                if copy_stats.total_rows > 0 && live_stats.total_rows == 0 {
+                    return Err(GreenCError::PreconditionBlocked {
+                        operation: operation.to_string(),
+                        reason: format!(
+                            "Cơ sở dữ liệu SQLite '{}' đã bị làm rỗng (0 dòng dữ liệu so với {} dòng trong bản sao).",
+                            live_file.display(),
+                            copy_stats.total_rows
+                        ),
+                    });
+                }
+                if copy_stats.used_pages > 1 && live_stats.used_pages <= 1 {
+                    return Err(GreenCError::PreconditionBlocked {
+                        operation: operation.to_string(),
+                        reason: format!(
+                            "Cơ sở dữ liệu SQLite '{}' bị làm rỗng số trang dữ liệu ({} trang đang dùng so với {} trang trong bản sao).",
+                            live_file.display(),
+                            live_stats.used_pages,
+                            copy_stats.used_pages
+                        ),
+                    });
+                }
+                if copy_stats.used_pages > 2
+                    && live_stats.used_pages.saturating_mul(100)
+                        < copy_stats.used_pages.saturating_mul(80)
+                {
+                    copy_richer_reasons.push(format!(
+                        "CSDL SQLite '{}' trong bản sao có nhiều trang dữ liệu hơn đáng kể ({} so với {} trang đang dùng)",
+                        live_file.display(),
+                        copy_stats.used_pages,
+                        live_stats.used_pages
+                    ));
+                }
+                if copy_stats.total_rows > 0
+                    && live_stats.total_rows.saturating_mul(100)
+                        < copy_stats.total_rows.saturating_mul(80)
+                {
+                    copy_richer_reasons.push(format!(
+                        "CSDL SQLite '{}' trong bản sao có nhiều dòng dữ liệu hơn đáng kể ({} so với {} dòng đang dùng)",
+                        live_file.display(),
+                        copy_stats.total_rows,
+                        live_stats.total_rows
+                    ));
+                }
+            }
+        }
+    }
+
+    Ok(copy_richer_reasons)
+}
+
+/// Options controlling confirmed safety-copy deletion via
+/// [`ZaloRelocator::delete_safety_copy_by_id_with_options`].
+#[derive(Debug, Clone, Default)]
+pub struct ZaloDeleteSafetyCopyOptions {
+    /// Separate explicit confirmation required when any file in the copy's `message/` directory
+    /// is newer (`mtime`), larger (`size`), or absent from the live directory ("bản này mới hơn").
+    pub confirm_copy_may_be_newer: bool,
+    /// Optional typed confirmation phrase (`ZALO_FORCE_DELETE_CONFIRM_PHRASE`) allowing the user
+    /// to explicitly delete a non-live safety copy even when automatic live-coverage checks fail,
+    /// so users are never permanently trapped with undeletable backups.
+    pub force_delete_confirmation_text: Option<String>,
+}
+
+/// Summary of what [`verify_live_zalo_covers_copy_with_options`] actually checked, so user-facing
+/// messages never overclaim beyond the checks that ran.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct CopyCoverageSummary {
+    pub checked_message_files: u64,
+    pub checked_sqlite_dbs: u64,
+    pub checked_opaque_files: u64,
+    pub copy_newer_or_larger: bool,
+}
+
+fn wal_sibling_rel(rel: &Path) -> Option<PathBuf> {
+    let fname = rel.file_name()?.to_str()?;
+    let mut wal_name = fname.to_string();
+    wal_name.push_str("-wal");
+    Some(rel.with_file_name(wal_name))
+}
+
+fn max_opt_time(a: Option<SystemTime>, b: Option<SystemTime>) -> Option<SystemTime> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(x.max(y)),
+        (Some(x), None) => Some(x),
+        (None, Some(y)) => Some(y),
+        (None, None) => None,
+    }
+}
+
+/// Fail-closed gate verifying `live_dir` covers every message file present in `copy_dir`
+/// on disk (ignoring `-wal`/`-shm`/`-journal` sidecars as standalone entries while still checking
+/// non-empty `-wal` mtimes, and NOT counting `media/` files):
 /// - Both `copy_dir/message` and `live_dir/message` must be real readable directories.
 /// - Every non-sidecar file in `copy_dir/message` must exist in `live_dir/message`, must NOT be
-///   significantly smaller (>= 80% of on-disk copy size, non-zero if copy is non-zero), and every
-///   SQLite DB file must open cleanly and pass `PRAGMA quick_check(1)`.
-pub(crate) fn verify_live_zalo_covers_copy(
+///   larger (`copy_size > live_size`) or newer (`copy_mtime > live_mtime`) than the live file
+///   unless `allow_copy_may_be_newer` is explicitly confirmed by the user.
+/// - Every live SQLite DB must still pass integrity verification (never bypassed even when
+///   `allow_copy_may_be_newer == true` so a sole valid copy is never deleted over a corrupt live dir).
+pub(crate) fn verify_live_zalo_covers_copy_with_options(
     live_dir: &Path,
     copy_dir: &Path,
     operation: &str,
-) -> Result<()> {
+    allow_copy_may_be_newer: bool,
+    proc_probe: &dyn ProcessServiceProbe,
+) -> Result<CopyCoverageSummary> {
     let copy_msg_dir = copy_dir.join("message");
-    let copy_msg_files = collect_relative_files(&copy_msg_dir, true).map_err(|e| {
+    let copy_msg_files = collect_relative_files_with_meta(&copy_msg_dir, true).map_err(|e| {
         GreenCError::PreconditionBlocked {
             operation: operation.to_string(),
             reason: format!(
-                "Không thể đọc thư mục message/ của bản gốc {} để đối chiếu: {e}",
+                "Không thể đọc thư mục message/ của bản sao {} để đối chiếu: {e}",
                 copy_dir.display()
             ),
         }
     })?;
 
     let live_msg_dir = live_dir.join("message");
-    let live_msg_files = collect_relative_files(&live_msg_dir, true).map_err(|e| {
+    let live_msg_files = collect_relative_files_with_meta(&live_msg_dir, true).map_err(|e| {
         GreenCError::PreconditionBlocked {
             operation: operation.to_string(),
             reason: format!(
@@ -1281,46 +1653,114 @@ pub(crate) fn verify_live_zalo_covers_copy(
         }
     })?;
 
-    let mut checked_dbs = 0u64;
-    for (rel, &orig_size) in &copy_msg_files {
+    let forbidden_roots = [live_dir, copy_dir];
+    let mut summary = CopyCoverageSummary::default();
+    let mut newer_or_larger_reasons: Vec<String> = Vec::new();
+    let mut live_has_verified_db = false;
+
+    for (rel, &(orig_size, orig_mtime)) in &copy_msg_files {
         let fname = rel.file_name().and_then(|n| n.to_str()).unwrap_or("");
         if is_sqlite_sidecar_name(fname) {
             continue;
         }
-        checked_dbs = checked_dbs.saturating_add(1);
+        summary.checked_message_files = summary.checked_message_files.saturating_add(1);
 
-        let Some(&live_size) = live_msg_files.get(rel) else {
-            return Err(GreenCError::PreconditionBlocked {
-                operation: operation.to_string(),
-                reason: format!(
-                    "Không thể xoá bản sao vì tệp cơ sở dữ liệu message/{} có trong bản gốc nhưng bị thiếu tại {}.",
-                    rel.display(),
-                    live_dir.display()
-                ),
-            });
+        let copy_file = copy_msg_dir.join(rel);
+        let Some(&(live_size, live_mtime)) = live_msg_files.get(rel) else {
+            newer_or_larger_reasons.push(format!(
+                "tệp message/{} có trong bản sao nhưng không có tại {}",
+                rel.display(),
+                live_dir.display()
+            ));
+            continue;
         };
 
-        if orig_size > 0
-            && (live_size == 0 || live_size.saturating_mul(100) < orig_size.saturating_mul(80))
-        {
+        if orig_size > 0 && live_size == 0 {
             return Err(GreenCError::PreconditionBlocked {
                 operation: operation.to_string(),
                 reason: format!(
-                    "Không thể xoá bản sao vì tệp message/{} tại {} nhỏ hơn đáng kể so với bản gốc ({live_size} bytes so với {orig_size} bytes).",
+                    "Không thể xoá bản sao vì tệp message/{} tại {} đang rỗng (0 bytes so với {orig_size} bytes trong bản sao).",
                     rel.display(),
                     live_dir.display()
                 ),
             });
         }
 
-        let copy_file = copy_msg_dir.join(rel);
+        if orig_size > live_size {
+            newer_or_larger_reasons.push(format!(
+                "tệp message/{} trong bản sao lớn hơn bản đang dùng ({orig_size} bytes > {live_size} bytes)",
+                rel.display()
+            ));
+        }
+
+        let live_wal_mtime = wal_sibling_rel(rel)
+            .and_then(|w| live_msg_files.get(&w))
+            .filter(|(len, _)| *len > 0)
+            .and_then(|(_, mt)| *mt);
+        let live_effective_mtime = max_opt_time(live_mtime, live_wal_mtime);
+
+        let copy_wal_mtime = wal_sibling_rel(rel)
+            .and_then(|w| copy_msg_files.get(&w))
+            .filter(|(len, _)| *len > 0)
+            .and_then(|(_, mt)| *mt);
+        let copy_effective_mtime = max_opt_time(orig_mtime, copy_wal_mtime);
+
+        if let (Some(c_mt), Some(l_mt)) = (copy_effective_mtime, live_effective_mtime) {
+            if c_mt > l_mt {
+                newer_or_larger_reasons.push(format!(
+                    "tệp message/{} trong bản sao mới hơn bản đang dùng theo thời gian sửa đổi (mtime)",
+                    rel.display()
+                ));
+            }
+        }
+
         let live_file = live_msg_dir.join(rel);
-        if is_sqlite_db_candidate(rel, &copy_file) {
-            verify_sqlite_db_openable(&live_file, operation)?;
+        // F5: Detect SQLite strictly by 16-byte magic header (NOT filename extension!).
+        // Encrypted DBs (e.g. SQLCipher) and non-SQLite files use the size + mtime rule above.
+        if has_sqlite3_magic_header(&copy_file) || has_sqlite3_magic_header(&live_file) {
+            let richer = verify_sqlite_live_against_copy(
+                &live_file,
+                Some(&copy_file),
+                &forbidden_roots,
+                proc_probe,
+                operation,
+            )?;
+            newer_or_larger_reasons.extend(richer);
+            summary.checked_sqlite_dbs = summary.checked_sqlite_dbs.saturating_add(1);
+            live_has_verified_db = true;
+        } else if live_size > 0 {
+            summary.checked_opaque_files = summary.checked_opaque_files.saturating_add(1);
+            live_has_verified_db = true;
         }
     }
 
-    if checked_dbs == 0 && live_msg_files.is_empty() {
+    // Even when confirming deletion of a newer/extra copy, the live `message/` directory MUST
+    // still contain at least one valid, non-empty message DB so we never delete the sole copy.
+    if !live_has_verified_db {
+        for (rel, &(live_size, _)) in &live_msg_files {
+            let fname = rel.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if is_sqlite_sidecar_name(fname) {
+                continue;
+            }
+            let live_file = live_msg_dir.join(rel);
+            if has_sqlite3_magic_header(&live_file) {
+                let _ = verify_sqlite_live_against_copy(
+                    &live_file,
+                    None,
+                    &forbidden_roots,
+                    proc_probe,
+                    operation,
+                )?;
+                summary.checked_sqlite_dbs = summary.checked_sqlite_dbs.saturating_add(1);
+                live_has_verified_db = true;
+            } else if live_size > 0 {
+                summary.checked_opaque_files = summary.checked_opaque_files.saturating_add(1);
+                live_has_verified_db = true;
+            }
+        }
+    }
+
+    if !live_has_verified_db && (summary.checked_message_files == 0 || live_msg_files.is_empty()) {
         return Err(GreenCError::PreconditionBlocked {
             operation: operation.to_string(),
             reason: format!(
@@ -1330,7 +1770,37 @@ pub(crate) fn verify_live_zalo_covers_copy(
         });
     }
 
-    Ok(())
+    if !newer_or_larger_reasons.is_empty() {
+        summary.copy_newer_or_larger = true;
+        if !allow_copy_may_be_newer {
+            let op = if operation == "zalo_delete_safety_copy" {
+                "zalo_delete_copy_newer"
+            } else {
+                operation
+            };
+            return Err(GreenCError::PreconditionBlocked {
+                operation: op.to_string(),
+                reason: format!(
+                    "Từ chối xoá bản sao vì phát hiện dữ liệu có thể mới hơn hoặc lớn hơn bản đang dùng: {}. Cần xác nhận riêng \"bản này mới hơn\" trước khi xoá.",
+                    newer_or_larger_reasons.join("; ")
+                ),
+            });
+        }
+    }
+
+    Ok(summary)
+}
+
+/// Fail-closed gate verifying `live_dir` covers every message database present in `copy_dir`
+/// on disk (strict mode: never allows deleting a copy that is newer or larger than live).
+pub(crate) fn verify_live_zalo_covers_copy(
+    live_dir: &Path,
+    copy_dir: &Path,
+    operation: &str,
+    proc_probe: &dyn ProcessServiceProbe,
+) -> Result<()> {
+    verify_live_zalo_covers_copy_with_options(live_dir, copy_dir, operation, false, proc_probe)
+        .map(|_| ())
 }
 
 /// Formats the plain-language one-time confirmation message for moving Zalo chat data.
@@ -1416,6 +1886,100 @@ fn make_sibling_path(path: &Path, tag: &str) -> PathBuf {
     parent.join(format!("{name}.{tag}.{}", uuid::Uuid::new_v4()))
 }
 
+const RESTORE_CRASH_META_TAG: &str = "GREENC_RESTORE_META:";
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub(crate) struct RestoreCrashMeta {
+    pub conflict: Option<PathBuf>,
+    pub staged: Option<PathBuf>,
+    pub prev_reloc_status: Option<String>,
+}
+
+pub(crate) fn encode_restore_crash_meta(prefix: &str, meta: &RestoreCrashMeta) -> String {
+    match serde_json::to_string(meta) {
+        Ok(json) => format!("{prefix} {RESTORE_CRASH_META_TAG}{json}"),
+        Err(_) => prefix.to_string(),
+    }
+}
+
+pub(crate) fn parse_restore_crash_meta(detail: Option<&str>) -> Option<RestoreCrashMeta> {
+    let raw = detail?;
+    let idx = raw.find(RESTORE_CRASH_META_TAG)?;
+    let json = raw[idx + RESTORE_CRASH_META_TAG.len()..].trim();
+    serde_json::from_str::<RestoreCrashMeta>(json).ok()
+}
+
+/// Determines whether `target_path`'s underlying drive/volume is actually OFFLINE, rather than
+/// merely missing because `target_path` was renamed (e.g. to `.greenc-original.*` after undo or
+/// rollback) (F8).
+pub(crate) fn is_target_drive_offline(
+    target_path: &Path,
+    known_online_sibling: Option<&Path>,
+) -> bool {
+    if path_exists_lstat(target_path) {
+        return false;
+    }
+    if let Some(sib) = known_online_sibling {
+        if path_exists_lstat(sib) {
+            if let (Some(sp), Some(tp)) = (sib.parent(), target_path.parent()) {
+                if greenc_core::models::same_windows_path(sp, tp) {
+                    return false;
+                }
+            }
+        }
+    }
+    // On Windows drive-letter paths (e.g. `D:\...`), "offline" strictly means the drive root
+    // (`D:\`) is not mounted/present — NOT that the folder inside `D:` was renamed.
+    #[cfg(windows)]
+    {
+        let raw = target_path.to_string_lossy();
+        let clean = raw.strip_prefix(r"\\?\").unwrap_or(&raw);
+        let mut chars = clean.chars();
+        if let (Some(drv), Some(':')) = (chars.next(), chars.next()) {
+            if drv.is_ascii_alphabetic() {
+                let root = PathBuf::from(format!("{}:\\", drv.to_ascii_uppercase()));
+                return fs::metadata(&root).is_err();
+            }
+        }
+    }
+    // On non-Windows (and UNC / test paths), a renamed folder still has its parent directory
+    // present; an unplugged/offline volume has its parent directory absent.
+    match target_path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => !path_exists_lstat(parent),
+        _ => true,
+    }
+}
+
+/// F11: Blocks Microsoft Store (MSIX) builds from mutating ANY Zalo path located inside Windows
+/// AppData (`undo`, `restore_retained_original`, `restore_safety_copy`, `purge`, `delete`) so
+/// MSIX AppData virtualization can never hide, split, or corrupt irreproducible chat data.
+pub fn ensure_not_store_appdata_zalo_for_build(
+    is_store_build: bool,
+    paths: &[&Path],
+    operation: &str,
+) -> Result<()> {
+    if !is_store_build {
+        return Ok(());
+    }
+    for p in paths {
+        if greenc_core::config::is_windows_appdata_app_dir(p) {
+            return Err(GreenCError::PreconditionBlocked {
+                operation: operation.to_string(),
+                reason: format!(
+                    "Bản Microsoft Store không hỗ trợ thao tác '{}' trên thư mục Zalo trong AppData ('{}') do cơ chế ảo hoá MSIX; GreenC giữ nguyên mọi dữ liệu. Hãy dùng bản cài EXE hoặc thao tác thủ công.",
+                    operation,
+                    p.display()
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn ensure_not_store_appdata_zalo(paths: &[&Path], operation: &str) -> Result<()> {
+    ensure_not_store_appdata_zalo_for_build(cfg!(feature = "store"), paths, operation)
+}
+
 fn path_exists_lstat(path: &Path) -> bool {
     fs::symlink_metadata(to_extended_io_path(path)).is_ok()
 }
@@ -1426,6 +1990,10 @@ fn path_exists_lstat(path: &Path) -> bool {
 /// 2. Restores `moving_path` -> `source_path`.
 /// 3. Keeps `target_path` intact UNTIL `moving_path` is verified back at `source_path`; if restore
 ///    fails, keeps ALL copies and marks `NeedsReview`.
+/// 4. Item 12: If a junction EVER existed at `source_path` (even briefly before failure),
+///    Zalo may already have written new messages into `target_path` through the junction — NEVER
+///    delete `target_path`! Rename `target_path` to `.greenc-conflict.<uuid>` instead.
+#[allow(clippy::too_many_arguments)]
 fn recover_after_rename_failure(
     source_path: &Path,
     moving_path: &Path,
@@ -1434,10 +2002,33 @@ fn recover_after_rename_failure(
     record: &mut RelocationRecord,
     db: &GreenCDb,
     cause: &str,
+    junction_ever_existed: bool,
 ) -> (Option<PathBuf>, bool, String) {
     let mut conflict_path: Option<PathBuf> = None;
+    let source_is_reparse = reparse_api.is_reparse_point(source_path);
+    let junction_existed = junction_ever_existed || source_is_reparse;
 
-    if reparse_api.is_reparse_point(source_path) {
+    if source_is_reparse {
+        // F9: If we did not just create this reparse point ourselves, verify it actually points to
+        // `target_path` before removing it so a third-party junction is never deleted.
+        let owned_by_us = junction_ever_existed
+            || reparse_api
+                .get_junction_target(source_path)
+                .is_ok_and(|jt| greenc_core::models::same_windows_path(&jt, target_path));
+        if !owned_by_us {
+            let msg = format!(
+                "{cause}. Phát hiện liên kết bên ngoài tại {} không trỏ tới {}; GreenC từ chối gỡ liên kết và giữ nguyên mọi bản dữ liệu: bản gốc tạm ({}), bản đích ({}).",
+                source_path.display(),
+                target_path.display(),
+                moving_path.display(),
+                target_path.display()
+            );
+            record.status = RelocationStatus::NeedsReview;
+            record.health_status = RelocationHealthStatus::LinkBroken;
+            record.detail = Some(msg.clone());
+            let _ = db.save_relocation_durable(record);
+            return (None, false, msg);
+        }
         if let Err(err) = reparse_api.delete_junction(source_path) {
             let msg = format!(
                 "{cause}. Không xoá được liên kết lỗi tại {} ({err}); GreenC giữ nguyên mọi bản dữ liệu: bản gốc tạm ({}), bản đích ({}).",
@@ -1477,34 +2068,60 @@ fn recover_after_rename_failure(
     match fs::rename(moving_path, source_path) {
         Ok(()) if path_exists_lstat(source_path) && !path_exists_lstat(moving_path) => {
             // Original is verified back at `source_path`.
-            // Item 7: NEVER delete `target_path` directly if renaming it fails!
-            let target_cleanup = make_sibling_path(target_path, "greenc-rollback-done");
             let mut target_rename_failed: Option<String> = None;
+            let mut target_conflict_path: Option<PathBuf> = None;
             if path_exists_lstat(target_path) {
-                match fs::rename(target_path, &target_cleanup) {
-                    Ok(()) => {
-                        remove_dir_all_safe(&target_cleanup);
+                if junction_existed {
+                    // Item 12: Because a junction existed at `source_path`, Zalo may have written
+                    // new messages into `target_path` through it. NEVER delete `target_path` —
+                    // rename it to `.greenc-conflict.<uuid>` so it stays preserved and discoverable.
+                    let target_conflict = make_sibling_path(target_path, "greenc-conflict");
+                    match fs::rename(target_path, &target_conflict) {
+                        Ok(()) => {
+                            target_conflict_path = Some(target_conflict);
+                        }
+                        Err(err) => {
+                            tracing::warn!(
+                                "Failed to rename post-junction rollback target {} -> {}: {err}; preserving target untouched",
+                                target_path.display(),
+                                target_conflict.display()
+                            );
+                            target_rename_failed = Some(err.to_string());
+                        }
                     }
-                    Err(err) => {
-                        tracing::warn!(
-                            "Failed to rename rollback target {} -> {}: {err}; preserving target untouched",
-                            target_path.display(),
-                            target_cleanup.display()
-                        );
-                        target_rename_failed = Some(err.to_string());
+                } else {
+                    // Junction never existed, so Zalo could not have routed writes into `target_path`.
+                    // Item 7: NEVER delete `target_path` directly if renaming it fails!
+                    let target_cleanup = make_sibling_path(target_path, "greenc-rollback-done");
+                    match fs::rename(target_path, &target_cleanup) {
+                        Ok(()) => {
+                            remove_dir_all_safe(&target_cleanup);
+                        }
+                        Err(err) => {
+                            tracing::warn!(
+                                "Failed to rename rollback target {} -> {}: {err}; preserving target untouched",
+                                target_path.display(),
+                                target_cleanup.display()
+                            );
+                            target_rename_failed = Some(err.to_string());
+                        }
                     }
                 }
             }
 
-            let target_note = target_rename_failed
-                .as_ref()
-                .map(|e| {
-                    format!(
-                        " Không đổi tên được bản đích {} để dọn ({e}); GreenC giữ nguyên bản đích để tránh mất dữ liệu.",
-                        target_path.display()
-                    )
-                })
-                .unwrap_or_default();
+            let target_note = if let Some(ref tcp) = target_conflict_path {
+                format!(
+                    " Vì liên kết từng tồn tại, bản đích được đổi tên thành bản xung đột tại {} (không xoá) để bảo toàn mọi dữ liệu có thể đã ghi mới.",
+                    tcp.display()
+                )
+            } else if let Some(ref e) = target_rename_failed {
+                format!(
+                    " Không đổi tên được bản đích {} ({e}); GreenC giữ nguyên bản đích để tránh mất dữ liệu.",
+                    target_path.display()
+                )
+            } else {
+                String::new()
+            };
 
             let msg = if let Some(ref cp) = conflict_path {
                 format!(
@@ -1527,7 +2144,7 @@ fn recover_after_rename_failure(
             record.moving_path = None;
             record.detail = Some(msg.clone());
             let _ = db.save_relocation_durable(record);
-            (conflict_path, true, msg)
+            (conflict_path.or(target_conflict_path), true, msg)
         }
         Ok(()) => {
             let msg = format!(
@@ -1707,6 +2324,30 @@ impl ZaloRelocator {
                 operation: "zalo_move".to_string(),
                 reason: "Dữ liệu Zalo đã được GreenC chuyển sang ổ khác rồi".to_string(),
             });
+        }
+
+        // F9: Refuse creating a second active relocation for the same `source_path` upfront
+        // (even if `source_path` was replaced by a real dir so `data_is_known_relocation` is false).
+        if let Ok(existing_relocs) = db.list_relocations(None) {
+            if let Some(active_dup) = existing_relocs.into_iter().find(|r| {
+                greenc_core::models::same_windows_path(&r.source_path, &source_path)
+                    && matches!(
+                        r.status,
+                        RelocationStatus::Done
+                            | RelocationStatus::NeedsReview
+                            | RelocationStatus::Moving
+                    )
+            }) {
+                return Err(GreenCError::PreconditionBlocked {
+                    operation: "zalo_move_duplicate_active".to_string(),
+                    reason: format!(
+                        "Đã có bản ghi chuyển dữ liệu Zalo đang hoạt động (#{}, trạng thái '{}') cho '{}'. Hãy hoàn tác hoặc xử lý bản ghi hiện có trước khi chuyển lại.",
+                        active_dup.id.unwrap_or(0),
+                        active_dup.status.as_str(),
+                        source_path.display()
+                    ),
+                });
+            }
         }
 
         // 3. Already on another drive? Report cleanly, do NOT move!
@@ -2116,6 +2757,7 @@ impl ZaloRelocator {
                 &mut record,
                 db,
                 mid_reopen_msg,
+                false,
             );
             return Err(GreenCError::FileLocked {
                 path: source_path,
@@ -2137,6 +2779,7 @@ impl ZaloRelocator {
                 &mut record,
                 db,
                 mid_reopen_msg,
+                false,
             );
             return Err(GreenCError::FileLocked {
                 path: source_path,
@@ -2147,6 +2790,7 @@ impl ZaloRelocator {
         // 11. Phase 3: Create junction, verify target, AND run write-permission probe through junction.
         // If `source_path` already reappeared (e.g. Zalo created a dir between checks), fail cleanly
         // so Item 3 safe conflict-recovery runs!
+        let mut junction_created = false;
         let link_res = (|| -> Result<()> {
             if path_exists_lstat(&source_path) {
                 return Err(GreenCError::Relocation(format!(
@@ -2155,6 +2799,7 @@ impl ZaloRelocator {
                 )));
             }
             reparse_api.create_junction(&source_path, &target_path)?;
+            junction_created = true;
             let verified_target = reparse_api.get_junction_target(&source_path)?;
             if !greenc_core::models::same_windows_path(&verified_target, &target_path) {
                 return Err(GreenCError::Relocation(format!(
@@ -2179,6 +2824,7 @@ impl ZaloRelocator {
                 &mut record,
                 db,
                 &cause,
+                junction_created,
             );
             if opts.reopen_zalo && !shutdown_session.captured_exes.is_empty() {
                 let _ = lifecycle.restart_app(&mut shutdown_session);
@@ -2932,8 +3578,120 @@ impl ZaloRelocator {
     ///   target, must not be significantly smaller than the on-disk original, and must open
     ///   cleanly as a valid SQLite database (`PRAGMA quick_check(1)`).
     /// - Does NOT count `media/` files so deleting photos/videos inside Zalo never blocks purge.
-    fn verify_target_intact_before_purge(rec: &ZaloRetainedOriginal) -> Result<()> {
-        verify_live_zalo_covers_copy(&rec.target_path, &rec.retained_path, "zalo_purge_original")
+    fn verify_target_intact_before_purge_with_probe(
+        rec: &ZaloRetainedOriginal,
+        proc_probe: &dyn ProcessServiceProbe,
+    ) -> Result<()> {
+        if greenc_core::models::same_windows_path(&rec.retained_path, &rec.target_path)
+            || greenc_core::models::same_windows_path(&rec.retained_path, &rec.source_path)
+        {
+            return Err(GreenCError::PreconditionBlocked {
+                operation: "zalo_purge_original".to_string(),
+                reason: format!(
+                    "Từ chối xoá: đường dẫn bản sao giữ tạm ({}) trùng với thư mục đích/nguồn ({}).",
+                    rec.retained_path.display(),
+                    rec.target_path.display()
+                ),
+            });
+        }
+        if rec.retained_path.join("message").is_dir() {
+            verify_live_zalo_covers_copy(
+                &rec.target_path,
+                &rec.retained_path,
+                "zalo_purge_original",
+                proc_probe,
+            )
+        } else {
+            verify_live_zalo_covers_copy(
+                &rec.target_path,
+                &rec.target_path,
+                "zalo_purge_original",
+                proc_probe,
+            )
+        }
+    }
+
+    fn is_purging_copy_intact(rec: &ZaloRetainedOriginal) -> bool {
+        if !is_purging_path(&rec.retained_path) || !path_exists_lstat(&rec.retained_path) {
+            return false;
+        }
+        if rec.file_count == 0 || rec.size_bytes == 0 {
+            return false;
+        }
+        if !greenc_scanner::zalo::has_valid_zalo_data_structure(&rec.retained_path) {
+            return false;
+        }
+        let (live_bytes, live_files) = CandidateScanner::compute_dir_size(&rec.retained_path);
+        live_files == rec.file_count && live_bytes == rec.size_bytes
+    }
+
+    fn rename_intact_purging_back_locked(
+        rec: &mut ZaloRetainedOriginal,
+        db: &GreenCDb,
+    ) -> Result<bool> {
+        if !Self::is_purging_copy_intact(rec) {
+            return Ok(false);
+        }
+        let base_name = rec
+            .source_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("Zalo Data");
+        let parent = rec
+            .retained_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from(r"C:\"));
+        let restored_orig = parent.join(format!(
+            "{base_name}.greenc-original.{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::rename(&rec.retained_path, &restored_orig)?;
+        rec.retained_path = restored_orig;
+        rec.status = ZaloRetainedStatus::Retained;
+        rec.health_verified = false;
+        rec.detail = Some(
+            "Bản .greenc-purging còn nguyên vẹn (khớp số tệp và dung lượng) nên đã được đổi tên về .greenc-original để bảo vệ và cho phép khôi phục."
+                .to_string(),
+        );
+        db.save_zalo_retained_original_durable(rec)?;
+        Ok(true)
+    }
+
+    /// Renames an interrupted `.greenc-purging.*` directory BACK to `.greenc-original.<uuid>`
+    /// ONLY if its on-disk file count and total byte size still match the recorded original and
+    /// its `message/` structure is intact (F7). Refuses if any file was already deleted.
+    pub fn recover_intact_purging_original(
+        retained_id: i64,
+        db: &GreenCDb,
+    ) -> Result<ZaloRetainedOriginal> {
+        let _reloc_lock = RelocationLock::acquire_for_db(db.path())?;
+        let mut rec =
+            db.get_zalo_retained_original(retained_id)?
+                .ok_or_else(|| GreenCError::NotFound {
+                    entity: "ZaloRetainedOriginal".to_string(),
+                    id: retained_id.to_string(),
+                })?;
+
+        if !is_purging_path(&rec.retained_path) {
+            return Err(GreenCError::PreconditionBlocked {
+                operation: "zalo_recover_purging".to_string(),
+                reason: "Bản ghi này không phải thư mục .greenc-purging.".to_string(),
+            });
+        }
+        if !Self::rename_intact_purging_back_locked(&mut rec, db)? {
+            return Err(GreenCError::PreconditionBlocked {
+                operation: "zalo_recover_purging".to_string(),
+                reason: format!(
+                    "Thư mục '{}' không còn khớp số tệp/dung lượng gốc ({} tệp, {} bytes) hoặc thiếu message/ nên không thể đổi tên về bản gốc nguyên vẹn.",
+                    rec.retained_path.display(),
+                    rec.file_count,
+                    rec.size_bytes
+                ),
+            });
+        }
+        clear_purge_gate_backoff(db, retained_id);
+        Ok(rec)
     }
 
     /// Renames `rec.retained_path` to `<base>.greenc-purging.<uuid>` and durably persists
@@ -2949,6 +3707,18 @@ impl ZaloRelocator {
             entity: "ZaloRetainedOriginal".to_string(),
             id: "missing_id".to_string(),
         })?;
+        if greenc_core::models::same_windows_path(&rec.retained_path, &rec.target_path)
+            || greenc_core::models::same_windows_path(&rec.retained_path, &rec.source_path)
+        {
+            return Err(GreenCError::PreconditionBlocked {
+                operation: "zalo_purge_original".to_string(),
+                reason: format!(
+                    "Từ chối xoá: đường dẫn bản sao giữ tạm ({}) trùng với thư mục đích/nguồn ({}).",
+                    rec.retained_path.display(),
+                    rec.target_path.display()
+                ),
+            });
+        }
         if !is_purging_path(&rec.retained_path) {
             let base_name = rec
                 .source_path
@@ -3012,6 +3782,20 @@ impl ZaloRelocator {
         reparse_api: &dyn ReparsePointApi,
         now: DateTime<Utc>,
     ) -> Result<Vec<ZaloRetainedOriginal>> {
+        let proc_probe = NativeProcessServiceProbe;
+        Self::purge_expired_originals_with_probe(db, reparse_api, &proc_probe, now)
+    }
+
+    /// Variant of [`purge_expired_originals`] accepting an explicit `ProcessServiceProbe`.
+    /// Never opens live SQLite DBs directly (copies DB+WAL to an isolated temp dir only when Zalo
+    /// is closed) and backs off exponentially when the purge gate fails so Guardian's 45s tick
+    /// does not hammer the disk.
+    pub fn purge_expired_originals_with_probe(
+        db: &GreenCDb,
+        reparse_api: &dyn ReparsePointApi,
+        proc_probe: &dyn ProcessServiceProbe,
+        now: DateTime<Utc>,
+    ) -> Result<Vec<ZaloRetainedOriginal>> {
         let Some(_reloc_lock) = RelocationLock::try_acquire_for_db(db.path())? else {
             return Ok(Vec::new());
         };
@@ -3027,6 +3811,24 @@ impl ZaloRelocator {
             let Some(id) = rec.id else {
                 continue;
             };
+            if ensure_not_store_appdata_zalo(
+                &[&rec.source_path, &rec.retained_path, &rec.target_path],
+                "zalo_purge_original",
+            )
+            .is_err()
+            {
+                continue;
+            }
+            if greenc_core::models::same_windows_path(&rec.retained_path, &rec.target_path)
+                || greenc_core::models::same_windows_path(&rec.retained_path, &rec.source_path)
+            {
+                tracing::error!(
+                    "Refusing auto-purge for #{}: retained_path ({}) equals target/source path",
+                    id,
+                    rec.retained_path.display()
+                );
+                continue;
+            }
             if !path_exists_lstat(&rec.retained_path) {
                 let final_st = if rec.status == ZaloRetainedStatus::Purging {
                     ZaloRetainedStatus::Purged
@@ -3042,12 +3844,40 @@ impl ZaloRelocator {
                         "Thư mục bản gốc không còn tồn tại trên đĩa"
                     },
                 )?;
+                clear_purge_gate_backoff(db, id);
                 continue;
             }
             if rec.status == ZaloRetainedStatus::Purging {
                 if is_purging_path(&rec.retained_path) {
+                    // F7: Before resuming deletion of `.greenc-purging.*`, ALWAYS re-verify
+                    // junction health + target coverage! If checks fail and `.greenc-purging.*`
+                    // still matches original file count & size, rename it back to `.greenc-original.*`.
+                    if let Some((_, next_retry)) = purge_gate_backoff_state(db, id) {
+                        if now < next_retry {
+                            continue;
+                        }
+                    }
+                    let reloc_ok = relocs.iter().any(|r| {
+                        r.id == Some(rec.relocation_id)
+                            && r.status == RelocationStatus::Done
+                            && RecoveryService::check_single_junction_live(
+                                &r.source_path,
+                                &r.target_path,
+                                reparse_api,
+                            ) == RelocationHealthStatus::Healthy
+                    });
+                    let live_ok = reloc_ok
+                        && rec.target_path.exists()
+                        && Self::verify_target_intact_before_purge_with_probe(&rec, proc_probe)
+                            .is_ok();
+                    if !live_ok {
+                        let _ = Self::rename_intact_purging_back_locked(&mut rec, db);
+                        let _ = record_purge_gate_failure(db, id, now);
+                        continue;
+                    }
                     let msg = "Đã hoàn tất dọn bản gốc xoá dở (.greenc-purging)";
                     if Self::execute_safe_purge_locked(&mut rec, db, msg, now).is_ok() {
+                        clear_purge_gate_backoff(db, id);
                         purged.push(rec);
                     }
                     continue;
@@ -3100,11 +3930,25 @@ impl ZaloRelocator {
                 continue;
             }
 
-            // Record IS due -> now run the full fail-closed SQLite + message DB check!
-            if Self::verify_target_intact_before_purge(&rec).is_err() {
+            // Back-off check: if the heavy purge gate recently failed, do NOT re-run it every 45s.
+            if let Some((_, next_retry)) = purge_gate_backoff_state(db, id) {
+                if now < next_retry {
+                    continue;
+                }
+            }
+
+            // Record IS due -> now run the isolated-copy SQLite + message DB check (only when Zalo closed)!
+            if let Err(err) = Self::verify_target_intact_before_purge_with_probe(&rec, proc_probe) {
+                let (failures, delay_secs) = record_purge_gate_failure(db, id, now);
+                tracing::warn!(
+                    "Zalo auto-purge gate failed for #{} ({}) [attempt {failures}, backing off {delay_secs}s]: {err}",
+                    id,
+                    rec.retained_path.display()
+                );
                 continue;
             }
 
+            clear_purge_gate_backoff(db, id);
             let msg = "Đã tự động dọn bản gốc giữ tạm sau 24 giờ kiểm tra ổn định";
             if let Err(err) = Self::execute_safe_purge_locked(&mut rec, db, msg, now) {
                 tracing::warn!(
@@ -3127,6 +3971,17 @@ impl ZaloRelocator {
         db: &GreenCDb,
         reparse_api: &dyn ReparsePointApi,
     ) -> Result<ZaloRetainedOriginal> {
+        let proc_probe = NativeProcessServiceProbe;
+        Self::purge_retained_original_with_probe(retained_id, db, reparse_api, &proc_probe)
+    }
+
+    /// Variant of [`purge_retained_original`] accepting an explicit `ProcessServiceProbe`.
+    pub fn purge_retained_original_with_probe(
+        retained_id: i64,
+        db: &GreenCDb,
+        reparse_api: &dyn ReparsePointApi,
+        proc_probe: &dyn ProcessServiceProbe,
+    ) -> Result<ZaloRetainedOriginal> {
         let _reloc_lock = RelocationLock::acquire_for_db(db.path())?;
         let mut rec =
             db.get_zalo_retained_original(retained_id)?
@@ -3138,6 +3993,11 @@ impl ZaloRelocator {
         if rec.status == ZaloRetainedStatus::Purged {
             return Ok(rec);
         }
+
+        ensure_not_store_appdata_zalo(
+            &[&rec.source_path, &rec.retained_path, &rec.target_path],
+            "zalo_purge_original",
+        )?;
 
         if !path_exists_lstat(&rec.retained_path) {
             let final_st = if rec.status == ZaloRetainedStatus::Purging {
@@ -3154,8 +4014,22 @@ impl ZaloRelocator {
                     "Thư mục bản gốc không còn tồn tại trên đĩa"
                 },
             )?;
+            clear_purge_gate_backoff(db, retained_id);
             rec.status = final_st;
             return Ok(rec);
+        }
+
+        if greenc_core::models::same_windows_path(&rec.retained_path, &rec.target_path)
+            || greenc_core::models::same_windows_path(&rec.retained_path, &rec.source_path)
+        {
+            return Err(GreenCError::PreconditionBlocked {
+                operation: "zalo_purge_original".to_string(),
+                reason: format!(
+                    "Từ chối xoá: đường dẫn bản sao giữ tạm ({}) trùng với thư mục đích/nguồn ({}).",
+                    rec.retained_path.display(),
+                    rec.target_path.display()
+                ),
+            });
         }
 
         // If DB says `Purging` but the path was NEVER renamed to `.greenc-purging.*`,
@@ -3172,29 +4046,29 @@ impl ZaloRelocator {
             rec.detail = Some(revert_msg.to_string());
         }
 
-        // Only skip safety gates when the directory was ALREADY renamed to `.greenc-purging.*`
-        // (i.e. a genuine half-purged copy).
-        if !is_purging_path(&rec.retained_path) {
-            let live_health = RecoveryService::check_single_junction_live(
-                &rec.source_path,
-                &rec.target_path,
-                reparse_api,
-            );
-            if live_health != RelocationHealthStatus::Healthy || !rec.target_path.exists() {
-                return Err(GreenCError::PreconditionBlocked {
-                    operation: "zalo_purge_original".to_string(),
-                    reason: format!(
-                        "Không thể xoá bản gốc vì dữ liệu Zalo ở ổ đích ({}) hoặc liên kết hiện không ổn định ({}). Hãy khôi phục bản gốc thay vì xoá.",
-                        rec.target_path.display(),
-                        live_health.as_str()
-                    ),
-                });
-            }
-
-            // Item 5: compare target `message/` against retained original!
-            Self::verify_target_intact_before_purge(&rec)?;
+        // F7: ALWAYS verify junction health + target coverage even when resuming a `.greenc-purging.*`
+        // directory, so a broken junction or missing target NEVER causes deletion of a still-intact copy!
+        let live_health = RecoveryService::check_single_junction_live(
+            &rec.source_path,
+            &rec.target_path,
+            reparse_api,
+        );
+        if live_health != RelocationHealthStatus::Healthy || !rec.target_path.exists() {
+            return Err(GreenCError::PreconditionBlocked {
+                operation: "zalo_purge_original".to_string(),
+                reason: format!(
+                    "Không thể xoá bản gốc vì dữ liệu Zalo ở ổ đích ({}) hoặc liên kết hiện không ổn định ({}). Hãy khôi phục bản gốc thay vì xoá.",
+                    rec.target_path.display(),
+                    live_health.as_str()
+                ),
+            });
         }
 
+        // Item 5 + F4 + F7: compare target `message/` against retained original (or verify live
+        // target itself if `.greenc-purging.*` already lost `message/`) via isolated copy!
+        Self::verify_target_intact_before_purge_with_probe(&rec, proc_probe)?;
+
+        clear_purge_gate_backoff(db, retained_id);
         let msg = "Người dùng đã xác nhận xoá bản gốc giữ tạm";
         Self::execute_safe_purge_locked(&mut rec, db, msg, Utc::now())?;
         Ok(rec)
@@ -3271,19 +4145,10 @@ impl ZaloRelocator {
             });
         }
 
-        if cfg!(feature = "store")
-            && greenc_core::config::is_windows_appdata_app_dir(&rec.source_path)
-        {
-            return Err(GreenCError::PreconditionBlocked {
-                operation: "zalo_restore_original".to_string(),
-                reason: format!(
-                    "Bản Microsoft Store không hỗ trợ tự động khôi phục thư mục Zalo trong AppData ('{}') do cơ chế ảo hoá MSIX; bản gốc ({}) và bản đích ({}) được giữ nguyên. Hãy dùng bản cài EXE hoặc khôi phục thủ công.",
-                    rec.source_path.display(),
-                    rec.retained_path.display(),
-                    rec.target_path.display()
-                ),
-            });
-        }
+        ensure_not_store_appdata_zalo(
+            &[&rec.source_path, &rec.retained_path, &rec.target_path],
+            "zalo_restore_original",
+        )?;
 
         if !greenc_scanner::zalo::has_valid_zalo_data_structure(&rec.retained_path) {
             return Err(GreenCError::PreconditionBlocked {
@@ -3295,8 +4160,9 @@ impl ZaloRelocator {
             });
         }
 
-        // Item 5: Refuse restore when target is offline unless explicitly confirmed!
-        let target_is_offline = !path_exists_lstat(&rec.target_path);
+        // Item 5 + F8: "Offline" strictly means the target drive/volume is absent — NOT that
+        // `target_path` was renamed (e.g. to `retained_path` on D: after undo/rollback)!
+        let target_is_offline = is_target_drive_offline(&rec.target_path, Some(&rec.retained_path));
         if target_is_offline && !allow_offline_target {
             return Err(GreenCError::PreconditionBlocked {
                 operation: "zalo_restore_offline_target".to_string(),
@@ -3341,14 +4207,177 @@ impl ZaloRelocator {
             return Err(err);
         }
 
+        // F8: Capture fail-closed fingerprints BEFORE any cross-volume staging copy, then stage a
+        // verified copy into `source_path`'s parent when `retained_path` lives on another drive
+        // (e.g. a post-undo/rollback retained copy on D:), just like `restore_safety_copy_internal`.
+        let copy_snapshot = match TreeFingerprint::capture(&rec.retained_path) {
+            Ok(fp) => fp,
+            Err(err) => {
+                reopen_session(&mut session);
+                return Err(err);
+            }
+        };
+        let target_snapshot =
+            if !greenc_core::models::same_windows_path(&rec.target_path, &rec.retained_path)
+                && path_exists_lstat(&rec.target_path)
+            {
+                match TreeFingerprint::capture(&rec.target_path) {
+                    Ok(fp) => Some(fp),
+                    Err(err) => {
+                        reopen_session(&mut session);
+                        return Err(err);
+                    }
+                }
+            } else {
+                None
+            };
+
+        let source_parent = rec
+            .source_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from(r"C:\"));
+        let retained_parent = rec.retained_path.parent().map(Path::to_path_buf);
+        let same_parent = retained_parent
+            .as_deref()
+            .is_some_and(|p| greenc_core::models::same_windows_path(p, &source_parent));
+
+        let mut staged_copy: Option<PathBuf> = None;
+        let restore_src = if same_parent {
+            rec.retained_path.clone()
+        } else {
+            let tmp_stage = source_parent.join(format!("zalo-restoring.{}", uuid::Uuid::new_v4()));
+            let ctrl = TaskControl::new();
+            let copy_ok = (|| -> Result<()> {
+                verified_copy_tree_strict(&rec.retained_path, &tmp_stage, &ctrl, |_, _| {})?;
+                verify_zalo_copy_integrity(&rec.retained_path, &tmp_stage)?;
+                Ok(())
+            })();
+            if let Err(err) = copy_ok {
+                remove_dir_all_safe(&tmp_stage);
+                reopen_session(&mut session);
+                return Err(err);
+            }
+            staged_copy = Some(tmp_stage.clone());
+            tmp_stage
+        };
+
+        // Re-verify Zalo is STILL closed/unlocked and source copy unchanged immediately before swap.
+        let pre_swap_check = (|| -> Result<()> {
+            let mut pre_paths: Vec<&Path> =
+                vec![&rec.source_path, &rec.target_path, &rec.retained_path];
+            if let Some(ref st) = staged_copy {
+                pre_paths.push(st.as_path());
+            }
+            check_zalo_closed_and_unlocked(
+                &pre_paths,
+                proc_probe,
+                lifecycle,
+                lock_probe,
+                "Phát hiện Zalo vừa mở lại hoặc có tệp bị khoá ngay trước khi khôi phục; GreenC đã dừng an toàn.",
+            )?;
+            copy_snapshot.verify_unchanged(&rec.retained_path)?;
+            if let Some(ref tfp) = target_snapshot {
+                tfp.verify_unchanged(&rec.target_path)?;
+            }
+            Ok(())
+        })();
+        if let Err(err) = pre_swap_check {
+            if let Some(ref st) = staged_copy {
+                remove_dir_all_safe(st);
+            }
+            reopen_session(&mut session);
+            return Err(err);
+        }
+
+        let was_junction = reparse_api.is_reparse_point(&rec.source_path);
+        let old_junction_target = if was_junction {
+            let actual_jt = reparse_api
+                .get_junction_target(&rec.source_path)
+                .map_err(|err| {
+                    if let Some(ref st) = staged_copy {
+                        remove_dir_all_safe(st);
+                    }
+                    reopen_session(&mut session);
+                    GreenCError::PreconditionBlocked {
+                        operation: "zalo_restore_junction_mismatch".to_string(),
+                        reason: format!(
+                            "Không đọc được đích của liên kết tại '{}' ({err}); từ chối gỡ liên kết không xác minh được.",
+                            rec.source_path.display()
+                        ),
+                    }
+                })?;
+            // F9: ONLY delete a junction when its actual target matches `rec.target_path`
+            // (or an active matching relocation record's `target_path`)!
+            let matching_active_targets: Vec<PathBuf> = db
+                .list_relocations(None)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|r| {
+                    (r.id == Some(rec.relocation_id)
+                        || (crate::mover::record_holds_zalo_data(r)
+                            && greenc_core::models::same_windows_path(
+                                &r.source_path,
+                                &rec.source_path,
+                            )))
+                        && matches!(
+                            r.status,
+                            RelocationStatus::Done
+                                | RelocationStatus::NeedsReview
+                                | RelocationStatus::Moving
+                        )
+                })
+                .map(|r| r.target_path)
+                .collect();
+            let target_matches =
+                greenc_core::models::same_windows_path(&actual_jt, &rec.target_path)
+                    || matching_active_targets
+                        .iter()
+                        .any(|t| greenc_core::models::same_windows_path(&actual_jt, t));
+            if !target_matches {
+                if let Some(ref st) = staged_copy {
+                    remove_dir_all_safe(st);
+                }
+                reopen_session(&mut session);
+                return Err(GreenCError::PreconditionBlocked {
+                    operation: "zalo_restore_junction_mismatch".to_string(),
+                    reason: format!(
+                        "Liên kết tại '{}' đang trỏ tới '{}' thay vì đích đã ghi nhận '{}'; GreenC từ chối gỡ liên kết thuộc bên ngoài.",
+                        rec.source_path.display(),
+                        actual_jt.display(),
+                        rec.target_path.display()
+                    ),
+                });
+            }
+            actual_jt
+        } else {
+            rec.target_path.clone()
+        };
+
+        // F8: Pre-compute the exact conflict path BEFORE mutating `source_path` and persist it
+        // durably in `zalo_retained_originals` + `relocations` so crash recovery can heal a crash
+        // between renaming `source_path -> src_conflict` and moving `restore_src -> source_path`!
+        let planned_src_conflict = if !was_junction && path_exists_lstat(&rec.source_path) {
+            Some(make_sibling_path(&rec.source_path, "greenc-conflict"))
+        } else {
+            None
+        };
+        let crash_meta = RestoreCrashMeta {
+            conflict: planned_src_conflict.clone(),
+            staged: staged_copy.clone(),
+            prev_reloc_status: None,
+        };
+        let durable_restoring_detail =
+            encode_restore_crash_meta("Đang khôi phục bản gốc Zalo về vị trí cũ...", &crash_meta);
+
         // Persist durable intermediate state on BOTH `zalo_retained_originals` AND `relocations`
-        // BEFORE touching the junction or renaming so a crash right after `delete_junction` is
-        // always visible to `RecoveryService::recover_interrupted`!
+        // BEFORE touching the junction or renaming so a crash right after vacating `source_path`
+        // is always visible to `RecoveryService::recover_interrupted`!
         let prev_status = rec.status;
         db.update_zalo_retained_original_status_durable(
             retained_id,
             ZaloRetainedStatus::Restoring.as_str(),
-            "Đang khôi phục bản gốc Zalo về vị trí cũ...",
+            &durable_restoring_detail,
         )?;
 
         type SavedRelocState = (
@@ -3362,7 +4391,7 @@ impl ZaloRelocator {
         if let Ok(relocs) = db.list_relocations(None) {
             for mut reloc in relocs {
                 let matches_rec = reloc.id == Some(rec.relocation_id)
-                    || (reloc.app_id.eq_ignore_ascii_case("zalo")
+                    || (crate::mover::record_holds_zalo_data(&reloc)
                         && greenc_core::models::same_windows_path(
                             &reloc.source_path,
                             &rec.source_path,
@@ -3379,9 +4408,18 @@ impl ZaloRelocator {
                     let prev_h = reloc.health_status;
                     let prev_d = reloc.detail.clone();
                     let prev_mp = reloc.moving_path.clone();
+                    let row_meta = RestoreCrashMeta {
+                        conflict: planned_src_conflict.clone(),
+                        staged: staged_copy.clone(),
+                        prev_reloc_status: Some(prev_st.as_str().to_string()),
+                    };
                     reloc.status = RelocationStatus::Moving;
-                    reloc.moving_path = None;
-                    reloc.detail = Some("Đang khôi phục bản gốc Zalo về vị trí cũ...".to_string());
+                    reloc.moving_path =
+                        planned_src_conflict.clone().or_else(|| staged_copy.clone());
+                    reloc.detail = Some(encode_restore_crash_meta(
+                        "Đang khôi phục bản gốc Zalo về vị trí cũ...",
+                        &row_meta,
+                    ));
                     db.save_relocation_durable(&reloc)?;
                     active_relocs_before.push((reloc, prev_st, prev_h, prev_d, prev_mp));
                 }
@@ -3405,19 +4443,13 @@ impl ZaloRelocator {
                 }
             };
 
-        let was_junction = reparse_api.is_reparse_point(&rec.source_path);
-        let old_junction_target = if was_junction {
-            reparse_api
-                .get_junction_target(&rec.source_path)
-                .unwrap_or_else(|_| rec.target_path.clone())
-        } else {
-            rec.target_path.clone()
-        };
-
         let mut notes: Vec<String> = Vec::new();
         let mut moved_src_conflict: Option<PathBuf> = None;
         if was_junction {
             if let Err(err) = reparse_api.delete_junction(&rec.source_path) {
+                if let Some(ref st) = staged_copy {
+                    remove_dir_all_safe(st);
+                }
                 let _ = db.update_zalo_retained_original_status_durable(
                     retained_id,
                     prev_status.as_str(),
@@ -3427,9 +4459,11 @@ impl ZaloRelocator {
                 reopen_session(&mut session);
                 return Err(err);
             }
-        } else if path_exists_lstat(&rec.source_path) {
-            let src_conflict = make_sibling_path(&rec.source_path, "greenc-conflict");
+        } else if let Some(src_conflict) = planned_src_conflict {
             if let Err(err) = fs::rename(&rec.source_path, &src_conflict) {
+                if let Some(ref st) = staged_copy {
+                    remove_dir_all_safe(st);
+                }
                 let _ = db.update_zalo_retained_original_status_durable(
                     retained_id,
                     prev_status.as_str(),
@@ -3446,7 +4480,7 @@ impl ZaloRelocator {
             moved_src_conflict = Some(src_conflict);
         }
 
-        if let Err(rename_err) = fs::rename(&rec.retained_path, &rec.source_path) {
+        if let Err(rename_err) = fs::rename(&restore_src, &rec.source_path) {
             // Rollback safely: rebuild the junction (or move back conflict dir) AND reopen Zalo!
             // If rebuilding the junction or returning the conflict fails, NEVER save `Done`!
             let mut rollback_ok = true;
@@ -3465,6 +4499,9 @@ impl ZaloRelocator {
                 if fs::rename(cp, &rec.source_path).is_err() {
                     rollback_ok = false;
                 }
+            }
+            if let Some(ref st) = staged_copy {
+                remove_dir_all_safe(st);
             }
             let rollback_status = if rollback_ok {
                 prev_status
@@ -3490,6 +4527,13 @@ impl ZaloRelocator {
             return Err(GreenCError::Io(rename_err));
         }
 
+        if staged_copy.is_some() {
+            notes.push(format!(
+                "bản sao nguồn tại {} vẫn được giữ nguyên",
+                rec.retained_path.display()
+            ));
+        }
+
         // Never discard target_path (it may have messages written after move!): rename to conflict copy.
         let mut target_rename_failed = false;
         if target_is_offline {
@@ -3497,7 +4541,9 @@ impl ZaloRelocator {
                 "ổ đích ({}) đang ngoại tuyến — giữ trạng thái Cần kiểm tra vì ổ đích có thể còn tin nhắn mới hơn khi kết nối lại",
                 rec.target_path.display()
             ));
-        } else if path_exists_lstat(&rec.target_path) {
+        } else if !greenc_core::models::same_windows_path(&rec.target_path, &rec.retained_path)
+            && path_exists_lstat(&rec.target_path)
+        {
             let tgt_conflict = make_sibling_path(&rec.target_path, "greenc-conflict");
             if fs::rename(&rec.target_path, &tgt_conflict).is_ok() {
                 notes.push(format!(
@@ -3532,24 +4578,23 @@ impl ZaloRelocator {
             &detail,
         )?;
 
-        if let Ok(relocs) = db.list_relocations(None) {
-            if let Some(mut reloc) = relocs.into_iter().find(|r| r.id == Some(rec.relocation_id)) {
-                if target_is_offline {
-                    // Item 5: Keep NeedsReview + TargetOffline with target path so the
-                    // offline target remains tracked and listed.
-                    reloc.status = RelocationStatus::NeedsReview;
-                    reloc.health_status = RelocationHealthStatus::TargetOffline;
-                } else if target_rename_failed {
-                    reloc.status = RelocationStatus::NeedsReview;
-                    reloc.health_status = RelocationHealthStatus::Healthy;
-                } else {
-                    reloc.status = RelocationStatus::Undone;
-                    reloc.health_status = RelocationHealthStatus::Healthy;
-                }
-                reloc.moving_path = None;
-                reloc.detail = Some(detail.clone());
-                let _ = db.save_relocation_durable(&reloc);
-            }
+        // F9: Finalize the EXACT SAME set of relocation rows that were marked `Moving` above!
+        let final_status = if target_is_offline || target_rename_failed {
+            RelocationStatus::NeedsReview
+        } else {
+            RelocationStatus::Undone
+        };
+        let final_health = if target_is_offline {
+            RelocationHealthStatus::TargetOffline
+        } else {
+            RelocationHealthStatus::Healthy
+        };
+        for (mut reloc, _prev_st, _prev_h, _prev_d, _prev_mp) in active_relocs_before {
+            reloc.status = final_status;
+            reloc.health_status = final_health;
+            reloc.moving_path = None;
+            reloc.detail = Some(detail.clone());
+            let _ = db.save_relocation_durable(&reloc);
         }
 
         reopen_session(&mut session);
@@ -3696,6 +4741,45 @@ impl ZaloRelocator {
         db: &GreenCDb,
         reparse_api: &dyn ReparsePointApi,
     ) -> Result<String> {
+        Self::delete_safety_copy_by_id_with_options(
+            copy_id,
+            discovered_data_dir,
+            &ZaloDeleteSafetyCopyOptions::default(),
+            db,
+            reparse_api,
+        )
+    }
+
+    /// Variant of [`delete_safety_copy_by_id`] accepting explicit confirmation options (e.g.
+    /// `confirm_copy_may_be_newer` when the copy contains message files newer or larger than live).
+    pub fn delete_safety_copy_by_id_with_options(
+        copy_id: &str,
+        discovered_data_dir: Option<&Path>,
+        options: &ZaloDeleteSafetyCopyOptions,
+        db: &GreenCDb,
+        reparse_api: &dyn ReparsePointApi,
+    ) -> Result<String> {
+        let proc_probe = NativeProcessServiceProbe;
+        Self::delete_safety_copy_by_id_with_probes(
+            copy_id,
+            discovered_data_dir,
+            options,
+            db,
+            reparse_api,
+            &proc_probe,
+        )
+    }
+
+    /// Variant of [`delete_safety_copy_by_id_with_options`] accepting an explicit
+    /// `ProcessServiceProbe` so SQLite verification only copies DB+WAL while Zalo is closed.
+    pub fn delete_safety_copy_by_id_with_probes(
+        copy_id: &str,
+        discovered_data_dir: Option<&Path>,
+        options: &ZaloDeleteSafetyCopyOptions,
+        db: &GreenCDb,
+        reparse_api: &dyn ReparsePointApi,
+        proc_probe: &dyn ProcessServiceProbe,
+    ) -> Result<String> {
         let _reloc_lock = RelocationLock::try_acquire_for_db(db.path())?.ok_or_else(|| {
             GreenCError::PreconditionBlocked {
                 operation: "zalo_delete_safety_copy".to_string(),
@@ -3711,6 +4795,18 @@ impl ZaloRelocator {
                 entity: "ZaloSafetyCopy".to_string(),
                 id: copy_id.to_string(),
             })?;
+
+        // F11: Block Store AppData mutations for Zalo safety-copy deletion!
+        let mut store_check_paths: Vec<&Path> = vec![&found.path];
+        if let Some(ref sp) = found.source_path {
+            store_check_paths.push(sp.as_path());
+        } else if let Some(dd) = discovered_data_dir {
+            store_check_paths.push(dd);
+        }
+        if let Some(ref tp) = found.target_path {
+            store_check_paths.push(tp.as_path());
+        }
+        ensure_not_store_appdata_zalo(&store_check_paths, "zalo_delete_safety_copy")?;
 
         if !found.exists_on_disk {
             if let Some(rid) = found.id {
@@ -3733,34 +4829,28 @@ impl ZaloRelocator {
             });
         }
 
-        // Case 1: Already renamed to `.greenc-purging.*` -> finish removing the half-deleted dir.
-        if is_purging_path(&found.path) {
-            if let Some(rid) = found.id {
-                if let Some(mut rec) = db.get_zalo_retained_original(rid)? {
-                    Self::execute_safe_purge_locked(
-                        &mut rec,
-                        db,
-                        "Đã dọn nốt thư mục xoá dở (.greenc-purging) theo xác nhận của người dùng.",
-                        Utc::now(),
-                    )?;
-                    return Ok(rec
-                        .detail
-                        .unwrap_or_else(|| "Đã xoá nốt bản sao Zalo.".to_string()));
-                }
-            }
-            fs::remove_dir_all(to_extended_io_path(&found.path))?;
-            return Ok(format!(
-                "Đã xoá nốt thư mục xoá dở tại {}.",
-                found.path.display()
-            ));
-        }
-
-        // Case 2 (Item 1): If DB row was left in `Purging` without `.greenc-purging.*`,
-        // revert to `Retained` durably before running full live-source verification gates.
+        // Case 1 (Item 1 + F7): Load tracked DB row if any. NEVER bypass live/coverage checks
+        // merely because the path is `.greenc-purging.*`; always verify live junction/coverage
+        // (unless the user provides the exact typed force-delete phrase) and NEVER delete when
+        // `retained_path == target_path`.
         let mut tracked_row = match found.id {
             Some(rid) => db.get_zalo_retained_original(rid)?,
             None => None,
         };
+        if let Some(ref rec) = tracked_row {
+            if greenc_core::models::same_windows_path(&rec.retained_path, &rec.target_path)
+                || greenc_core::models::same_windows_path(&rec.retained_path, &rec.source_path)
+            {
+                return Err(GreenCError::PreconditionBlocked {
+                    operation: "zalo_delete_safety_copy".to_string(),
+                    reason: format!(
+                        "Từ chối xoá: đường dẫn bản sao ({}) trùng với thư mục đích/nguồn ({}).",
+                        rec.retained_path.display(),
+                        rec.target_path.display()
+                    ),
+                });
+            }
+        }
         if let Some(ref mut rec) = tracked_row {
             if rec.status == ZaloRetainedStatus::Purging && !is_purging_path(&rec.retained_path) {
                 rec.status = ZaloRetainedStatus::Retained;
@@ -3772,80 +4862,183 @@ impl ZaloRelocator {
             }
         }
 
-        // Determine the currently LIVE Zalo data directory to verify against.
-        let source_path = found
-            .source_path
-            .as_deref()
-            .or(discovered_data_dir)
-            .ok_or_else(|| GreenCError::PreconditionBlocked {
+        // Determine the currently LIVE Zalo data directory and ALWAYS refuse deleting the live dir
+        // itself (even when the user provides typed force-delete confirmation!).
+        let source_path_opt = found.source_path.as_deref().or(discovered_data_dir);
+        if let Some(sp) = source_path_opt {
+            if greenc_core::models::same_windows_path(sp, &found.path) {
+                return Err(GreenCError::PreconditionBlocked {
+                    operation: "zalo_delete_safety_copy".to_string(),
+                    reason: "Không thể xoá thư mục dữ liệu Zalo đang hoạt động.".to_string(),
+                });
+            }
+            if reparse_api.is_reparse_point(sp) {
+                if let Ok(target) = reparse_api.get_junction_target(sp) {
+                    if greenc_core::models::same_windows_path(&target, &found.path) {
+                        return Err(GreenCError::PreconditionBlocked {
+                            operation: "zalo_delete_safety_copy".to_string(),
+                            reason: "Không thể xoá thư mục dữ liệu Zalo đang hoạt động."
+                                .to_string(),
+                        });
+                    }
+                }
+            }
+        }
+
+        let live_and_coverage: Result<(PathBuf, CopyCoverageSummary)> = (|| {
+            let source_path = source_path_opt.ok_or_else(|| GreenCError::PreconditionBlocked {
                 operation: "zalo_delete_safety_copy".to_string(),
                 reason: "Không xác định được thư mục dữ liệu Zalo đang hoạt động để đối chiếu; từ chối xoá bản sao.".to_string(),
             })?;
 
-        let live_dir = if reparse_api.is_reparse_point(source_path) {
-            let target = reparse_api.get_junction_target(source_path).map_err(|_| {
-                GreenCError::PreconditionBlocked {
-                    operation: "zalo_delete_safety_copy".to_string(),
-                    reason: format!(
-                        "Không đọc được đích của liên kết Zalo tại {}; từ chối xoá bản sao.",
-                        source_path.display()
-                    ),
+            let live_dir = if reparse_api.is_reparse_point(source_path) {
+                let target = reparse_api.get_junction_target(source_path).map_err(|_| {
+                    GreenCError::PreconditionBlocked {
+                        operation: "zalo_delete_safety_copy".to_string(),
+                        reason: format!(
+                            "Không đọc được đích của liên kết Zalo tại {}; từ chối xoá bản sao.",
+                            source_path.display()
+                        ),
+                    }
+                })?;
+                if !target.exists() || !target.is_dir() {
+                    return Err(GreenCError::PreconditionBlocked {
+                        operation: "zalo_delete_safety_copy".to_string(),
+                        reason: format!(
+                            "Liên kết Zalo trỏ tới {} nhưng thư mục đích không tồn tại hoặc ngoại tuyến; từ chối xoá bản sao.",
+                            target.display()
+                        ),
+                    });
                 }
-            })?;
-            if !target.exists() || !target.is_dir() {
+                target
+            } else if source_path.exists() && source_path.is_dir() {
+                source_path.to_path_buf()
+            } else {
                 return Err(GreenCError::PreconditionBlocked {
                     operation: "zalo_delete_safety_copy".to_string(),
                     reason: format!(
-                        "Liên kết Zalo trỏ tới {} nhưng thư mục đích không tồn tại hoặc ngoại tuyến; từ chối xoá bản sao.",
-                        target.display()
+                        "Không tìm thấy thư mục Zalo đang hoạt động tại {}; từ chối xoá bản sao để bảo vệ dữ liệu duy nhất.",
+                        source_path.display()
                     ),
                 });
+            };
+
+            if greenc_core::models::same_windows_path(&live_dir, &found.path) {
+                return Err(GreenCError::PreconditionBlocked {
+                    operation: "zalo_delete_safety_copy".to_string(),
+                    reason: "Không thể xoá thư mục dữ liệu Zalo đang hoạt động.".to_string(),
+                });
             }
-            target
-        } else if source_path.exists() && source_path.is_dir() {
-            source_path.to_path_buf()
-        } else {
-            return Err(GreenCError::PreconditionBlocked {
-                operation: "zalo_delete_safety_copy".to_string(),
-                reason: format!(
-                    "Không tìm thấy thư mục Zalo đang hoạt động tại {}; từ chối xoá bản sao để bảo vệ dữ liệu duy nhất.",
-                    source_path.display()
-                ),
-            });
+
+            let coverage = if found.path.join("message").is_dir() {
+                verify_live_zalo_covers_copy_with_options(
+                    &live_dir,
+                    &found.path,
+                    "zalo_delete_safety_copy",
+                    options.confirm_copy_may_be_newer,
+                    proc_probe,
+                )?
+            } else {
+                verify_live_zalo_covers_copy_with_options(
+                    &live_dir,
+                    &live_dir,
+                    "zalo_delete_safety_copy",
+                    false,
+                    proc_probe,
+                )?
+            };
+            Ok((live_dir, coverage))
+        })();
+
+        // Honest message describing ONLY the actual verification performed (never claiming
+        // full message-by-message content comparison!).
+        let success_note = match live_and_coverage {
+            Ok((live_dir, coverage)) => {
+                if coverage.copy_newer_or_larger {
+                    format!(
+                        "Đã xoá bản sao {} theo xác nhận riêng \"bản này mới hơn\" của người dùng (đã xác minh nguồn đang dùng {} có thư mục message/ hợp lệ; không so sánh từng dòng tin nhắn).",
+                        found.path.display(),
+                        live_dir.display()
+                    )
+                } else if found.path.join("message").is_dir() {
+                    format!(
+                        "Đã xoá bản sao {} sau khi xác nhận người dùng (đã kiểm tra {} tệp trong message/: {} CSDL SQLite theo header, {} tệp mã hoá/khác theo kích thước và mtime so với nguồn đang dùng {}; không so sánh từng dòng tin nhắn).",
+                        found.path.display(),
+                        coverage.checked_message_files,
+                        coverage.checked_sqlite_dbs,
+                        coverage.checked_opaque_files,
+                        live_dir.display()
+                    )
+                } else {
+                    format!(
+                        "Đã xoá thư mục phụ {} sau khi xác nhận người dùng và xác minh nguồn đang dùng {} có thư mục message/ hợp lệ (không so sánh từng dòng tin nhắn).",
+                        found.path.display(),
+                        live_dir.display()
+                    )
+                }
+            }
+            Err(gate_err) => {
+                // F5: Typed confirmation escape hatch so users are never permanently stuck with
+                // undeletable safety copies (while NEVER allowing deletion of the live directory!).
+                match options
+                    .force_delete_confirmation_text
+                    .as_deref()
+                    .map(str::trim)
+                {
+                    Some(typed) if is_valid_force_delete_phrase(typed) => {
+                        format!(
+                            "Đã buộc xoá bản sao {} theo xác nhận gõ chữ của người dùng (bỏ qua cổng đối chiếu tự động: {gate_err}).",
+                            found.path.display()
+                        )
+                    }
+                    Some(typed) if !typed.is_empty() => {
+                        return Err(GreenCError::PreconditionBlocked {
+                            operation: "zalo_delete_force_confirm_mismatch".to_string(),
+                            reason: format!(
+                                "Chuỗi xác nhận không khớp. Để buộc xoá bản sao này khi cổng đối chiếu chưa đạt, hãy gõ chính xác: \"{}\".",
+                                ZALO_FORCE_DELETE_CONFIRM_PHRASE
+                            ),
+                        });
+                    }
+                    _ => return Err(gate_err),
+                }
+            }
         };
-
-        if greenc_core::models::same_windows_path(&live_dir, &found.path) {
-            return Err(GreenCError::PreconditionBlocked {
-                operation: "zalo_delete_safety_copy".to_string(),
-                reason: "Không thể xoá thư mục dữ liệu Zalo đang hoạt động.".to_string(),
-            });
-        }
-
-        // Fail-closed live-source coverage verification:
-        // - If the safety copy has `message/`, EVERY message SQLite DB in it must exist in
-        //   `live_dir/message/`, be non-truncated, and open cleanly as SQLite.
-        // - If the safety copy is partial/lacks `message/` (e.g. aborted `zalo-restoring.*`),
-        //   still verify `live_dir/message/` itself exists with valid openable SQLite DBs!
-        if found.path.join("message").is_dir() {
-            verify_live_zalo_covers_copy(&live_dir, &found.path, "zalo_delete_safety_copy")?;
-        } else {
-            verify_live_zalo_covers_copy(&live_dir, &live_dir, "zalo_delete_safety_copy")?;
-        }
-
-        // Safe two-phase delete (rename to `.greenc-purging.<uuid>` FIRST, then remove).
-        let success_note = format!(
-            "Đã xoá bản sao {} sau khi xác nhận người dùng và đối chiếu đầy đủ với nguồn sống ({}).",
-            found.path.display(),
-            live_dir.display()
-        );
         if let Some(mut rec) = tracked_row {
             Self::execute_safe_purge_locked(&mut rec, db, &success_note, Utc::now())?;
             return Ok(success_note);
         }
 
-        let purging_path = make_sibling_path(&found.path, "greenc-purging");
-        fs::rename(&found.path, &purging_path)?;
-        fs::remove_dir_all(to_extended_io_path(&purging_path))?;
+        // Safe two-phase delete (if already `.greenc-purging.*`, remove directly; else rename first).
+        if is_purging_path(&found.path) {
+            fs::remove_dir_all(to_extended_io_path(&found.path))?;
+        } else {
+            let purging_path = make_sibling_path(&found.path, "greenc-purging");
+            fs::rename(&found.path, &purging_path)?;
+            fs::remove_dir_all(to_extended_io_path(&purging_path))?;
+        }
+
+        // If the user explicitly deleted a leftover `kind == "target"` copy whose relocation row
+        // was `NeedsReview`/`TargetOffline` (and `source_path` is no longer linked to it), update
+        // that relocation row so it does not remain stuck as a ghost `target_offline` entry.
+        if found.kind == "target" {
+            if let Some(reloc_id) = found.relocation_id {
+                if let Ok(relocs) = db.list_relocations(None) {
+                    if let Some(mut reloc) = relocs.into_iter().find(|r| r.id == Some(reloc_id)) {
+                        if matches!(
+                            reloc.status,
+                            RelocationStatus::NeedsReview | RelocationStatus::Done
+                        ) && !reparse_api.is_reparse_point(&reloc.source_path)
+                        {
+                            reloc.status = RelocationStatus::Undone;
+                            reloc.health_status = RelocationHealthStatus::Healthy;
+                            reloc.detail = Some(success_note.clone());
+                            let _ = db.save_relocation_durable(&reloc);
+                        }
+                    }
+                }
+            }
+        }
         Ok(success_note)
     }
 
@@ -3975,6 +5168,11 @@ impl ZaloRelocator {
             }
         }
 
+        ensure_not_store_appdata_zalo(
+            &[target_source_path, copy_path],
+            "zalo_restore_safety_copy",
+        )?;
+
         let _reloc_lock = RelocationLock::acquire_for_db(db.path())?;
 
         let copy_io = to_extended_io_path(copy_path);
@@ -4017,14 +5215,54 @@ impl ZaloRelocator {
         // target tree (not stopping at the symlink/junction at `target_source_path`!).
         let was_junction = reparse_api.is_reparse_point(target_source_path);
         let old_junction_target = if was_junction {
-            reparse_api.get_junction_target(target_source_path).ok()
+            let actual_jt = reparse_api
+                .get_junction_target(target_source_path)
+                .map_err(|err| GreenCError::PreconditionBlocked {
+                    operation: "zalo_restore_junction_mismatch".to_string(),
+                    reason: format!(
+                        "Không đọc được đích của liên kết tại '{}' ({err}); từ chối gỡ liên kết không xác minh được.",
+                        target_source_path.display()
+                    ),
+                })?;
+            // F9: Only delete a junction at `target_source_path` if its target matches a known
+            // active relocation record's `target_path` for `target_source_path`!
+            let matching_targets: Vec<PathBuf> = db
+                .list_relocations(None)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|r| {
+                    greenc_core::models::same_windows_path(&r.source_path, target_source_path)
+                        && matches!(
+                            r.status,
+                            RelocationStatus::Done
+                                | RelocationStatus::NeedsReview
+                                | RelocationStatus::Moving
+                        )
+                })
+                .map(|r| r.target_path)
+                .collect();
+            if !matching_targets
+                .iter()
+                .any(|t| greenc_core::models::same_windows_path(&actual_jt, t))
+            {
+                return Err(GreenCError::PreconditionBlocked {
+                    operation: "zalo_restore_junction_mismatch".to_string(),
+                    reason: format!(
+                        "Liên kết tại '{}' đang trỏ tới '{}' không khớp bản ghi GreenC nào đang hoạt động; từ chối gỡ liên kết thuộc bên ngoài.",
+                        target_source_path.display(),
+                        actual_jt.display()
+                    ),
+                });
+            }
+            Some(actual_jt)
         } else {
             None
         };
 
-        // Item 5: If a linked target is offline, refuse unless explicitly confirmed!
+        // Item 5 + F8: "Offline" strictly means the target drive is absent, not renamed!
         let linked_target_offline = old_junction_target.as_ref().is_some_and(|jt| {
-            !greenc_core::models::same_windows_path(jt, copy_path) && !path_exists_lstat(jt)
+            !greenc_core::models::same_windows_path(jt, copy_path)
+                && is_target_drive_offline(jt, Some(copy_path))
         });
         if linked_target_offline && !allow_offline_target {
             let offline_disp = old_junction_target
@@ -4162,12 +5400,20 @@ impl ZaloRelocator {
             return Err(err);
         }
 
+        // F8: Pre-compute conflict path and persist it durably BEFORE renaming `target_source_path`
+        // so crash recovery can heal an interruption between vacating `target_source_path` and swap!
+        let planned_src_conflict = if !was_junction && path_exists_lstat(target_source_path) {
+            Some(make_sibling_path(target_source_path, "greenc-conflict"))
+        } else {
+            None
+        };
+
         // Persist durable intermediate state BEFORE touching junction or renaming!
         let mut active_relocs_before: Vec<(RelocationRecord, RelocationStatus, Option<String>)> =
             Vec::new();
         if let Ok(relocs) = db.list_relocations(None) {
             for mut reloc in relocs {
-                if reloc.app_id.eq_ignore_ascii_case("zalo")
+                if crate::mover::record_holds_zalo_data(&reloc)
                     && greenc_core::models::same_windows_path(
                         &reloc.source_path,
                         target_source_path,
@@ -4181,8 +5427,18 @@ impl ZaloRelocator {
                 {
                     let prev_st = reloc.status;
                     let prev_detail = reloc.detail.clone();
+                    let row_meta = RestoreCrashMeta {
+                        conflict: planned_src_conflict.clone(),
+                        staged: staged_copy.clone(),
+                        prev_reloc_status: Some(prev_st.as_str().to_string()),
+                    };
                     reloc.status = RelocationStatus::Moving;
-                    reloc.detail = Some("Đang khôi phục bản sao an toàn Zalo...".to_string());
+                    reloc.moving_path =
+                        planned_src_conflict.clone().or_else(|| staged_copy.clone());
+                    reloc.detail = Some(encode_restore_crash_meta(
+                        "Đang khôi phục bản sao an toàn Zalo...",
+                        &row_meta,
+                    ));
                     db.save_relocation_durable(&reloc)?;
                     active_relocs_before.push((reloc, prev_st, prev_detail));
                 }
@@ -4198,6 +5454,7 @@ impl ZaloRelocator {
                     } else {
                         *prev_st
                     };
+                    r.moving_path = None;
                     r.detail = prev_detail.clone();
                     let _ = db.save_relocation_durable(&r);
                 }
@@ -4215,8 +5472,7 @@ impl ZaloRelocator {
                 reopen_session(&mut session);
                 return Err(err);
             }
-        } else if path_exists_lstat(target_source_path) {
-            let src_conflict = make_sibling_path(target_source_path, "greenc-conflict");
+        } else if let Some(src_conflict) = planned_src_conflict {
             if let Err(err) = fs::rename(target_source_path, &src_conflict) {
                 if let Some(ref st) = staged_copy {
                     remove_dir_all_safe(st);
@@ -4253,9 +5509,53 @@ impl ZaloRelocator {
             return Err(GreenCError::Io(rename_err));
         }
 
-        // Preserve any linked target data as `.greenc-conflict.<uuid>` if it wasn't `copy_path` itself.
-        // NEVER swallow rename failure: mark active relocation(s) as `NeedsReview` and return Err!
+        // F6: Preserve EVERY matching row's existing `target_path` (as long as it is not the live
+        // `target_source_path`) by renaming it to `.greenc-conflict.<uuid>` — even when
+        // `was_junction` was false or `copy_path == target_path` — so:
+        // 1. No leftover target data is ever hidden from `discover_zalo_safety_copies`,
+        // 2. The target path is vacated and will not block a subsequent move, and
+        // 3. Any rename failure keeps that relocation row in `NeedsReview` (NEVER `Undone`).
         let mut target_rename_error: Option<String> = None;
+        let mut target_outcomes: std::collections::HashMap<
+            String,
+            std::result::Result<PathBuf, String>,
+        > = std::collections::HashMap::new();
+        let mut try_rename_target_to_conflict = |target: &Path,
+                                                 notes_ref: &mut Vec<String>|
+         -> bool {
+            if greenc_core::models::same_windows_path(target, target_source_path) {
+                return true;
+            }
+            let key = norm_path_key(target);
+            if let Some(prev) = target_outcomes.get(&key) {
+                return prev.is_ok();
+            }
+            if !path_exists_lstat(target) {
+                return true;
+            }
+            let tgt_conflict = make_sibling_path(target, "greenc-conflict");
+            match fs::rename(target, &tgt_conflict) {
+                Ok(()) => {
+                    notes_ref.push(format!(
+                        "bản dữ liệu trên ổ đích được giữ lại tại {}",
+                        tgt_conflict.display()
+                    ));
+                    target_outcomes.insert(key, Ok(tgt_conflict));
+                    true
+                }
+                Err(err) => {
+                    let msg = format!(
+                        "không đổi tên được thư mục đích {} sang bản xung đột ({err}); GreenC giữ nguyên thư mục đích để tránh mất dữ liệu",
+                        target.display()
+                    );
+                    notes_ref.push(msg.clone());
+                    target_rename_error = Some(msg.clone());
+                    target_outcomes.insert(key, Err(msg));
+                    false
+                }
+            }
+        };
+
         if linked_target_offline {
             if let Some(ref jt) = old_junction_target {
                 notes.push(format!(
@@ -4264,28 +5564,49 @@ impl ZaloRelocator {
                 ));
             }
         } else if let Some(ref jt) = old_junction_target {
-            if !greenc_core::models::same_windows_path(jt, copy_path) && path_exists_lstat(jt) {
-                let tgt_conflict = make_sibling_path(jt, "greenc-conflict");
-                match fs::rename(jt, &tgt_conflict) {
-                    Ok(()) => {
-                        notes.push(format!(
-                            "bản dữ liệu trên ổ đích được giữ lại tại {}",
-                            tgt_conflict.display()
-                        ));
-                    }
-                    Err(err) => {
-                        let msg = format!(
-                            "không đổi tên được thư mục đích {} sang bản xung đột ({err}); GreenC giữ nguyên thư mục đích để tránh mất dữ liệu",
-                            jt.display()
-                        );
-                        notes.push(msg.clone());
-                        target_rename_error = Some(msg);
-                    }
+            let _ = try_rename_target_to_conflict(jt, &mut notes);
+        }
+
+        // Process every matching active relocation row that was transitioned to `Moving` above.
+        let mut per_row_final: Vec<(RelocationRecord, RelocationStatus, RelocationHealthStatus)> =
+            Vec::with_capacity(active_relocs_before.len());
+        for (reloc, _prev_st, _prev_detail) in active_relocs_before {
+            let is_offline_jt = linked_target_offline
+                && old_junction_target.as_ref().is_some_and(|jt| {
+                    greenc_core::models::same_windows_path(jt, &reloc.target_path)
+                });
+            let row_was_offline = is_offline_jt
+                || (reloc.health_status == RelocationHealthStatus::TargetOffline
+                    && !path_exists_lstat(&reloc.target_path));
+
+            if row_was_offline {
+                per_row_final.push((
+                    reloc,
+                    RelocationStatus::NeedsReview,
+                    RelocationHealthStatus::TargetOffline,
+                ));
+            } else {
+                let rename_ok = try_rename_target_to_conflict(&reloc.target_path, &mut notes);
+                if rename_ok {
+                    per_row_final.push((
+                        reloc,
+                        RelocationStatus::Undone,
+                        RelocationHealthStatus::Healthy,
+                    ));
+                } else {
+                    per_row_final.push((
+                        reloc,
+                        RelocationStatus::NeedsReview,
+                        RelocationHealthStatus::Healthy,
+                    ));
                 }
             }
         }
 
-        if staged_copy.is_some() {
+        if staged_copy.is_some()
+            && !target_outcomes.contains_key(&norm_path_key(copy_path))
+            && path_exists_lstat(copy_path)
+        {
             notes.push(format!(
                 "bản sao nguồn tại {} vẫn được giữ nguyên",
                 copy_path.display()
@@ -4305,39 +5626,12 @@ impl ZaloRelocator {
             )
         };
 
-        let final_reloc_status = if target_rename_error.is_some() || linked_target_offline {
-            RelocationStatus::NeedsReview
-        } else {
-            RelocationStatus::Undone
-        };
-        let final_health = if linked_target_offline {
-            RelocationHealthStatus::TargetOffline
-        } else {
-            RelocationHealthStatus::Healthy
-        };
-
-        // Mark any active Zalo relocation record for `target_source_path` durably
-        if let Ok(relocs) = db.list_relocations(None) {
-            for mut reloc in relocs {
-                if reloc.app_id.eq_ignore_ascii_case("zalo")
-                    && greenc_core::models::same_windows_path(
-                        &reloc.source_path,
-                        target_source_path,
-                    )
-                    && matches!(
-                        reloc.status,
-                        RelocationStatus::Done
-                            | RelocationStatus::NeedsReview
-                            | RelocationStatus::Moving
-                    )
-                {
-                    reloc.status = final_reloc_status;
-                    reloc.health_status = final_health;
-                    reloc.moving_path = None;
-                    reloc.detail = Some(detail.clone());
-                    let _ = db.save_relocation_durable(&reloc);
-                }
-            }
+        for (mut reloc, row_status, row_health) in per_row_final {
+            reloc.status = row_status;
+            reloc.health_status = row_health;
+            reloc.moving_path = None;
+            reloc.detail = Some(detail.clone());
+            let _ = db.save_relocation_durable(&reloc);
         }
 
         reopen_session(&mut session);
@@ -4378,6 +5672,8 @@ impl ZaloRelocator {
         let target_path = record.target_path.clone();
         let rec_id = record.id.unwrap_or(0);
 
+        ensure_not_store_appdata_zalo(&[&source_path, &target_path], "zalo_undo")?;
+
         if !target_path.exists() || !target_path.is_dir() {
             return Err(GreenCError::NotFound {
                 entity: "RelocatedTarget".to_string(),
@@ -4385,10 +5681,31 @@ impl ZaloRelocator {
             });
         }
 
-        // Item 6: If `source_path` is no longer a junction/reparse point and a REAL
-        // directory now occupies `source_path` (e.g. Zalo was reinstalled), REFUSE automatic undo
-        // so we never silently displace active chat data created after reinstall!
-        if !reparse_api.is_reparse_point(&source_path) && path_exists_lstat(&source_path) {
+        // Item 6 + F9: If `source_path` is a real directory (not a junction), refuse automatic
+        // undo; if it IS a junction/reparse point, ONLY allow removing it when its actual target
+        // matches `record.target_path`!
+        if reparse_api.is_reparse_point(&source_path) {
+            let actual_jt = reparse_api.get_junction_target(&source_path).map_err(|err| {
+                GreenCError::PreconditionBlocked {
+                    operation: "zalo_undo_junction_mismatch".to_string(),
+                    reason: format!(
+                        "Không đọc được đích của liên kết tại '{}' ({err}); từ chối gỡ liên kết không xác minh được.",
+                        source_path.display()
+                    ),
+                }
+            })?;
+            if !greenc_core::models::same_windows_path(&actual_jt, &target_path) {
+                return Err(GreenCError::PreconditionBlocked {
+                    operation: "zalo_undo_junction_mismatch".to_string(),
+                    reason: format!(
+                        "Liên kết tại '{}' đang trỏ tới '{}' thay vì đích đã ghi nhận '{}'; GreenC từ chối gỡ liên kết không khớp.",
+                        source_path.display(),
+                        actual_jt.display(),
+                        target_path.display()
+                    ),
+                });
+            }
+        } else if path_exists_lstat(&source_path) {
             return Err(GreenCError::PreconditionBlocked {
                 operation: "zalo_undo_real_source_exists".to_string(),
                 reason: format!(
@@ -4519,11 +5836,31 @@ impl ZaloRelocator {
         record.detail = Some("Đang hoàn tác dữ liệu Zalo về vị trí cũ...".to_string());
         db.save_relocation_durable(record)?;
 
-        // Vacate `source_path` safely (never deleting a real directory).
+        // Vacate `source_path` safely (never deleting a real directory or foreign junction).
         let was_junction = reparse_api.is_reparse_point(&source_path);
         let mut conflict_note = String::new();
         let mut moved_src_conflict: Option<PathBuf> = None;
         if was_junction {
+            let matches_record_target = reparse_api
+                .get_junction_target(&source_path)
+                .is_ok_and(|jt| greenc_core::models::same_windows_path(&jt, &target_path));
+            if !matches_record_target {
+                let _ = fs::remove_dir_all(to_extended_io_path(&restore_tmp));
+                record.status = prev_status;
+                record.health_status = prev_health;
+                record.moving_path = None;
+                record.detail = prev_detail;
+                let _ = db.save_relocation_durable(record);
+                reopen_if_needed(&mut shutdown_session);
+                return Err(GreenCError::PreconditionBlocked {
+                    operation: "zalo_undo_junction_mismatch".to_string(),
+                    reason: format!(
+                        "Liên kết tại '{}' không còn trỏ tới '{}'; dừng hoàn tác an toàn.",
+                        source_path.display(),
+                        target_path.display()
+                    ),
+                });
+            }
             if let Err(err) = reparse_api.delete_junction(&source_path) {
                 let _ = fs::remove_dir_all(to_extended_io_path(&restore_tmp));
                 record.status = prev_status;

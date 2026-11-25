@@ -34,6 +34,31 @@ fn norm_cmp_key(path: &Path) -> String {
         .to_ascii_lowercase()
 }
 
+const REPAIR_CRASH_META_TAG: &str = "GREENC_REPAIR_META:";
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct RepairCrashMeta {
+    old_backup: Option<PathBuf>,
+    staging_link: PathBuf,
+    new_target: PathBuf,
+    prev_status: String,
+    prev_detail: Option<String>,
+}
+
+fn encode_repair_crash_meta(meta: &RepairCrashMeta) -> String {
+    match serde_json::to_string(meta) {
+        Ok(json) => format!("Đang cập nhật liên kết... {REPAIR_CRASH_META_TAG}{json}"),
+        Err(_) => "Đang cập nhật liên kết...".to_string(),
+    }
+}
+
+fn parse_repair_crash_meta(detail: Option<&str>) -> Option<RepairCrashMeta> {
+    let raw = detail?;
+    let idx = raw.find(REPAIR_CRASH_META_TAG)?;
+    let json = raw[idx + REPAIR_CRASH_META_TAG.len()..].trim();
+    serde_json::from_str::<RepairCrashMeta>(json).ok()
+}
+
 pub struct RecoveryService;
 
 /// Fail-closed check: returns `true` if `path` exists and is a non-empty directory, a file,
@@ -195,7 +220,7 @@ impl RecoveryService {
                 record.app_name
             );
 
-            let is_zalo = record.app_id.eq_ignore_ascii_case("zalo");
+            let is_zalo = crate::mover::record_holds_zalo_data(&record);
             let source = record.source_path.clone();
             let target = record.target_path.clone();
 
@@ -223,6 +248,111 @@ impl RecoveryService {
             } else {
                 None
             };
+
+            // F9: Self-heal a crash during `repair_junction_target` (between renaming old link
+            // to `.greenc-oldlink.*` and moving `.greenc-repair.*` into `source`, or right before
+            // the final DB save).
+            if let Some(repair_meta) = parse_repair_crash_meta(record.detail.as_deref()) {
+                let src_is_link = reparse.is_reparse_point(&source);
+                let src_exists = fs::symlink_metadata(to_extended_io_path(&source)).is_ok();
+                let mut healed = false;
+
+                if !src_exists && !src_is_link {
+                    let staging_ready = reparse.is_reparse_point(&repair_meta.staging_link)
+                        && reparse
+                            .get_junction_target(&repair_meta.staging_link)
+                            .is_ok_and(|jt| {
+                                greenc_core::models::same_windows_path(&jt, &repair_meta.new_target)
+                            })
+                        && repair_meta.new_target.exists();
+                    if staging_ready
+                        && fs::rename(&repair_meta.staging_link, &source).is_ok()
+                        && reparse.get_junction_target(&source).is_ok_and(|jt| {
+                            greenc_core::models::same_windows_path(&jt, &repair_meta.new_target)
+                        })
+                    {
+                        if let Some(ref ob) = repair_meta.old_backup {
+                            if reparse.is_reparse_point(ob) {
+                                let _ = reparse.delete_junction(ob);
+                            }
+                        }
+                        record.target_path = repair_meta.new_target.clone();
+                        record.status = RelocationStatus::Done;
+                        record.health_status = RelocationHealthStatus::Healthy;
+                        record.target_user_repaired = true;
+                        record.moving_path = None;
+                        record.detail = Some(format!(
+                            "Khôi phục sau gián đoạn sửa liên kết: đã hoàn tất chuyển liên kết sang {}.",
+                            repair_meta.new_target.display()
+                        ));
+                        healed = true;
+                    } else if let Some(ref ob) = repair_meta.old_backup {
+                        if reparse.is_reparse_point(ob) && fs::rename(ob, &source).is_ok() {
+                            if reparse.is_reparse_point(&repair_meta.staging_link) {
+                                let _ = reparse.delete_junction(&repair_meta.staging_link);
+                            }
+                            record.status =
+                                RelocationStatus::from_str_loose(&repair_meta.prev_status);
+                            record.health_status = Self::check_single_junction_live(
+                                &record.source_path,
+                                &record.target_path,
+                                reparse,
+                            );
+                            record.moving_path = None;
+                            record.detail = Some(
+                                "Khôi phục sau gián đoạn sửa liên kết: đã khôi phục liên kết cũ an toàn."
+                                    .to_string(),
+                            );
+                            healed = true;
+                        }
+                    }
+                } else if src_is_link {
+                    let cur_jt = reparse.get_junction_target(&source).ok();
+                    if cur_jt.as_deref().is_some_and(|jt| {
+                        greenc_core::models::same_windows_path(jt, &repair_meta.new_target)
+                    }) {
+                        if let Some(ref ob) = repair_meta.old_backup {
+                            if reparse.is_reparse_point(ob) {
+                                let _ = reparse.delete_junction(ob);
+                            }
+                        }
+                        if reparse.is_reparse_point(&repair_meta.staging_link) {
+                            let _ = reparse.delete_junction(&repair_meta.staging_link);
+                        }
+                        record.target_path = repair_meta.new_target.clone();
+                        record.status = RelocationStatus::Done;
+                        record.health_status = RelocationHealthStatus::Healthy;
+                        record.target_user_repaired = true;
+                        record.moving_path = None;
+                        record.detail = Some(format!(
+                            "Khôi phục sau gián đoạn sửa liên kết: liên kết mới tới {} đã hoàn tất.",
+                            repair_meta.new_target.display()
+                        ));
+                        healed = true;
+                    } else if cur_jt.as_deref().is_some_and(|jt| {
+                        greenc_core::models::same_windows_path(jt, &record.target_path)
+                    }) {
+                        if reparse.is_reparse_point(&repair_meta.staging_link) {
+                            let _ = reparse.delete_junction(&repair_meta.staging_link);
+                        }
+                        record.status = RelocationStatus::from_str_loose(&repair_meta.prev_status);
+                        record.health_status = Self::check_single_junction_live(
+                            &record.source_path,
+                            &record.target_path,
+                            reparse,
+                        );
+                        record.moving_path = None;
+                        record.detail = repair_meta.prev_detail.clone();
+                        healed = true;
+                    }
+                }
+
+                if healed {
+                    db.save_relocation_durable(&record)?;
+                    recovered.push(record);
+                    continue;
+                }
+            }
 
             // Check if junction exists at source and points to target
             let has_valid_junction = if reparse.is_reparse_point(&source) {
@@ -446,7 +576,29 @@ impl RecoveryService {
                     recovered.push(record);
                 } else {
                     match Self::select_moving_dir_for_record(&record, &source_parent, source_name) {
-                        MovingDirSelection::Exact(mdir) => remove_dir_all_safe(&mdir),
+                        MovingDirSelection::Exact(mdir) => {
+                            // F3 defense-in-depth: never delete a `.greenc-moving.*` folder holding Zalo data.
+                            if crate::mover::holds_zalo_data(&mdir)
+                                || crate::mover::holds_zalo_data(&source)
+                                || crate::mover::holds_zalo_data(&target)
+                            {
+                                let conflict = make_conflict_sibling(&mdir);
+                                let kept_path = match fs::rename(&mdir, &conflict) {
+                                    Ok(()) => conflict,
+                                    Err(_) => mdir,
+                                };
+                                record.status = RelocationStatus::NeedsReview;
+                                record.health_status = RelocationHealthStatus::Healthy;
+                                record.detail = Some(format!(
+                                    "Phát hiện dữ liệu Zalo trong thư mục tạm sau gián đoạn — GreenC KHÔNG xoá và giữ nguyên tại {} để kiểm tra.",
+                                    kept_path.display()
+                                ));
+                                db.save_relocation_durable(&record)?;
+                                recovered.push(record);
+                                continue;
+                            }
+                            remove_dir_all_safe(&mdir);
+                        }
                         MovingDirSelection::None => {}
                         MovingDirSelection::Ambiguous(_) => {
                             // Do not blindly delete unrelated `.greenc-moving.*` directories
@@ -477,9 +629,15 @@ impl RecoveryService {
                 }
             } else {
                 // Case B: Junction creation did not happen or link is broken.
-                // NEVER delete any directory that contains data or cannot be inspected.
+                // NEVER delete any directory that contains data or cannot be inspected,
+                // and NEVER delete a reparse point pointing to a different target (F9)!
                 if reparse.is_reparse_point(&source) {
-                    let _ = reparse.delete_junction(&source);
+                    if reparse
+                        .get_junction_target(&source)
+                        .is_ok_and(|jt| greenc_core::models::same_windows_path(&jt, &target))
+                    {
+                        let _ = reparse.delete_junction(&source);
+                    }
                 } else if fs::symlink_metadata(&source).is_ok()
                     && !path_has_content_or_uncertain(&source)
                 {
@@ -492,6 +650,69 @@ impl RecoveryService {
                 let target_exists = fs::symlink_metadata(to_extended_io_path(&target)).is_ok();
                 let target_has_content = path_has_content_or_uncertain(&target);
                 let copying_dirs = Self::find_copying_dirs(&target);
+
+                // F8: Crash during restore right after renaming live `source` -> `src_conflict`
+                // (recorded durably in `RestoreCrashMeta` or `record.moving_path` as `.greenc-conflict.*`):
+                // move `src_conflict` BACK to `source`, clean any staged `zalo-restoring.*`, and
+                // restore DB rows cleanly so Zalo is never left without `source`!
+                let crash_meta = crate::zalo_move::parse_restore_crash_meta(
+                    record.detail.as_deref(),
+                )
+                .or_else(|| {
+                    matching_restoring_orig.and_then(|ro| {
+                        crate::zalo_move::parse_restore_crash_meta(ro.detail.as_deref())
+                    })
+                });
+                let recorded_conflict = crash_meta
+                    .as_ref()
+                    .and_then(|m| m.conflict.clone())
+                    .or_else(|| {
+                        record.moving_path.as_ref().and_then(|p| {
+                            p.file_name()
+                                .and_then(|n| n.to_str())
+                                .filter(|n| n.contains(".greenc-conflict."))
+                                .map(|_| p.clone())
+                        })
+                    });
+                if !source_occupied {
+                    if let Some(ref cp) = recorded_conflict {
+                        if fs::symlink_metadata(to_extended_io_path(cp)).is_ok()
+                            && fs::rename(cp, &source).is_ok()
+                        {
+                            if let Some(ref staged) =
+                                crash_meta.as_ref().and_then(|m| m.staged.clone())
+                            {
+                                remove_dir_all_safe(staged);
+                            }
+                            if let Some(ro) = matching_restoring_orig {
+                                if let Some(ro_id) = ro.id {
+                                    let _ = db.update_zalo_retained_original_status_durable(
+                                        ro_id,
+                                        ZaloRetainedStatus::Retained.as_str(),
+                                        "Khôi phục sau gián đoạn: đã trả thư mục gốc từ bản xung đột về vị trí cũ an toàn.",
+                                    );
+                                    handled_restoring_ids.insert(ro_id);
+                                }
+                            }
+                            let restored_status = crash_meta
+                                .as_ref()
+                                .and_then(|m| m.prev_reloc_status.as_deref())
+                                .map(RelocationStatus::from_str_loose)
+                                .unwrap_or(RelocationStatus::NeedsReview);
+                            record.status = restored_status;
+                            record.health_status = RelocationHealthStatus::Healthy;
+                            record.moving_path = None;
+                            record.detail = Some(format!(
+                                "Khôi phục sau gián đoạn khôi phục bản sao: đã trả thư mục từ {} về {} an toàn.",
+                                cp.display(),
+                                source.display()
+                            ));
+                            db.save_relocation_durable(&record)?;
+                            recovered.push(record);
+                            continue;
+                        }
+                    }
+                }
 
                 // Item 4: Crash during Undo (`record.moving_path` is an undo temp
                 // `zalo-restoring.*`/`restoring.*`/`*.greenc-restoring.*`) OR during
@@ -661,6 +882,39 @@ impl RecoveryService {
                                             "Bị gián đoạn, đã khôi phục về vị trí cũ".to_string(),
                                         );
                                     }
+                                } else if crate::mover::holds_zalo_data(&target)
+                                    || crate::mover::holds_zalo_data(&source)
+                                {
+                                    // F3 defense-in-depth: never delete a target containing Zalo data.
+                                    if target_exists {
+                                        let conflict_target = make_conflict_sibling(&target);
+                                        match fs::rename(&target, &conflict_target) {
+                                            Ok(()) => {
+                                                record.status = RelocationStatus::Failed;
+                                                record.health_status =
+                                                    RelocationHealthStatus::LinkBroken;
+                                                record.detail = Some(format!(
+                                                    "Bị gián đoạn, đã khôi phục bản gốc về vị trí cũ; thư mục đích chứa dữ liệu Zalo được đổi tên thành bản xung đột tại {} (không xoá).",
+                                                    conflict_target.display()
+                                                ));
+                                            }
+                                            Err(rename_tgt_err) => {
+                                                record.status = RelocationStatus::NeedsReview;
+                                                record.health_status =
+                                                    RelocationHealthStatus::LinkBroken;
+                                                record.detail = Some(format!(
+                                                    "Đã khôi phục bản gốc về vị trí cũ nhưng không đổi tên được thư mục đích chứa dữ liệu Zalo {} sang bản xung đột ({rename_tgt_err}); GreenC giữ nguyên để tránh mất dữ liệu.",
+                                                    target.display()
+                                                ));
+                                            }
+                                        }
+                                    } else {
+                                        record.status = RelocationStatus::Failed;
+                                        record.health_status = RelocationHealthStatus::LinkBroken;
+                                        record.detail = Some(
+                                            "Bị gián đoạn, đã khôi phục về vị trí cũ".to_string(),
+                                        );
+                                    }
                                 } else {
                                     remove_dir_all_safe(&target);
                                     record.status = RelocationStatus::Failed;
@@ -749,6 +1003,33 @@ impl RecoveryService {
                 && reparse
                     .get_junction_target(&ro.source_path)
                     .is_ok_and(|jt| greenc_core::models::same_windows_path(&jt, &ro.target_path));
+
+            // F8: If a durable conflict path was recorded before renaming a live real `source_path`
+            // (e.g. post-undo restore of a retained copy on D:), restore `conflict -> source_path`!
+            if !src_exists && !reparse.is_reparse_point(&ro.source_path) {
+                if let Some(meta) = crate::zalo_move::parse_restore_crash_meta(ro.detail.as_deref())
+                {
+                    if let Some(ref cp) = meta.conflict {
+                        if fs::symlink_metadata(to_extended_io_path(cp)).is_ok()
+                            && fs::rename(cp, &ro.source_path).is_ok()
+                        {
+                            if let Some(ref staged) = meta.staged {
+                                remove_dir_all_safe(staged);
+                            }
+                            let _ = db.update_zalo_retained_original_status_durable(
+                                ro_id,
+                                ZaloRetainedStatus::Retained.as_str(),
+                                &format!(
+                                    "Khôi phục sau gián đoạn: đã trả thư mục Zalo từ {} về {} an toàn, giữ nguyên bản sao trên ổ đích.",
+                                    cp.display(),
+                                    ro.source_path.display()
+                                ),
+                            );
+                            continue;
+                        }
+                    }
+                }
+            }
 
             if !src_exists
                 && !reparse.is_reparse_point(&ro.source_path)
@@ -1058,22 +1339,55 @@ impl RecoveryService {
         }
 
         // Swap the verified new junction into place; only delete the old junction AFTER success.
+        // F9: Persist durable `Moving` + `RepairCrashMeta` BEFORE renaming `record.source_path`
+        // so a crash between renaming the old link and placing the new link self-heals on startup!
+        let prev_status = record.status;
+        let prev_moving_path = record.moving_path.clone();
+        let prev_detail = record.detail.clone();
         let staging_exists_on_disk =
             fs::symlink_metadata(to_extended_io_path(&staging_link)).is_ok();
         if staging_exists_on_disk {
-            if had_old_junction {
-                let old_backup = source_parent.join(format!(
+            let old_backup = if had_old_junction {
+                Some(source_parent.join(format!(
                     "{source_name}.greenc-oldlink.{}",
                     uuid::Uuid::new_v4()
-                ));
-                if let Err(err) = fs::rename(&record.source_path, &old_backup) {
+                )))
+            } else {
+                None
+            };
+            let repair_meta = RepairCrashMeta {
+                old_backup: old_backup.clone(),
+                staging_link: staging_link.clone(),
+                new_target: new_target_path.to_path_buf(),
+                prev_status: prev_status.as_str().to_string(),
+                prev_detail: prev_detail.clone(),
+            };
+            record.status = RelocationStatus::Moving;
+            record.moving_path = Some(staging_link.clone());
+            record.detail = Some(encode_repair_crash_meta(&repair_meta));
+            if let Err(db_err) = db.save_relocation_durable(&record) {
+                let _ = reparse.delete_junction(&staging_link);
+                return Err(db_err);
+            }
+
+            let restore_prev_record = |rec: &mut RelocationRecord| {
+                rec.status = prev_status;
+                rec.moving_path = prev_moving_path.clone();
+                rec.detail = prev_detail.clone();
+                let _ = db.save_relocation_durable(rec);
+            };
+
+            if let Some(ref old_backup) = old_backup {
+                if let Err(err) = fs::rename(&record.source_path, old_backup) {
                     let _ = reparse.delete_junction(&staging_link);
+                    restore_prev_record(&mut record);
                     return Err(GreenCError::Io(err));
                 }
                 if let Err(err) = fs::rename(&staging_link, &record.source_path) {
                     // Rollback: restore the old junction immediately
-                    let _ = fs::rename(&old_backup, &record.source_path);
+                    let _ = fs::rename(old_backup, &record.source_path);
                     let _ = reparse.delete_junction(&staging_link);
+                    restore_prev_record(&mut record);
                     return Err(GreenCError::Io(err));
                 }
                 // Verify final junction before deleting the old backup junction
@@ -1083,15 +1397,17 @@ impl RecoveryService {
                     .is_ok_and(|t| greenc_core::models::same_windows_path(t, new_target_path))
                 {
                     let _ = reparse.delete_junction(&record.source_path);
-                    let _ = fs::rename(&old_backup, &record.source_path);
+                    let _ = fs::rename(old_backup, &record.source_path);
+                    restore_prev_record(&mut record);
                     return Err(GreenCError::Relocation(
                         "Xác minh liên kết mới sau khi đổi chỗ thất bại; đã khôi phục liên kết cũ."
                             .to_string(),
                     ));
                 }
-                let _ = reparse.delete_junction(&old_backup);
+                let _ = reparse.delete_junction(old_backup);
             } else if let Err(err) = fs::rename(&staging_link, &record.source_path) {
                 let _ = reparse.delete_junction(&staging_link);
+                restore_prev_record(&mut record);
                 return Err(GreenCError::Io(err));
             }
         } else {
@@ -1120,6 +1436,7 @@ impl RecoveryService {
         record.target_path = new_target_path.to_path_buf();
         record.status = RelocationStatus::Done;
         record.health_status = RelocationHealthStatus::Healthy;
+        record.moving_path = None;
         record.target_user_repaired = true;
         record.detail = Some(format!(
             "Đã cập nhật liên kết sang {} (đích do người dùng chỉ định — hoàn tác sẽ không xoá đích này)",

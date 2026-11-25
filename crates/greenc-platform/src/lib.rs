@@ -30,9 +30,11 @@ pub use unix_parsers::{
 };
 
 pub use app_lifecycle::{
-    select_rm_target_processes, AppLifecycleApi, AppShutdownSession, MockAppLifecycleApi,
-    MockShutdownBehavior, NativeAppLifecycleApi, RmProcessCandidate,
-    DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT, ZALO_ACTIVE_CALL_MESSAGE, ZALO_MANUAL_QUIT_MESSAGE,
+    has_live_process_in_session, select_exes_needing_relaunch, select_rm_target_processes,
+    select_rm_target_processes_in_session, wait_or_relaunch_closed_on_timeout, AppLifecycleApi,
+    AppShutdownSession, MockAppLifecycleApi, MockShutdownBehavior, NativeAppLifecycleApi,
+    RmProcessCandidate, SessionProcessCandidate, DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT,
+    ZALO_ACTIVE_CALL_MESSAGE, ZALO_MANUAL_QUIT_MESSAGE,
 };
 pub use dev_tools::{
     detect_busy_dev_tools, detect_busy_dev_tools_native, parse_ps_output, BusyToolsStatus, DevTool,

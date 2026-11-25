@@ -14,6 +14,8 @@ pub fn is_process_running_unix(exe_name: &str) -> bool {
     #[cfg(target_os = "linux")]
     {
         let target_low = normalized.to_ascii_lowercase();
+        // SAFETY: `geteuid()` is a standard POSIX syscall with no pointer arguments.
+        let my_uid = unsafe { libc::geteuid() };
         if let Ok(entries) = std::fs::read_dir("/proc") {
             for entry in entries.flatten() {
                 let fname = entry.file_name();
@@ -23,6 +25,19 @@ pub fn is_process_running_unix(exe_name: &str) -> bool {
                 }
                 if let Ok(comm) = std::fs::read_to_string(entry.path().join("comm")) {
                     if comm.trim().to_ascii_lowercase() == target_low {
+                        // F10: Filter by current user session (UID) so another user's process
+                        // does not count as alive in our session.
+                        if let Ok(status) = std::fs::read_to_string(entry.path().join("status")) {
+                            let same_uid = status.lines().any(|line| {
+                                line.strip_prefix("Uid:")
+                                    .and_then(|rest| rest.split_whitespace().next())
+                                    .and_then(|uid_s| uid_s.parse::<u32>().ok())
+                                    == Some(my_uid)
+                            });
+                            if !same_uid {
+                                continue;
+                            }
+                        }
                         return true;
                     }
                 }

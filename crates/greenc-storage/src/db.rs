@@ -894,6 +894,36 @@ impl GreenCDb {
             .map_err(|e| GreenCError::Sqlite(e.to_string()))?;
             Ok(id)
         } else {
+            // F9: Refuse inserting a second active relocation row (`Done`/`NeedsReview`/`Moving`)
+            // for the same `source_path` so every source has at most one active relocation owner.
+            if matches!(
+                rec.status,
+                RelocationStatus::Done | RelocationStatus::NeedsReview | RelocationStatus::Moving
+            ) {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT id, source_path, status FROM relocations
+                         WHERE status IN ('done', 'needs_review', 'moving');",
+                    )
+                    .map_err(|e| GreenCError::Sqlite(e.to_string()))?;
+                let existing: Vec<(i64, String, String)> = stmt
+                    .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                    .map_err(|e| GreenCError::Sqlite(e.to_string()))?
+                    .collect::<std::result::Result<Vec<_>, _>>()
+                    .map_err(|e| GreenCError::Sqlite(e.to_string()))?;
+                for (eid, esrc, est) in existing {
+                    if greenc_core::models::same_windows_path(Path::new(&esrc), &rec.source_path) {
+                        return Err(GreenCError::PreconditionBlocked {
+                            operation: "save_relocation_duplicate_active".to_string(),
+                            reason: format!(
+                                "Đã tồn tại bản ghi chuyển dữ liệu đang hoạt động (#{eid}, trạng thái '{est}') cho cùng thư mục nguồn '{}'; từ chối tạo bản ghi hoạt động thứ hai.",
+                                rec.source_path.display()
+                            ),
+                        });
+                    }
+                }
+            }
+
             conn.execute(
                 "INSERT INTO relocations (
                     app_id, app_name, strategy, source_path, target_path,

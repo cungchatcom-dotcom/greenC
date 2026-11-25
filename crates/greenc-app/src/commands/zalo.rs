@@ -14,8 +14,8 @@ use greenc_platform::volume::{list_drives_native, recommend_drive_info};
 use greenc_relocate::recovery::RecoveryService;
 use greenc_relocate::zalo_move::{
     discover_zalo_safety_copies, estimate_zalo_move_space, format_zalo_move_confirmation,
-    is_zalo_auto_move_supported, zalo_auto_move_unsupported_reason, ZaloMoveOptions, ZaloRelocator,
-    ZaloSafetyCopyInfo, ZaloSpaceEstimate,
+    is_zalo_auto_move_supported, zalo_auto_move_unsupported_reason, ZaloDeleteSafetyCopyOptions,
+    ZaloMoveOptions, ZaloRelocator, ZaloSafetyCopyInfo, ZaloSpaceEstimate,
 };
 use greenc_scanner::zalo::{
     discover_zalo_installation, ZaloConfigStatus, ZaloDiscoveryOptions, ZALO_CACHE_MIN_AGE_SECS,
@@ -152,12 +152,15 @@ pub struct ZaloMoveResultDto {
     pub message: String,
 }
 
-fn known_zalo_relocations(
-    state: &AppState,
-) -> (
-    HashSet<PathBuf>,
-    Option<(i64, PathBuf, String, String, bool)>,
-) {
+struct ActiveZaloRelocation {
+    id: i64,
+    target_path: PathBuf,
+    health: String,
+    status: String,
+    replaced_by_real_dir: bool,
+}
+
+fn known_zalo_relocations(state: &AppState) -> (HashSet<PathBuf>, Option<ActiveZaloRelocation>) {
     let mut known_sources = HashSet::new();
     let mut active = None;
     if let Ok(records) = state.db.list_relocations(None) {
@@ -191,13 +194,13 @@ fn known_zalo_relocations(
                 }
                 if active.is_none() {
                     if let Some(id) = rec.id {
-                        active = Some((
+                        active = Some(ActiveZaloRelocation {
                             id,
-                            rec.target_path,
-                            health.as_str().to_string(),
-                            rec.status.as_str().to_string(),
+                            target_path: rec.target_path,
+                            health: health.as_str().to_string(),
+                            status: rec.status.as_str().to_string(),
                             replaced_by_real_dir,
-                        ));
+                        });
                     }
                 }
             }
@@ -284,13 +287,15 @@ pub async fn get_zalo_status(
                 data_on_system_drive: false,
                 already_on_other_drive: false,
                 already_on_other_drive_message: None,
-                active_relocation_id: active_reloc.as_ref().map(|a| a.0),
+                active_relocation_id: active_reloc.as_ref().map(|a| a.id),
                 active_relocation_target: active_reloc
                     .as_ref()
-                    .map(|a| a.1.to_string_lossy().to_string()),
-                active_relocation_health: active_reloc.as_ref().map(|a| a.2.clone()),
-                active_relocation_status: active_reloc.as_ref().map(|a| a.3.clone()),
-                source_replaced_by_real_dir: active_reloc.as_ref().is_some_and(|a| a.4),
+                    .map(|a| a.target_path.to_string_lossy().to_string()),
+                active_relocation_health: active_reloc.as_ref().map(|a| a.health.clone()),
+                active_relocation_status: active_reloc.as_ref().map(|a| a.status.clone()),
+                source_replaced_by_real_dir: active_reloc
+                    .as_ref()
+                    .is_some_and(|a| a.replaced_by_real_dir),
                 chat_data_bytes: 0,
                 media_bytes: 0,
                 message_bytes: 0,
@@ -372,13 +377,15 @@ pub async fn get_zalo_status(
             data_on_system_drive: disc.data_on_system_drive,
             already_on_other_drive,
             already_on_other_drive_message: already_msg,
-            active_relocation_id: active_reloc.as_ref().map(|a| a.0),
+            active_relocation_id: active_reloc.as_ref().map(|a| a.id),
             active_relocation_target: active_reloc
                 .as_ref()
-                .map(|a| a.1.to_string_lossy().to_string()),
-            active_relocation_health: active_reloc.as_ref().map(|a| a.2.clone()),
-            active_relocation_status: active_reloc.as_ref().map(|a| a.3.clone()),
-            source_replaced_by_real_dir: active_reloc.as_ref().is_some_and(|a| a.4),
+                .map(|a| a.target_path.to_string_lossy().to_string()),
+            active_relocation_health: active_reloc.as_ref().map(|a| a.health.clone()),
+            active_relocation_status: active_reloc.as_ref().map(|a| a.status.clone()),
+            source_replaced_by_real_dir: active_reloc
+                .as_ref()
+                .is_some_and(|a| a.replaced_by_real_dir),
             chat_data_bytes: disc.chat_data_bytes,
             media_bytes: disc.media_bytes,
             message_bytes: disc.message_bytes,
@@ -656,8 +663,14 @@ pub async fn purge_zalo_retained_original(
     let state_inner = state.inner().clone();
     tokio::task::spawn_blocking(move || {
         let reparse = NativeReparsePointApi;
-        let rec = ZaloRelocator::purge_retained_original(retained_id, &state_inner.db, &reparse)
-            .map_err(|e| e.to_string())?;
+        let proc_probe = NativeProcessServiceProbe;
+        let rec = ZaloRelocator::purge_retained_original_with_probe(
+            retained_id,
+            &state_inner.db,
+            &reparse,
+            &proc_probe,
+        )
+        .map_err(|e| e.to_string())?;
         Ok(rec
             .detail
             .unwrap_or_else(|| "Đã xoá bản gốc giữ tạm thành công.".to_string()))
@@ -751,9 +764,15 @@ pub async fn restore_zalo_safety_copy(
 #[tauri::command]
 pub async fn delete_zalo_safety_copy(
     copy_id: String,
+    confirm_copy_may_be_newer: Option<bool>,
+    force_delete_confirmation_text: Option<String>,
     state: State<'_, AppState>,
 ) -> std::result::Result<String, String> {
     let state_inner = state.inner().clone();
+    let options = ZaloDeleteSafetyCopyOptions {
+        confirm_copy_may_be_newer: confirm_copy_may_be_newer.unwrap_or(false),
+        force_delete_confirmation_text,
+    };
     tokio::task::spawn_blocking(move || {
         let reparse = NativeReparsePointApi;
         let proc_probe = NativeProcessServiceProbe;
@@ -768,11 +787,13 @@ pub async fn delete_zalo_safety_copy(
         })
         .and_then(|d| d.data_dir);
 
-        ZaloRelocator::delete_safety_copy_by_id(
+        ZaloRelocator::delete_safety_copy_by_id_with_probes(
             &copy_id,
             discovered_data_dir.as_deref(),
+            &options,
             &state_inner.db,
             &reparse,
+            &proc_probe,
         )
         .map_err(|e| e.to_string())
     })

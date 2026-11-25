@@ -108,3 +108,33 @@ fn relocation_lock_blocks_across_os_processes_and_releases_on_crash() {
         "parent must acquire relocation lock after child crashes"
     );
 }
+
+#[test]
+fn f12_relocation_lock_uses_adjacent_lock_file_beside_db_for_cross_session_exclusion() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("custom_zalo.db");
+
+    let expected_lock = RelocationLock::lock_path_for_db(&db_path);
+    assert_eq!(
+        expected_lock.parent().unwrap(),
+        std::fs::canonicalize(tmp.path()).unwrap(),
+        "lock file must live directly beside the DB for cross-session exclusion"
+    );
+    assert_eq!(
+        expected_lock.file_name().unwrap().to_string_lossy(),
+        ".greenc-relocation-custom_zalo.db.lock"
+    );
+
+    let guard = RelocationLock::acquire_for_db(&db_path).unwrap();
+    assert!(
+        expected_lock.is_file(),
+        "acquiring RelocationLock must create/lock the adjacent lock file"
+    );
+    assert!(RelocationLock::try_acquire_for_db(&db_path)
+        .unwrap()
+        .is_none());
+    drop(guard);
+    assert!(RelocationLock::try_acquire_for_db(&db_path)
+        .unwrap()
+        .is_some());
+}

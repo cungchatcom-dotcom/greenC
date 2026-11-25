@@ -342,3 +342,125 @@ fn store_blocks_known_folder_undo_and_appdata_junction_repair_without_deleting_a
         assert!(repair_res.is_ok());
     }
 }
+
+#[test]
+fn f11_store_undo_helper_rebuilds_junction_uses_scoped_temp_and_checks_target_match() {
+    let tmp = fake_profile();
+    let source_appdata = tmp
+        .path()
+        .join("Users")
+        .join("Alice")
+        .join("AppData")
+        .join("Roaming")
+        .join("MyAppData");
+    let target_dir = tmp.path().join("D_Drive").join("MyAppData");
+    let foreign_dir = tmp.path().join("E_Drive").join("OtherApp");
+    std::fs::create_dir_all(source_appdata.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(&target_dir).unwrap();
+    std::fs::create_dir_all(&foreign_dir).unwrap();
+    std::fs::write(target_dir.join("data.bin"), b"store-helper-data").unwrap();
+
+    // 1. Helper MUST refuse when junction points to a foreign target!
+    make_existing_link(&source_appdata, &foreign_dir);
+    let (code_mismatch, resp_mismatch) = execute_undo_relocation_dir_job(
+        &source_appdata,
+        &target_dir,
+        &NativeReparsePointApi,
+        false,
+    );
+    assert_ne!(code_mismatch, 0);
+    assert_eq!(
+        resp_mismatch.error_code.as_deref(),
+        Some("junction_target_mismatch")
+    );
+    assert!(
+        NativeReparsePointApi.is_reparse_point(&source_appdata),
+        "foreign junction must remain untouched"
+    );
+    NativeReparsePointApi
+        .delete_junction(&source_appdata)
+        .unwrap();
+
+    // 2. When rename fails after deleting the matching junction, helper MUST rebuild the junction!
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let probe = tmp.path().join("ro_probe_f11");
+        std::fs::create_dir_all(&probe).unwrap();
+        std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let is_non_root = std::fs::write(probe.join("t"), b"x").is_err();
+        let _ = std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o755));
+
+        if is_non_root {
+            struct FailRenameAfterDelete {
+                inner: NativeReparsePointApi,
+                parent: PathBuf,
+                saw_scoped_temp: Arc<std::sync::atomic::AtomicBool>,
+            }
+            impl ReparsePointApi for FailRenameAfterDelete {
+                fn is_reparse_point(&self, path: &Path) -> bool {
+                    self.inner.is_reparse_point(path)
+                }
+                fn get_junction_target(&self, path: &Path) -> Result<PathBuf> {
+                    self.inner.get_junction_target(path)
+                }
+                fn create_junction(&self, link: &Path, target: &Path) -> Result<()> {
+                    let _ = std::fs::set_permissions(
+                        &self.parent,
+                        std::fs::Permissions::from_mode(0o755),
+                    );
+                    self.inner.create_junction(link, target)
+                }
+                fn delete_junction(&self, link: &Path) -> Result<()> {
+                    // Check that the staged temp dir uses per-record `<source_name>.greenc-restoring.*`
+                    if let Ok(rd) = std::fs::read_dir(&self.parent) {
+                        for e in rd.flatten() {
+                            if e.file_name()
+                                .to_string_lossy()
+                                .starts_with("MyAppData.greenc-restoring.")
+                            {
+                                self.saw_scoped_temp
+                                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                            }
+                        }
+                    }
+                    self.inner.delete_junction(link)?;
+                    std::fs::set_permissions(&self.parent, std::fs::Permissions::from_mode(0o555))?;
+                    Ok(())
+                }
+            }
+
+            make_existing_link(&source_appdata, &target_dir);
+            let saw_scoped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let mock_reparse = FailRenameAfterDelete {
+                inner: NativeReparsePointApi,
+                parent: source_appdata.parent().unwrap().to_path_buf(),
+                saw_scoped_temp: Arc::clone(&saw_scoped),
+            };
+
+            let (code, resp) =
+                execute_undo_relocation_dir_job(&source_appdata, &target_dir, &mock_reparse, false);
+            let _ = std::fs::set_permissions(
+                source_appdata.parent().unwrap(),
+                std::fs::Permissions::from_mode(0o755),
+            );
+
+            assert_ne!(code, 0);
+            assert_eq!(resp.error_code.as_deref(), Some("rename_failed"));
+            assert!(
+                saw_scoped.load(std::sync::atomic::Ordering::SeqCst),
+                "helper must use per-record `<source_name>.greenc-restoring.*` temp name"
+            );
+            assert!(
+                NativeReparsePointApi.is_reparse_point(&source_appdata),
+                "helper MUST rebuild junction when rename fails"
+            );
+            assert_eq!(
+                NativeReparsePointApi
+                    .get_junction_target(&source_appdata)
+                    .unwrap(),
+                target_dir
+            );
+        }
+    }
+}

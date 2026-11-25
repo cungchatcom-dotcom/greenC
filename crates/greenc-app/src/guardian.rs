@@ -417,9 +417,10 @@ impl BackgroundGuardian {
             // Check 3b: Auto-purge expired Zalo retained originals ONLY when health watch passed
             // AND 24-hour retention elapsed AND live junction remains healthy.
             if let Ok(purged_zalo) =
-                greenc_relocate::zalo_move::ZaloRelocator::purge_expired_originals(
+                greenc_relocate::zalo_move::ZaloRelocator::purge_expired_originals_with_probe(
                     &guardian_state.db,
                     deps.reparse_api.as_ref(),
+                    deps.proc_probe.as_ref(),
                     chrono::Utc::now(),
                 )
             {

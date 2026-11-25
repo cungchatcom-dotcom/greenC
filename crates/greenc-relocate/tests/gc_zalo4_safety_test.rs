@@ -645,6 +645,7 @@ fn item3_restore_safety_copy_checks_target_tree_lock_pre_swap_fingerprint_and_ta
             target_user_repaired: false,
         })
         .unwrap();
+    assert!(reloc_id > 0);
 
     // Subcase A: File inside linked target tree is locked -> MUST block with FileLocked!
     let lock_target = MockFileLockProbe::new();
@@ -1829,8 +1830,10 @@ fn item9_delete_safety_copy_works_for_post_undo_and_conflict_only_when_live_sour
         "conflict copy must remain intact after refusal"
     );
 
-    // B. Once live `zalo_data` covers `only_in_conflict.db`, confirmed delete SUCCEEDS!
+    // B. Once live `zalo_data` covers `only_in_conflict.db` and is at least as new as the older
+    //    copies, confirmed delete SUCCEEDS!
     create_real_sqlite_db(&zalo_data.join("message/only_in_conflict.db"), 12);
+    create_real_sqlite_db(&zalo_data.join("message/zalo.db"), 1);
     ZaloRelocator::delete_safety_copy_by_id(
         &conflict_info.copy_id,
         Some(&zalo_data),

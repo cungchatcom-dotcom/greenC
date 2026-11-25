@@ -93,6 +93,107 @@ pub fn select_rm_target_processes(
     selected
 }
 
+/// Snapshot of a candidate running process paired with its OS session ID for session-scoped
+/// filtering (F10). Processes in other sessions are excluded from shutdown AND do not count as
+/// "alive" for the current user's session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionProcessCandidate {
+    pub process: RmProcessCandidate,
+    pub session_id: Option<u32>,
+}
+
+/// Filters running process candidates strictly to `current_session_id` AND `allowed_process_names`
+/// (F10). Any process in a different session (or with an unknown/inaccessible session) is ignored.
+pub fn select_rm_target_processes_in_session(
+    candidates: &[SessionProcessCandidate],
+    allowed_process_names: &[&str],
+    current_session_id: u32,
+) -> Vec<RmProcessCandidate> {
+    let same_session: Vec<RmProcessCandidate> = candidates
+        .iter()
+        .filter(|c| c.session_id == Some(current_session_id))
+        .map(|c| c.process.clone())
+        .collect();
+    select_rm_target_processes(&same_session, allowed_process_names)
+}
+
+/// Returns `true` ONLY if a matching process is running inside `current_session_id` (F10).
+/// Processes in other OS sessions NEVER count as "alive".
+pub fn has_live_process_in_session(
+    candidates: &[SessionProcessCandidate],
+    exe_names: &[&str],
+    current_session_id: u32,
+) -> bool {
+    !select_rm_target_processes_in_session(candidates, exe_names, current_session_id).is_empty()
+}
+
+fn norm_exe_path_key(path: &Path) -> String {
+    path.to_string_lossy()
+        .replace('\\', "/")
+        .trim()
+        .to_ascii_lowercase()
+}
+
+/// Computes the subset of `captured_exes` that exited during an aborted/timed-out shutdown and
+/// therefore MUST be relaunched before returning the timeout error (F10).
+/// Exes that are still running are NOT relaunched (avoids duplicate instances).
+pub fn select_exes_needing_relaunch(
+    captured_exes: &[PathBuf],
+    still_running_exes: &[PathBuf],
+) -> Vec<PathBuf> {
+    let running_keys: HashSet<String> = still_running_exes
+        .iter()
+        .map(|p| norm_exe_path_key(p))
+        .collect();
+    let mut seen = HashSet::new();
+    let mut to_relaunch = Vec::new();
+    for exe in captured_exes {
+        let key = norm_exe_path_key(exe);
+        if !running_keys.contains(&key) && seen.insert(key) {
+            to_relaunch.push(exe.clone());
+        }
+    }
+    to_relaunch
+}
+
+/// Shared shutdown-wait + timeout-relaunch state machine (F10):
+/// Polls `query_running` until empty or `timeout` elapses. If timeout occurs, determines which
+/// `captured_exes` were already closed and invokes `relaunch_exe` for each of them BEFORE
+/// returning `Err(GreenCError::FileLocked)`.
+pub fn wait_or_relaunch_closed_on_timeout<FQuery, FRelaunch>(
+    timeout: Duration,
+    poll_interval: Duration,
+    captured_exes: &[PathBuf],
+    primary_resource: PathBuf,
+    mut query_running: FQuery,
+    mut relaunch_exe: FRelaunch,
+) -> Result<()>
+where
+    FQuery: FnMut() -> Vec<PathBuf>,
+    FRelaunch: FnMut(&Path),
+{
+    if wait_for_processes_to_exit(timeout, poll_interval, || query_running().is_empty()) {
+        return Ok(());
+    }
+    let still_running = query_running();
+    let closed_exes = select_exes_needing_relaunch(captured_exes, &still_running);
+    for exe in &closed_exes {
+        relaunch_exe(exe);
+    }
+    Err(GreenCError::FileLocked {
+        path: primary_resource,
+        reason: ZALO_MANUAL_QUIT_MESSAGE.to_string(),
+    })
+}
+
+/// Returns `true` if `pid` belongs to the current OS session (Windows Terminal Services session
+/// ID via `TokenSessionId`). Always returns `false` if the process is in another session or
+/// inaccessible (F10).
+#[cfg(windows)]
+pub fn is_pid_in_current_session(pid: u32) -> bool {
+    win_impl::is_pid_in_current_session_native(pid)
+}
+
 impl AppShutdownSession {
     pub fn no_op() -> Self {
         Self::default()
@@ -179,7 +280,8 @@ mod win_impl {
     use crate::win32::restart_mgr::RmSessionGuard;
     use std::time::Instant;
     use windows::core::PWSTR;
-    use windows::Win32::Foundation::{BOOL, FILETIME, HWND, LPARAM};
+    use windows::Win32::Foundation::{BOOL, FILETIME, HANDLE, HWND, LPARAM};
+    use windows::Win32::Security::{GetTokenInformation, TokenSessionId, TOKEN_QUERY};
     use windows::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
         TH32CS_SNAPPROCESS,
@@ -188,12 +290,58 @@ mod win_impl {
         RmRegisterResources, RmRestart, RmShutdown, RM_UNIQUE_PROCESS,
     };
     use windows::Win32::System::Threading::{
-        GetProcessTimes, OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
-        PROCESS_QUERY_LIMITED_INFORMATION,
+        GetCurrentProcess, GetProcessTimes, OpenProcess, OpenProcessToken,
+        QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         EnumWindows, GetWindowThreadProcessId, IsWindowVisible,
     };
+
+    fn query_token_session_id(process_handle: HANDLE) -> Option<u32> {
+        let mut token = HANDLE::default();
+        // SAFETY: `process_handle` is a valid open process handle (or current-process pseudo-handle)
+        // and `token` is immediately wrapped in `OwnedHandle`.
+        unsafe { OpenProcessToken(process_handle, TOKEN_QUERY, &mut token) }.ok()?;
+        let token_guard = OwnedHandle::new(token)?;
+        let mut session_id: u32 = 0;
+        let mut ret_len: u32 = 0;
+        // SAFETY: `session_id` is valid writable 4-byte storage matching `TokenSessionId` (`DWORD`).
+        unsafe {
+            GetTokenInformation(
+                token_guard.raw(),
+                TokenSessionId,
+                Some((&mut session_id as *mut u32).cast()),
+                std::mem::size_of::<u32>() as u32,
+                &mut ret_len,
+            )
+        }
+        .ok()?;
+        Some(session_id)
+    }
+
+    pub fn current_session_id_native() -> Option<u32> {
+        // SAFETY: `GetCurrentProcess()` returns the current process pseudo-handle.
+        let cur = unsafe { GetCurrentProcess() };
+        query_token_session_id(cur)
+    }
+
+    fn query_pid_session_id(pid: u32) -> Option<u32> {
+        if pid == 0 {
+            return None;
+        }
+        // SAFETY: `OpenProcess` with read-only `PROCESS_QUERY_LIMITED_INFORMATION` is immediately
+        // wrapped in `OwnedHandle`.
+        let raw = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.ok()?;
+        let guard = OwnedHandle::new(raw)?;
+        query_token_session_id(guard.raw())
+    }
+
+    pub fn is_pid_in_current_session_native(pid: u32) -> bool {
+        let Some(cur_sid) = current_session_id_native() else {
+            return false;
+        };
+        query_pid_session_id(pid) == Some(cur_sid)
+    }
 
     fn query_process_image_path(pid: u32) -> Option<PathBuf> {
         // SAFETY: `OpenProcess` with read-only `PROCESS_QUERY_LIMITED_INFORMATION` returns a
@@ -282,15 +430,18 @@ mod win_impl {
         if targets.is_empty() {
             return Vec::new();
         }
+        let Some(cur_sid) = current_session_id_native() else {
+            return Vec::new();
+        };
 
         let mut raw_candidates = Vec::new();
         // SAFETY: Snapshot handle wrapped immediately in `OwnedHandle`; `dwSize` initialized.
         unsafe {
             let Ok(raw_snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
-                return raw_candidates;
+                return Vec::new();
             };
             let Some(snap) = OwnedHandle::new(raw_snap) else {
-                return raw_candidates;
+                return Vec::new();
             };
             let mut entry = PROCESSENTRY32W {
                 dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
@@ -308,7 +459,11 @@ mod win_impl {
                         .to_ascii_lowercase();
                     if targets.contains(&name) {
                         if let Some(cand) = query_process_candidate(entry.th32ProcessID) {
-                            raw_candidates.push(cand);
+                            let sid = query_pid_session_id(entry.th32ProcessID);
+                            raw_candidates.push(SessionProcessCandidate {
+                                process: cand,
+                                session_id: sid,
+                            });
                         }
                     }
                     if Process32NextW(snap.raw(), &mut entry).is_err() {
@@ -317,7 +472,7 @@ mod win_impl {
                 }
             }
         }
-        select_rm_target_processes(&raw_candidates, exe_names)
+        select_rm_target_processes_in_session(&raw_candidates, exe_names, cur_sid)
     }
 
     pub fn find_running_exe_paths_native(exe_names: &[&str]) -> Vec<PathBuf> {
@@ -329,6 +484,9 @@ mod win_impl {
         if targets.is_empty() {
             return Vec::new();
         }
+        let Some(cur_sid) = current_session_id_native() else {
+            return Vec::new();
+        };
 
         let mut out = Vec::new();
         // SAFETY: Snapshot handle wrapped immediately in `OwnedHandle`; `dwSize` initialized.
@@ -353,7 +511,9 @@ mod win_impl {
                     let name = String::from_utf16_lossy(&entry.szExeFile[..end])
                         .trim()
                         .to_ascii_lowercase();
-                    if targets.contains(&name) {
+                    if targets.contains(&name)
+                        && query_pid_session_id(entry.th32ProcessID) == Some(cur_sid)
+                    {
                         if let Some(full) = query_process_image_path(entry.th32ProcessID) {
                             if !out.contains(&full) {
                                 out.push(full);
@@ -371,6 +531,7 @@ mod win_impl {
 
     struct EnumVisibleCtx {
         targets: HashSet<String>,
+        current_session: Option<u32>,
         found: bool,
     }
 
@@ -379,7 +540,10 @@ mod win_impl {
         if IsWindowVisible(hwnd).as_bool() {
             let mut pid: u32 = 0;
             let _ = GetWindowThreadProcessId(hwnd, Some(&mut pid));
-            if pid != 0 {
+            if pid != 0
+                && ctx.current_session.is_some()
+                && query_pid_session_id(pid) == ctx.current_session
+            {
                 if let Some(img) = query_process_image_path(pid) {
                     if let Some(fname) = img.file_name().and_then(|n| n.to_str()) {
                         if ctx.targets.contains(&fname.to_ascii_lowercase()) {
@@ -404,6 +568,7 @@ mod win_impl {
         }
         let mut ctx = EnumVisibleCtx {
             targets,
+            current_session: current_session_id_native(),
             found: false,
         };
         let ptr = &mut ctx as *mut EnumVisibleCtx as isize;
@@ -456,24 +621,29 @@ mod win_impl {
         }
 
         // SAFETY: `lActionFlags = 0` requests graceful shutdown ONLY (NEVER `RmForceShutdown`).
-        // Item 11: Even if `RmShutdown` returns a non-zero status code, wait up to
-        // `timeout` for the target processes to exit before concluding shutdown failed!
+        // Item 11 + F10: Wait up to `timeout` for same-session target processes to exit.
+        // If timeout occurs, relaunch EVERY captured exe that had already closed BEFORE
+        // returning the error so the user's app is never left half-closed!
         let shut_err = unsafe { RmShutdown(session.raw(), 0, None) };
         let rm_succeeded = shut_err.0 == 0;
 
-        if super::wait_for_processes_to_exit(timeout, Duration::from_millis(250), || {
-            find_running_exe_paths_native(process_names).is_empty()
-        }) {
-            return Ok(AppShutdownSession {
-                captured_exes,
-                used_restart_manager: rm_succeeded,
-                rm_guard: if rm_succeeded { Some(session) } else { None },
-            });
-        }
+        super::wait_or_relaunch_closed_on_timeout(
+            timeout,
+            Duration::from_millis(250),
+            &captured_exes,
+            resource_paths.first().cloned().unwrap_or_default(),
+            || find_running_exe_paths_native(process_names),
+            |closed_exe| {
+                if closed_exe.is_file() {
+                    let _ = std::process::Command::new(closed_exe).spawn();
+                }
+            },
+        )?;
 
-        Err(GreenCError::FileLocked {
-            path: resource_paths.first().cloned().unwrap_or_default(),
-            reason: ZALO_MANUAL_QUIT_MESSAGE.to_string(),
+        Ok(AppShutdownSession {
+            captured_exes,
+            used_restart_manager: rm_succeeded,
+            rm_guard: if rm_succeeded { Some(session) } else { None },
         })
     }
 

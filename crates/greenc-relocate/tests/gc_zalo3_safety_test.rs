@@ -905,7 +905,6 @@ fn item4_restore_retained_original_rebuilds_junction_and_reopens_zalo_on_rename_
 
     let tmp = TempDir::new().unwrap();
     let db = GreenCDb::open(tmp.path().join("zalo.db")).unwrap();
-    let reparse = NativeReparsePointApi;
     let lock = MockFileLockProbe::new();
     let proc = MockProcessServiceProbe::new();
     let lifecycle = MockAppLifecycleApi::new();
@@ -916,13 +915,41 @@ fn item4_restore_retained_original_rebuilds_junction_and_reopens_zalo_on_rename_
     let c_dir = tmp.path().join("C_Drive");
     let src = c_dir.join("Zalo Data");
     let target = tmp.path().join("D_Drive/GreenC/Relocated/zalo");
-    let ro_parent = tmp.path().join("ReadOnlyParent");
-    let retained = ro_parent.join("Zalo Data.greenc-original.fail-rename");
+    let retained = c_dir.join("Zalo Data.greenc-original.fail-rename");
     fs::create_dir_all(&c_dir).unwrap();
     fs::create_dir_all(target.join("message")).unwrap();
     fs::write(target.join("message/zalo.db"), b"TARGET-LIVE").unwrap();
     fs::create_dir_all(retained.join("message")).unwrap();
     fs::write(retained.join("message/zalo.db"), b"RETAINED-ORIG").unwrap();
+
+    // Wrapper that makes `c_dir` read-only immediately after `delete_junction` so
+    // `fs::rename(retained, src)` fails with EACCES, then restores writeability when rollback
+    // invokes `create_junction`.
+    struct FailRenameAfterDeleteReparse {
+        inner: NativeReparsePointApi,
+        c_dir: PathBuf,
+    }
+    impl ReparsePointApi for FailRenameAfterDeleteReparse {
+        fn is_reparse_point(&self, path: &Path) -> bool {
+            self.inner.is_reparse_point(path)
+        }
+        fn get_junction_target(&self, path: &Path) -> greenc_core::error::Result<PathBuf> {
+            self.inner.get_junction_target(path)
+        }
+        fn create_junction(&self, link: &Path, target: &Path) -> greenc_core::error::Result<()> {
+            let _ = fs::set_permissions(&self.c_dir, fs::Permissions::from_mode(0o755));
+            self.inner.create_junction(link, target)
+        }
+        fn delete_junction(&self, link: &Path) -> greenc_core::error::Result<()> {
+            self.inner.delete_junction(link)?;
+            fs::set_permissions(&self.c_dir, fs::Permissions::from_mode(0o555))?;
+            Ok(())
+        }
+    }
+    let reparse = FailRenameAfterDeleteReparse {
+        inner: NativeReparsePointApi,
+        c_dir: c_dir.clone(),
+    };
 
     // Active valid junction at `src -> target`
     reparse.create_junction(&src, &target).unwrap();
@@ -969,10 +996,6 @@ fn item4_restore_retained_original_rebuilds_junction_and_reopens_zalo_on_rename_
         })
         .unwrap();
 
-    // Make `ro_parent` read-only (0555) so `fs::rename(retained, src)` FAILS with EACCES
-    // AFTER the junction at `src` has been deleted!
-    fs::set_permissions(&ro_parent, fs::Permissions::from_mode(0o555)).unwrap();
-
     let res = ZaloRelocator::restore_retained_original(
         retained_id,
         &db,
@@ -984,7 +1007,7 @@ fn item4_restore_retained_original_rebuilds_junction_and_reopens_zalo_on_rename_
     );
 
     // Restore permissions so TempDir cleanup succeeds
-    let _ = fs::set_permissions(&ro_parent, fs::Permissions::from_mode(0o755));
+    let _ = fs::set_permissions(&c_dir, fs::Permissions::from_mode(0o755));
 
     assert!(res.is_err(), "restore must fail when rename fails");
     // Junction MUST have been rebuilt so Zalo still points to live `target`!
@@ -2324,8 +2347,6 @@ fn item10_move_rejects_source_without_zalo_message_structure() {
 
 #[test]
 fn item10_target_dir_sets_current_user_only_acl() {
-    use greenc_platform::restrict_dir_to_current_user;
-
     let tmp = TempDir::new().unwrap();
     let (disc, _zalo_data, exe_path) = build_zalo_env(tmp.path());
     let db = GreenCDb::open(tmp.path().join("item10_acl.db")).unwrap();
@@ -2374,6 +2395,7 @@ fn item10_target_dir_sets_current_user_only_acl() {
 
     #[cfg(unix)]
     {
+        use greenc_platform::restrict_dir_to_current_user;
         use std::os::unix::fs::PermissionsExt;
         let mode = fs::symlink_metadata(&target).unwrap().permissions().mode() & 0o777;
         assert_eq!(

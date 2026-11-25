@@ -518,7 +518,9 @@ impl ProcessServiceProbe for NativeProcessServiceProbe {
                         .unwrap_or(entry.szExeFile.len());
                     let name =
                         String::from_utf16_lossy(&entry.szExeFile[..name_len]).to_lowercase();
-                    if name == target {
+                    if name == target
+                        && crate::app_lifecycle::is_pid_in_current_session(entry.th32ProcessID)
+                    {
                         return true;
                     }
                     if windows::Win32::System::Diagnostics::ToolHelp::Process32NextW(
