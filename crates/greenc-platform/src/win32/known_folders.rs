@@ -84,10 +84,10 @@ impl ShellFolderApi for NativeShellFolderApi {
         #[cfg(feature = "store")]
         {
             let _ = (folder_guid, new_path);
-            return Err(GreenCError::PreconditionBlocked {
+            Err(GreenCError::PreconditionBlocked {
                 operation: "SHSetKnownFolderPath".to_string(),
                 reason: "Bản Microsoft Store tạm tắt đổi đường dẫn Known Folder do cơ chế ảo hoá HKCU của MSIX; hãy đổi trong File Explorer → Properties → Location hoặc dùng bản cài EXE.".to_string(),
-            });
+            })
         }
 
         #[cfg(not(feature = "store"))]

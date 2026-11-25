@@ -332,12 +332,12 @@ pub fn set_autostart_registry_native(app_name: &str, exe_path: &Path, enabled: b
     #[cfg(feature = "store")]
     {
         let _ = (app_name, exe_path, enabled);
-        return Err(GreenCError::PreconditionBlocked {
+        Err(GreenCError::PreconditionBlocked {
             operation: "set_autostart_registry_native".to_string(),
             reason:
                 "Bản Microsoft Store dùng desktop:StartupTask và không ghi khoá HKCU\\...\\Run."
                     .to_string(),
-        });
+        })
     }
 
     #[cfg(not(feature = "store"))]

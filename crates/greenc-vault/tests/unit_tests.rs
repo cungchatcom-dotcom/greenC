@@ -213,6 +213,14 @@ fn old_versions_profile_follows_windir_instead_of_hard_coded_c_drive() {
 
 #[test]
 fn test_store_staging_skips_appdata_vault_and_uses_non_appdata_home() {
+    // The default temp dir sits under AppData\\Local\\Temp on Windows, which is deliberately excluded
+    // from the AppData rule, so use the user profile there.
+    #[cfg(windows)]
+    let tmp = tempfile::Builder::new()
+        .prefix(".greenc-test-")
+        .tempdir_in(std::env::var_os("USERPROFILE").unwrap())
+        .unwrap();
+    #[cfg(not(windows))]
     let tmp = tempdir().unwrap();
     let fake_appdata_vault = tmp
         .path()
