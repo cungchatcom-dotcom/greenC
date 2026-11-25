@@ -1007,9 +1007,10 @@ mod tests {
     #[test]
     fn private_job_dir_rejects_appdata_and_cleans_up_on_drop() {
         let tmp = tempdir().unwrap();
-        let fake_appdata = tmp.path().join("AppData").join("Local").join("GreenC");
-        std::fs::create_dir_all(&fake_appdata).unwrap();
-        let err = PrivateBreakawayJobDir::create_in(&fake_appdata).unwrap_err();
+        // Not under %TEMP%: the guard deliberately exempts AppData\Local\Temp. Rejected before any
+        // directory is created.
+        let fake_appdata = Path::new(r"C:\Users\a\AppData\Local\GreenC");
+        let err = PrivateBreakawayJobDir::create_in(fake_appdata).unwrap_err();
         assert!(matches!(err, GreenCError::PreconditionBlocked { .. }));
 
         let ok_base = tmp.path().join("OutsideAppData");
