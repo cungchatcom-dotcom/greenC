@@ -1,7 +1,7 @@
 //! Transactional Mover implementing the 4-phase safe relocation state machine and 1-click Undo (Tasks T039, T046).
 
 use crate::candidate::{CandidateQualificationEngine, RelocationCandidate};
-use crate::verified_copy::{remove_dir_all_safe, verified_copy_tree};
+use crate::verified_copy::{remove_dir_all_safe, verified_copy_tree_manifest, CopyTreeOptions};
 use chrono::Utc;
 use greenc_core::error::{GreenCError, Result};
 use greenc_core::models::{
@@ -18,6 +18,38 @@ use std::path::{Path, PathBuf};
 pub struct MoveOptions {
     pub target_drive: char,
     pub custom_target_path: Option<PathBuf>,
+}
+
+/// `true` when Zalo chat data lives in or below `path`. Plain "Zalo Received Files" does not count.
+pub(crate) fn contains_zalo_chat_data(path: &Path) -> bool {
+    let norm = |p: &Path| p.to_string_lossy().replace('/', "\\").to_lowercase();
+    let root = norm(path);
+    let root = root.trim_end_matches('\\');
+    if greenc_scanner::zalo::discover_zalo_installation(&Default::default())
+        .and_then(|d| d.data_dir)
+        .is_some_and(|d| {
+            let d = norm(&d);
+            d == root || d.starts_with(&format!("{root}\\"))
+        })
+    {
+        return true;
+    }
+    let mut stack = vec![(path.to_path_buf(), 0)];
+    while let Some((dir, depth)) = stack.pop() {
+        for entry in fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let p = entry.path();
+            if !p.is_dir() {
+                continue;
+            }
+            if entry.file_name().eq_ignore_ascii_case("zalo data") {
+                return true;
+            }
+            if depth < 3 && entry.file_type().is_ok_and(|t| t.is_dir()) {
+                stack.push((p, depth + 1));
+            }
+        }
+    }
+    false
 }
 
 /// `true` when `path` is, contains or lies inside a Zalo folder, whatever catalog entry offered it.
@@ -178,7 +210,13 @@ impl TransactionalMover {
             target_path.display()
         );
 
-        let copy_stats = verified_copy_tree(&source_path, &target_path, ctrl, on_progress)?;
+        let (copy_stats, manifest) = verified_copy_tree_manifest(
+            &source_path,
+            &target_path,
+            &CopyTreeOptions::default(),
+            ctrl,
+            on_progress,
+        )?;
 
         // 3. Phase 2: Persist state as `Moving` before touching source filesystem
         let mut record = RelocationRecord {
@@ -224,6 +262,31 @@ impl TransactionalMover {
             record.detail = Some(format!("Lỗi đổi tên thư mục nguồn: {}", rename_err));
             let _ = db.save_relocation(&record);
             return Err(GreenCError::Io(rename_err));
+        }
+
+        // Anything written after it was copied exists only in the source: put it back and stop.
+        if !manifest.matches_tree(&moving_path) {
+            let restored = fs::rename(&moving_path, &source_path);
+            let reason = format!(
+                "Dữ liệu trong {} thay đổi trong lúc chuyển; đã giữ nguyên bản gốc",
+                source_path.display()
+            );
+            match restored {
+                Ok(()) => {
+                    remove_dir_all_safe(&target_path);
+                    record.status = RelocationStatus::Failed;
+                    record.detail = Some(reason.clone());
+                }
+                // Stays `Moving`: crash recovery renames the original back.
+                Err(e) => {
+                    record.detail = Some(format!("{reason} tại {} ({e})", moving_path.display()))
+                }
+            }
+            let _ = db.save_relocation(&record);
+            return Err(GreenCError::PreconditionBlocked {
+                operation: "relocate".to_string(),
+                reason,
+            });
         }
 
         // 4. Phase 3: Create and verify NTFS junction at source pointing to target
@@ -350,7 +413,32 @@ impl TransactionalMover {
                     restore_tmp.display()
                 );
 
-                verified_copy_tree(&target_path, &restore_tmp, ctrl, |_, _| {})?;
+                // Records made before Zalo folders were excluded have no process names.
+                if holds_zalo_data(&source_path) || holds_zalo_data(&target_path) {
+                    let names: Vec<String> = greenc_scanner::zalo::ZALO_PROCESS_NAMES
+                        .iter()
+                        .map(|n| n.to_string())
+                        .collect();
+                    CandidateQualificationEngine::check_process_running(&names, proc_probe)?;
+                }
+
+                let (_, manifest) = verified_copy_tree_manifest(
+                    &target_path,
+                    &restore_tmp,
+                    &CopyTreeOptions::default(),
+                    ctrl,
+                    |_, _| {},
+                )?;
+                if !manifest.matches_tree(&target_path) {
+                    remove_dir_all_safe(&restore_tmp);
+                    return Err(GreenCError::PreconditionBlocked {
+                        operation: "undo_relocation".to_string(),
+                        reason: format!(
+                            "Dữ liệu tại {} thay đổi trong lúc hoàn tác; chưa thay đổi gì. Hãy đóng ứng dụng rồi thử lại.",
+                            target_path.display()
+                        ),
+                    });
+                }
 
                 // Step 2: Delete junction at source
                 if reparse_api.is_reparse_point(&source_path) {
@@ -362,12 +450,19 @@ impl TransactionalMover {
                 // Step 3: Rename restore_tmp to source_path
                 fs::rename(&restore_tmp, &source_path)?;
 
-                // Step 4: Remove files from secondary disk
-                remove_dir_all_safe(&target_path);
+                // Step 4: Remove from the secondary disk only what was copied back
+                manifest.remove_copied(&target_path, &source_path);
 
                 // Step 5: Mark record Undone
                 record.status = RelocationStatus::Undone;
-                record.detail = Some("Hoàn tác di chuyển thành công về vị trí ban đầu".to_string());
+                record.detail = Some(if target_path.exists() {
+                    format!(
+                        "Hoàn tác di chuyển thành công; phần còn lại được giữ tại {}",
+                        target_path.display()
+                    )
+                } else {
+                    "Hoàn tác di chuyển thành công về vị trí ban đầu".to_string()
+                });
                 db.save_relocation(&record)?;
 
                 Ok(record)
@@ -392,15 +487,34 @@ impl TransactionalMover {
                 };
 
                 // Move files back
-                if target_path.exists() {
-                    verified_copy_tree(&target_path, &source_path, ctrl, |_, _| {})?;
-                    remove_dir_all_safe(&target_path);
+                let manifest = if target_path.exists() {
+                    let (_, manifest) = verified_copy_tree_manifest(
+                        &target_path,
+                        &source_path,
+                        &CopyTreeOptions::default(),
+                        ctrl,
+                        |_, _| {},
+                    )?;
+                    Some(manifest)
+                } else {
+                    None
+                };
+
+                // Windows must point at the restored folder before anything is removed.
+                shell_api.set_known_folder(guid, &source_path)?;
+                if let Some(manifest) = manifest {
+                    manifest.remove_copied(&target_path, &source_path);
                 }
 
-                shell_api.set_known_folder(guid, &source_path)?;
-
                 record.status = RelocationStatus::Undone;
-                record.detail = Some("Hoàn tác thư mục Known Folder về vị trí ban đầu".to_string());
+                record.detail = Some(if target_path.exists() {
+                    format!(
+                        "Hoàn tác thư mục Known Folder về vị trí ban đầu; phần còn lại được giữ tại {}",
+                        target_path.display()
+                    )
+                } else {
+                    "Hoàn tác thư mục Known Folder về vị trí ban đầu".to_string()
+                });
                 db.save_relocation(&record)?;
 
                 Ok(record)

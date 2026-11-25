@@ -7,6 +7,14 @@ Ghi thay đổi mới vào mục **Unreleased**. Khi phát hành, `scripts/versi
 
 ## [Unreleased]
 
+## [2.2.2] - 2026-11-25
+
+### Sửa (quan trọng: có thể mất tệp ở các bản trước)
+- Chuyển Documents, Downloads…: tệp lưu trong lúc đang chuyển từng bị xoá cùng thư mục cũ. Nay chỉ xoá đúng những tệp đã chép và không thay đổi; phần còn lại được giữ.
+- Hoàn tác: khi gặp lỗi hoặc bấm huỷ, GreenC từng xoá cả thư mục đích, kể cả tệp có sẵn. Nay không ghi đè tệp có sẵn và chỉ dọn phần do chính nó tạo ra.
+- Chuyển thư mục ứng dụng: nếu dữ liệu thay đổi trong lúc chép thì dừng và giữ nguyên bản gốc; hoàn tác cũng kiểm tra tương tự.
+- Không chuyển thư mục Windows có chứa dữ liệu chat Zalo; hoàn tác thư mục Zalo yêu cầu đóng Zalo.
+
 ## [2.2.1] - 2026-11-25
 
 ### Sửa

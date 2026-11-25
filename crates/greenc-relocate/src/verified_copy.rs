@@ -24,6 +24,103 @@ pub struct CopyStats {
     pub bytes_copied: u64,
 }
 
+/// One file seen by a copy, with the source metadata observed at that moment.
+#[derive(Debug, Clone)]
+struct ManifestFile {
+    rel: PathBuf,
+    len: u64,
+    mtime: Option<SystemTime>,
+    /// Shell metadata such as `desktop.ini`, which Windows re-creates on its own.
+    regenerable: bool,
+}
+
+/// What a copy covered. Only files listed here may later be removed from the source.
+#[derive(Debug, Clone, Default)]
+pub struct CopyManifest {
+    files: Vec<ManifestFile>,
+    dirs: Vec<PathBuf>,
+}
+
+impl CopyManifest {
+    /// `true` when `root` still holds exactly the copied files, unchanged.
+    pub fn matches_tree(&self, root: &Path) -> bool {
+        let known: std::collections::HashMap<&Path, &ManifestFile> =
+            self.files.iter().map(|f| (f.rel.as_path(), f)).collect();
+        let mut seen = 0usize;
+        let mut stack = vec![PathBuf::new()];
+        while let Some(rel_dir) = stack.pop() {
+            let Ok(entries) = fs::read_dir(to_extended_io_path(&root.join(&rel_dir))) else {
+                return false;
+            };
+            for entry in entries {
+                let Ok(entry) = entry else { return false };
+                let rel = rel_dir.join(entry.file_name());
+                let Ok(meta) = fs::symlink_metadata(to_extended_io_path(&root.join(&rel))) else {
+                    return false;
+                };
+                if is_meta_reparse_or_symlink(&meta) {
+                    continue;
+                }
+                if meta.is_dir() {
+                    stack.push(rel);
+                } else if meta.is_file() {
+                    match known.get(rel.as_path()) {
+                        Some(f)
+                            if f.regenerable
+                                || (f.len == meta.len() && f.mtime == meta.modified().ok()) =>
+                        {
+                            seen += 1;
+                        }
+                        _ => return false,
+                    }
+                }
+            }
+        }
+        seen == self.files.len()
+    }
+
+    /// Deletes from `src` only files that are unchanged since the copy and present in `dst`.
+    /// New, modified or undeletable files and all links stay. Returns how many copied files remain.
+    pub fn remove_copied(&self, src: &Path, dst: &Path) -> usize {
+        let mut kept = 0;
+        for f in &self.files {
+            let src_io = to_extended_io_path(&src.join(&f.rel));
+            let Ok(meta) = fs::symlink_metadata(&src_io) else {
+                continue;
+            };
+            let unchanged = meta.is_file()
+                && !is_meta_reparse_or_symlink(&meta)
+                && meta.len() == f.len
+                && meta.modified().ok() == f.mtime;
+            let in_dst = fs::symlink_metadata(to_extended_io_path(&dst.join(&f.rel)))
+                .is_ok_and(|m| m.is_file() && m.len() == f.len);
+            if !(f.regenerable || (unchanged && in_dst)) || fs::remove_file(&src_io).is_err() {
+                kept += 1;
+            }
+        }
+        // `remove_dir` refuses non-empty directories, so anything left inside survives.
+        for rel in self.dirs.iter().rev() {
+            let _ = fs::remove_dir(to_extended_io_path(&src.join(rel)));
+        }
+        let _ = fs::remove_dir(to_extended_io_path(src));
+        kept
+    }
+}
+
+fn is_regenerable_shell_file(name: &std::ffi::OsStr) -> bool {
+    name.eq_ignore_ascii_case("desktop.ini") || name.eq_ignore_ascii_case("thumbs.db")
+}
+
+fn same_content(a: &Path, b: &Path) -> Result<bool> {
+    let hash = |p: &Path| -> Result<(u64, Vec<u8>)> {
+        let mut file = fs::File::open(p)?;
+        let mut hasher = Sha256::new();
+        let len = std::io::copy(&mut file, &mut hasher)?;
+        Ok((len, hasher.finalize().to_vec()))
+    };
+    Ok(fs::metadata(a)?.len() == fs::metadata(b)?.len() && hash(a)? == hash(b)?)
+}
+
 /// Controls strictness of [`verified_copy_tree_with_options`].
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CopyTreeOptions {
@@ -125,8 +222,23 @@ pub fn verified_copy_tree_with_options<F>(
     dst: &Path,
     opts: &CopyTreeOptions,
     ctrl: &TaskControl,
-    mut on_progress: F,
+    on_progress: F,
 ) -> Result<CopyStats>
+where
+    F: FnMut(u64, u64),
+{
+    verified_copy_tree_manifest(src, dst, opts, ctrl, on_progress).map(|(stats, _)| stats)
+}
+
+/// Like [`verified_copy_tree_with_options`], also returning what was copied. Existing files in `dst`
+/// are never overwritten, and a failed copy removes only what this call created.
+pub fn verified_copy_tree_manifest<F>(
+    src: &Path,
+    dst: &Path,
+    opts: &CopyTreeOptions,
+    ctrl: &TaskControl,
+    mut on_progress: F,
+) -> Result<(CopyStats, CopyManifest)>
 where
     F: FnMut(u64, u64),
 {
@@ -160,6 +272,10 @@ where
         return Err(GreenCError::Cancelled);
     }
 
+    let mut manifest = CopyManifest::default();
+    let mut created_files: Vec<PathBuf> = Vec::new();
+    let mut created_dirs: Vec<PathBuf> = Vec::new();
+
     let result = (|| -> Result<CopyStats> {
         let mut stats = CopyStats::default();
         let mut dir_mtimes: Vec<(PathBuf, SystemTime)> = Vec::new();
@@ -167,6 +283,7 @@ where
         let dst_io = to_extended_io_path(dst);
         if fs::symlink_metadata(&dst_io).is_err() {
             fs::create_dir_all(&dst_io)?;
+            created_dirs.push(dst_io.clone());
         }
         if let Ok(mtime) = src_meta.modified() {
             dir_mtimes.push((dst.to_path_buf(), mtime));
@@ -213,13 +330,41 @@ where
                     let dest_io = to_extended_io_path(&dest_path);
                     if fs::symlink_metadata(&dest_io).is_err() {
                         fs::create_dir_all(&dest_io)?;
+                        created_dirs.push(dest_io.clone());
+                    }
+                    if let Ok(rel) = entry_path.strip_prefix(src) {
+                        manifest.dirs.push(rel.to_path_buf());
                     }
                     if let Ok(mtime) = meta.modified() {
                         dir_mtimes.push((dest_path.clone(), mtime));
                     }
                     stack.push((entry_path, dest_path));
                 } else if meta.is_file() {
-                    let (copied_bytes, _) = copy_and_verify_file(&entry_path, &dest_path, ctrl)?;
+                    let dest_io = to_extended_io_path(&dest_path);
+                    let regenerable = is_regenerable_shell_file(&entry.file_name());
+                    let copied_bytes = if fs::symlink_metadata(&dest_io).is_ok() {
+                        if !regenerable && !same_content(&entry_io, &dest_io)? {
+                            return Err(GreenCError::PreconditionBlocked {
+                                operation: "verified_copy".to_string(),
+                                reason: format!(
+                                    "Thư mục đích đã có tệp khác cùng tên, GreenC không ghi đè: {}",
+                                    dest_path.display()
+                                ),
+                            });
+                        }
+                        meta.len()
+                    } else {
+                        created_files.push(dest_io);
+                        copy_and_verify_file(&entry_path, &dest_path, ctrl)?.0
+                    };
+                    if let Ok(rel) = entry_path.strip_prefix(src) {
+                        manifest.files.push(ManifestFile {
+                            rel: rel.to_path_buf(),
+                            len: meta.len(),
+                            mtime: meta.modified().ok(),
+                            regenerable,
+                        });
+                    }
                     stats.files_copied = stats.files_copied.saturating_add(1);
                     stats.bytes_copied = stats.bytes_copied.saturating_add(copied_bytes);
                     on_progress(stats.bytes_copied, stats.files_copied);
@@ -245,14 +390,19 @@ where
     })();
 
     match result {
-        Ok(stats) => Ok(stats),
+        Ok(stats) => Ok((stats, manifest)),
         Err(err) => {
             tracing::warn!(
                 "verified_copy_tree aborted or failed: {}. Cleaning partial target: {}",
                 err,
                 dst.display()
             );
-            remove_dir_all_safe(dst);
+            for file in created_files.iter().rev() {
+                let _ = fs::remove_file(file);
+            }
+            for dir in created_dirs.iter().rev() {
+                let _ = fs::remove_dir(dir);
+            }
             Err(err)
         }
     }
@@ -275,7 +425,7 @@ fn copy_and_verify_file(src: &Path, dst: &Path, ctrl: &TaskControl) -> Result<(u
     let mut total_copied: u64 = 0;
 
     {
-        let mut dst_file = fs::File::create(&dst_io)?;
+        let mut dst_file = fs::File::create_new(&dst_io)?;
         loop {
             if ctrl.is_cancelled() {
                 return Err(GreenCError::Cancelled);

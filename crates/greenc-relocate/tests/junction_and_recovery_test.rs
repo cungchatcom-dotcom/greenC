@@ -950,3 +950,53 @@ fn test_crash_recovery_case_a_zalo_retains_moving_as_original_in_db() {
         b"TARGET-DB"
     );
 }
+
+#[test]
+fn move_stops_and_keeps_the_source_when_data_changes_during_the_copy() {
+    let (tmp, db, vol_api, reparse_api, proc_probe, shell_api) = setup_test_env();
+    let src_dir = tmp.path().join("Telegram Desktop");
+    fs::create_dir_all(&src_dir).unwrap();
+    fs::write(src_dir.join("data.bin"), b"payload").unwrap();
+    let target_dir = tmp.path().join("D_Drive_Target").join("Telegram");
+    let candidate = RelocationCandidate {
+        id: "telegram".to_string(),
+        name: "Telegram Desktop".to_string(),
+        strategy: RelocationStrategyKind::Junction,
+        source_path: src_dir.clone(),
+        default_target_path: target_dir.clone(),
+        size_bytes: 1024,
+        file_count: 1,
+        is_locked: false,
+        locked_processes: vec![],
+        how_description: String::new(),
+        is_advanced: false,
+        is_eligible: true,
+        ineligible_reason: None,
+    };
+    let late = src_dir.join("late").join("new-message.db");
+    let result = TransactionalMover::relocate_junction(
+        &candidate,
+        MoveOptions {
+            target_drive: 'D',
+            custom_target_path: Some(target_dir.clone()),
+        },
+        &db,
+        &vol_api,
+        &reparse_api,
+        &proc_probe,
+        &shell_api,
+        &TaskControl::new(),
+        |_, _| {
+            fs::create_dir_all(late.parent().unwrap()).unwrap();
+            fs::write(&late, b"written during the copy").unwrap();
+        },
+    );
+    // Either the new file was part of the copy, or the move was refused; it is never lost.
+    if result.is_err() {
+        assert_eq!(fs::read(&late).unwrap(), b"written during the copy");
+        assert!(src_dir.join("data.bin").exists());
+        assert!(!target_dir.exists());
+    } else {
+        assert!(target_dir.join("late/new-message.db").exists());
+    }
+}

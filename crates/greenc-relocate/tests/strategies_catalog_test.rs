@@ -242,3 +242,81 @@ fn test_candidate_discovery_with_file_lock_probe() {
     assert!(kf_doc.is_locked);
     assert!(!kf_doc.is_eligible);
 }
+
+/// Files saved while Documents/Downloads is being moved, or already present when it is moved back,
+/// must survive both operations.
+#[test]
+fn known_folder_move_and_undo_never_lose_user_files() {
+    use greenc_relocate::mover::TransactionalMover;
+    let tmp = TempDir::new().unwrap();
+    let db = GreenCDb::open(tmp.path().join("kf.db")).unwrap();
+    let drive = |root: &str, letter: char| greenc_core::models::DriveInfo {
+        root: PathBuf::from(root),
+        drive_letter: letter,
+        label: String::new(),
+        filesystem: "NTFS".to_string(),
+        total_bytes: 500 * 1024 * 1024 * 1024,
+        free_bytes: 200 * 1024 * 1024 * 1024,
+        is_system: letter == 'C',
+        is_eligible: true,
+        ineligible_reason: None,
+    };
+    let vol = MockVolumeApi::new(vec![drive("C:\\", 'C'), drive("D:\\", 'D')]);
+    let shell = MockShellFolderApi::new();
+    let src = tmp.path().join("UserDownloads");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("old.pdf"), b"old").unwrap();
+    shell.register_folder(FOLDERID_DOWNLOADS, src.clone());
+    let target = tmp.path().join("D_Drive/Downloads");
+
+    let late = src.join("saved-during-move.zip");
+    let record = KnownFolderService::relocate_known_folder(
+        "downloads",
+        'D',
+        Some(target.clone()),
+        &db,
+        &shell,
+        &vol,
+        &TaskControl::new(),
+        |_, _| fs::write(&late, b"late").unwrap(),
+    )
+    .unwrap();
+    let places = [&src, &target];
+    let survivors: Vec<_> = places
+        .iter()
+        .filter(|d| d.join("saved-during-move.zip").exists())
+        .collect();
+    assert!(!survivors.is_empty(), "file saved during the move was lost");
+    assert!(target.join("old.pdf").exists());
+
+    // Apps re-created the old folder and the user put files there.
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("mine.txt"), b"precious").unwrap();
+    fs::write(src.join("old.pdf"), b"a different old.pdf").unwrap();
+    let undo = |ctrl: &TaskControl| {
+        TransactionalMover::undo_relocation(
+            record.id.unwrap(),
+            &db,
+            &vol,
+            &greenc_platform::traits::MockReparsePointApi::new(),
+            &shell,
+            &greenc_platform::traits::MockProcessServiceProbe::new(),
+            ctrl,
+        )
+    };
+    assert!(undo(&TaskControl::new()).is_err());
+    assert_eq!(fs::read(src.join("mine.txt")).unwrap(), b"precious");
+    assert_eq!(
+        fs::read(src.join("old.pdf")).unwrap(),
+        b"a different old.pdf"
+    );
+    assert_eq!(fs::read(target.join("old.pdf")).unwrap(), b"old");
+    assert_eq!(shell.get_known_folder(FOLDERID_DOWNLOADS).unwrap(), target);
+
+    // Once the conflict is gone the undo works and keeps the user's own file.
+    fs::remove_file(src.join("old.pdf")).unwrap();
+    undo(&TaskControl::new()).unwrap();
+    assert_eq!(fs::read(src.join("mine.txt")).unwrap(), b"precious");
+    assert_eq!(fs::read(src.join("old.pdf")).unwrap(), b"old");
+    assert_eq!(shell.get_known_folder(FOLDERID_DOWNLOADS).unwrap(), src);
+}
