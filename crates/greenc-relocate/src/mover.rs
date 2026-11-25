@@ -222,10 +222,26 @@ impl TransactionalMover {
         let (copy_stats, manifest) = verified_copy_tree_manifest(
             &source_path,
             &target_path,
-            &CopyTreeOptions::default(),
+            // A copy without the links inside would look complete but break the app.
+            &CopyTreeOptions {
+                fail_on_reparse: true,
+                ..CopyTreeOptions::default()
+            },
             ctrl,
             on_progress,
         )?;
+
+        let uuid_suffix = uuid::Uuid::new_v4().to_string();
+        let source_name = source_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("folder");
+        let source_parent = source_path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("C:\\"));
+        let moving_dir_name = format!("{source_name}.greenc-moving.{uuid_suffix}");
+        let moving_path = source_parent.join(&moving_dir_name);
 
         // 3. Phase 2: Persist state as `Moving` before touching source filesystem
         let mut record = RelocationRecord {
@@ -240,24 +256,12 @@ impl TransactionalMover {
             health_status: RelocationHealthStatus::Healthy,
             process_names: candidate.locked_processes.clone(),
             created_at: Utc::now(),
-            detail: None,
+            // Crash recovery only ever touches the folder named here.
+            detail: Some(format!("Đang chuyển; bản gốc tạm: {moving_dir_name}")),
         };
 
         let rec_id = db.save_relocation(&record)?;
         record.id = Some(rec_id);
-
-        let uuid_suffix = uuid::Uuid::new_v4().to_string();
-        let source_name = source_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("folder");
-        let source_parent = source_path
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| PathBuf::from("C:\\"));
-        // Labelled with the record so crash recovery never picks another move's folder.
-        let moving_dir_name = format!("{source_name}.greenc-moving.r{rec_id}-{uuid_suffix}");
-        let moving_path = source_parent.join(&moving_dir_name);
 
         // Atomic rename of source to .greenc-moving.<uuid>
         if let Err(rename_err) = fs::rename(&source_path, &moving_path) {
@@ -397,7 +401,15 @@ impl TransactionalMover {
         }
 
         // Verify processes are not running
-        CandidateQualificationEngine::check_process_running(&record.process_names, proc_probe)?;
+        // Records only list what was running when the folder was found, so ask the catalog too.
+        let mut processes = record.process_names.clone();
+        processes.extend(
+            crate::catalog::get_app_catalog()
+                .into_iter()
+                .filter(|p| p.app_id == record.app_id)
+                .flat_map(|p| p.process_names),
+        );
+        CandidateQualificationEngine::check_process_running(&processes, proc_probe)?;
 
         // Validate free space on the destination of the undo (the source volume)
         // Enforces `free_bytes >= record.size_bytes + 512 MiB`
@@ -479,9 +491,10 @@ impl TransactionalMover {
                     });
                 }
 
-                // Step 2: Delete junction at source
+                // Step 2: Move the link aside; it is only deleted once the folder is in place
+                let old_link = source_parent.join(format!(".greenc-oldlink.{uuid_suffix}"));
                 if is_link {
-                    if let Err(e) = reparse_api.delete_junction(&source_path) {
+                    if let Err(e) = reparse_api.rename_link(&source_path, &old_link) {
                         remove_dir_all_safe(&restore_tmp);
                         return Err(e);
                     }
@@ -494,13 +507,14 @@ impl TransactionalMover {
                     // The target still holds everything: go back to the linked state.
                     remove_dir_all_safe(&restore_tmp);
                     if is_link {
-                        if let Err(link_err) =
-                            reparse_api.create_junction(&source_path, &target_path)
-                        {
+                        if let Err(link_err) = reparse_api.rename_link(&old_link, &source_path) {
                             tracing::error!("Could not restore the link after undo: {link_err}");
                         }
                     }
                     return Err(GreenCError::Io(e));
+                }
+                if is_link {
+                    let _ = reparse_api.delete_junction(&old_link);
                 }
 
                 // Step 4: Remove from the secondary disk only what was copied back
@@ -539,25 +553,25 @@ impl TransactionalMover {
                     g => g,
                 };
 
+                if !target_path.exists() {
+                    return Err(GreenCError::NotFound {
+                        entity: "RelocatedTarget".to_string(),
+                        id: target_path.display().to_string(),
+                    });
+                }
+
                 // Move files back
-                let manifest = if target_path.exists() {
-                    let (_, manifest) = verified_copy_tree_manifest(
-                        &target_path,
-                        &source_path,
-                        &CopyTreeOptions::default(),
-                        ctrl,
-                        |_, _| {},
-                    )?;
-                    Some(manifest)
-                } else {
-                    None
-                };
+                let (_, manifest) = verified_copy_tree_manifest(
+                    &target_path,
+                    &source_path,
+                    &CopyTreeOptions::default(),
+                    ctrl,
+                    |_, _| {},
+                )?;
 
                 // Windows must point at the restored folder before anything is removed.
                 shell_api.set_known_folder(guid, &source_path)?;
-                if let Some(manifest) = manifest {
-                    manifest.remove_copied(&target_path, &source_path);
-                }
+                manifest.remove_copied(&target_path, &source_path);
 
                 record.status = RelocationStatus::Undone;
                 record.detail = Some(if target_path.exists() {

@@ -129,9 +129,14 @@ impl ReparsePointApi for RecreatedAfterUnlink {
         self.0.get_junction_target(link)
     }
     fn delete_junction(&self, link: &Path) -> Result<()> {
-        self.0.delete_junction(link)?;
-        fs::create_dir_all(link)?;
-        fs::write(link.join("recreated-by-app.txt"), b"new")?;
+        self.0.delete_junction(link)
+    }
+    fn rename_link(&self, from: &Path, to: &Path) -> Result<()> {
+        self.0.rename_link(from, to)?;
+        if !from.to_string_lossy().contains(".greenc-") {
+            fs::create_dir_all(from)?;
+            fs::write(from.join("recreated-by-app.txt"), b"new")?;
+        }
         Ok(())
     }
 }
@@ -374,21 +379,164 @@ fn recovery_keeps_an_original_newer_than_the_target_copy() {
     assert_eq!(fs::read(original).unwrap(), b"newer");
 }
 
+/// Records the temporary folder in the record, as a move does before touching the source.
+fn record_with_folder(e: &Env, folder: &str) -> i64 {
+    let id = e.record(RelocationStatus::Moving);
+    let mut rec = e.reload(id);
+    rec.detail = Some(format!("Đang chuyển: {folder}"));
+    e.db.save_relocation(&rec).unwrap()
+}
+
 #[test]
 fn recovery_only_restores_the_folder_belonging_to_its_own_record() {
     let e = env();
     e.write("D/Slack/a.db", b"a");
-    let id = e.record(RelocationStatus::Moving);
-    e.write(&format!("C/Slack.greenc-moving.r{id}-x/a.db"), b"mine");
-    e.write(
-        &format!("C/Slack.greenc-moving.r{}-x/a.db", id + 1),
-        b"other",
-    );
+    e.write("C/Slack.greenc-moving.aaa/a.db", b"other");
+    e.write("C/Slack.greenc-moving.bbb/a.db", b"mine");
+    record_with_folder(&e, "Slack.greenc-moving.bbb");
 
     RecoveryService::recover_interrupted(&e.db, &e.reparse).unwrap();
 
     assert_eq!(fs::read(e.path("C/Slack/a.db")).unwrap(), b"mine");
-    assert_eq!(leftovers(&e, "greenc-moving").len(), 1);
+    assert_eq!(leftovers(&e, "greenc-moving"), ["Slack.greenc-moving.aaa"]);
+}
+
+#[test]
+fn recovery_never_cleans_another_moves_folder() {
+    let e = env();
+    // An older move left its only original behind; this move already removed its own folder.
+    let only = e.write("C/Slack.greenc-moving.old/a.db", b"previous profile");
+    e.write("D/Slack/a.db", b"fresh");
+    e.reparse
+        .create_junction(&e.path("C/Slack"), &e.path("D/Slack"))
+        .unwrap();
+    record_with_folder(&e, "Slack.greenc-moving.gone");
+
+    RecoveryService::recover_interrupted(&e.db, &e.reparse).unwrap();
+
+    assert_eq!(fs::read(only).unwrap(), b"previous profile");
+}
+
+#[test]
+fn recovery_only_deletes_originals_identical_to_the_target_copy() {
+    let e = env();
+    let original = e.write("C/Slack.greenc-moving.abc/a.db", b"original");
+    fs::File::options()
+        .write(true)
+        .open(&original)
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(3600))
+        .unwrap();
+    e.write("D/Slack/a.db", b"newer on target");
+    e.reparse
+        .create_junction(&e.path("C/Slack"), &e.path("D/Slack"))
+        .unwrap();
+    record_with_folder(&e, "Slack.greenc-moving.abc");
+
+    RecoveryService::recover_interrupted(&e.db, &e.reparse).unwrap();
+
+    assert_eq!(fs::read(original).unwrap(), b"original");
+}
+
+#[test]
+fn recovery_keeps_the_folder_name_while_the_target_is_offline() {
+    let e = env();
+    e.write("C/Slack.greenc-moving.aaa/a.db", b"other");
+    e.write("C/Slack.greenc-moving.bbb/a.db", b"a");
+    e.reparse
+        .create_junction(&e.path("C/Slack"), &e.path("D/Slack"))
+        .unwrap();
+    let id = record_with_folder(&e, "Slack.greenc-moving.bbb");
+    RecoveryService::recover_interrupted(&e.db, &e.reparse).unwrap();
+
+    let copy = e.write("D/Slack/a.db", b"a"); // the drive is back
+    let original = fs::metadata(e.path("C/Slack.greenc-moving.bbb/a.db")).unwrap();
+    fs::File::options()
+        .write(true)
+        .open(copy)
+        .unwrap()
+        .set_modified(original.modified().unwrap())
+        .unwrap();
+    RecoveryService::recover_interrupted(&e.db, &e.reparse).unwrap();
+
+    assert_eq!(e.reload(id).status, RelocationStatus::Done);
+    assert_eq!(leftovers(&e, "greenc-moving"), ["Slack.greenc-moving.aaa"]);
+}
+
+#[test]
+fn recovery_closes_a_move_that_never_touched_the_source() {
+    let e = env();
+    e.write("C/Slack/a.db", b"a");
+    e.write("D/Slack/a.db", b"a");
+    let id = record_with_folder(&e, "Slack.greenc-moving.abc");
+
+    RecoveryService::recover_interrupted(&e.db, &e.reparse).unwrap();
+
+    assert!(e.path("C/Slack/a.db").exists());
+    assert!(
+        !e.path("D/Slack").exists(),
+        "the copy no longer blocks a retry"
+    );
+    assert_eq!(e.reload(id).status, RelocationStatus::Failed);
+}
+
+#[cfg(unix)]
+#[test]
+fn recovery_ignores_a_temporary_folder_that_is_a_link() {
+    let e = env();
+    let own = e.write("Own/a.db", b"a");
+    e.write("D/Slack/a.db", b"a");
+    fs::create_dir_all(e.path("C")).unwrap();
+    std::os::unix::fs::symlink(e.path("Own"), e.path("C/Slack.greenc-moving.abc")).unwrap();
+    e.reparse
+        .create_junction(&e.path("C/Slack"), &e.path("D/Slack"))
+        .unwrap();
+    record_with_folder(&e, "Slack.greenc-moving.abc");
+
+    RecoveryService::recover_interrupted(&e.db, &e.reparse).unwrap();
+
+    assert!(own.exists());
+}
+
+#[test]
+fn repair_can_relink_an_interrupted_move_whose_drive_changed_letter() {
+    let e = env();
+    e.write("E/Slack/a.db", b"a");
+    e.write("C/Slack.greenc-moving.abc/a.db", b"a");
+    e.reparse
+        .create_junction(&e.path("C/Slack"), &e.path("D/Slack"))
+        .unwrap();
+    let id = record_with_folder(&e, "Slack.greenc-moving.abc");
+
+    RecoveryService::repair_junction_target(id, &e.path("E/Slack"), &e.db, &e.reparse).unwrap();
+    RecoveryService::recover_interrupted(&e.db, &e.reparse).unwrap();
+
+    let rec = e.reload(id);
+    assert_eq!(rec.status, RelocationStatus::Done);
+    assert_eq!(rec.target_path, e.path("E/Slack"));
+    assert!(leftovers(&e, "greenc-moving").is_empty());
+}
+
+#[test]
+fn repaired_record_can_be_undone_and_keeps_what_it_said_before() {
+    let e = env();
+    e.write("E/Slack/a.db", b"a");
+    fs::create_dir_all(e.path("C")).unwrap();
+    let id = e.record(RelocationStatus::NeedsReview);
+    let mut rec = e.reload(id);
+    rec.detail = Some("giữ tại Slack.greenc-moving.abc".to_string());
+    e.db.save_relocation(&rec).unwrap();
+
+    RecoveryService::repair_junction_target(id, &e.path("E/Slack"), &e.db, &e.reparse).unwrap();
+
+    let rec = e.reload(id);
+    assert_eq!(rec.status, RelocationStatus::Done);
+    let detail = rec.detail.unwrap();
+    assert!(detail.contains("greenc-moving.abc"), "{detail}");
+    assert!(
+        detail.contains(&e.path("D/Slack").display().to_string()),
+        "{detail}"
+    );
 }
 
 #[test]
@@ -427,15 +575,93 @@ fn move_keeps_both_copies_when_rollback_cannot_put_the_original_back() {
 }
 
 #[test]
-fn move_labels_the_temporary_folder_with_its_record() {
+fn move_records_the_temporary_folder_it_uses() {
     let e = env();
     e.write("C/Slack/a.db", b"a");
 
     assert!(relocate(&e, &BlockingReparse).is_err());
 
-    let id = e.db.list_relocations(None).unwrap()[0].id.unwrap();
-    let prefix = format!("Slack.greenc-moving.r{id}-");
-    assert!(leftovers(&e, "greenc-moving")[0].starts_with(&prefix));
+    let rec = &e.db.list_relocations(None).unwrap()[0];
+    let folder = &leftovers(&e, "greenc-moving")[0];
+    assert!(rec.detail.as_deref().unwrap().contains(folder.as_str()));
+}
+
+#[cfg(unix)]
+#[test]
+fn move_refuses_a_folder_with_links_inside_instead_of_dropping_them() {
+    let e = env();
+    e.write("C/Slack/a.db", b"a");
+    let link = e.path("C/Slack/link");
+    std::os::unix::fs::symlink(e.path("C/Slack/a.db"), &link).unwrap();
+
+    assert!(relocate(&e, &e.reparse).is_err());
+
+    assert!(fs::symlink_metadata(&link).is_ok());
+    assert!(!e.path("D/Slack").exists());
+}
+
+#[test]
+fn undo_is_refused_while_the_app_is_running() {
+    let e = env();
+    e.write("D/Slack/a.db", b"a");
+    fs::create_dir_all(e.path("C")).unwrap();
+    let id = e.record(RelocationStatus::Done);
+    e.reparse
+        .create_junction(&e.path("C/Slack"), &e.path("D/Slack"))
+        .unwrap();
+    let probe = MockProcessServiceProbe::new();
+    let names = greenc_relocate::catalog::get_app_catalog()
+        .into_iter()
+        .find(|p| p.app_id == "slack")
+        .unwrap()
+        .process_names;
+    probe.set_process_running(&names[0], true);
+
+    let res = TransactionalMover::undo_relocation(
+        id,
+        &e.db,
+        &volumes(),
+        &e.reparse,
+        &MockShellFolderApi::new(),
+        &probe,
+        &TaskControl::new(),
+    );
+
+    assert!(res.is_err());
+    assert_eq!(e.link(), Some(e.path("D/Slack")));
+}
+
+#[test]
+fn known_folder_undo_is_refused_while_the_target_is_offline() {
+    let e = env();
+    let id = e.record(RelocationStatus::Done);
+    let mut rec = e.reload(id);
+    rec.app_id = "known_folder_music".to_string();
+    rec.strategy = RelocationStrategyKind::KnownFolder;
+    e.db.save_relocation(&rec).unwrap();
+    let shell = MockShellFolderApi::new();
+    shell.register_folder(greenc_platform::FOLDERID_MUSIC, e.path("D/Slack"));
+
+    let res = TransactionalMover::undo_relocation(
+        id,
+        &e.db,
+        &volumes(),
+        &e.reparse,
+        &shell,
+        &MockProcessServiceProbe::new(),
+        &TaskControl::new(),
+    );
+
+    assert!(res.is_err());
+    assert_eq!(e.reload(id).status, RelocationStatus::Done);
+    assert_eq!(
+        greenc_platform::traits::ShellFolderApi::get_known_folder(
+            &shell,
+            greenc_platform::FOLDERID_MUSIC
+        )
+        .unwrap(),
+        e.path("D/Slack")
+    );
 }
 
 #[test]

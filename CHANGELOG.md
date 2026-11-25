@@ -12,6 +12,8 @@ Ghi thay đổi mới vào mục **Unreleased**. Khi phát hành, `scripts/versi
 - Sửa liên kết: thử tạo liên kết mới trước khi bỏ liên kết cũ; không thay thư mục đang có dữ liệu.
 - Phục hồi sau sự cố: không gỡ liên kết khi ổ đích chưa sẵn sàng hoặc liên kết trỏ nơi khác; chỉ xoá tệp đã có bản tương đương ở nơi còn lại; chỉ dùng thư mục tạm của đúng lần chuyển.
 - Chuyển và hoàn tác: khi không trả được thư mục về chỗ cũ thì giữ cả hai bản thay vì xoá bản ở ổ đích.
+- Không chuyển thư mục có liên kết bên trong (trước đây bản chuyển thiếu các liên kết này).
+- Hoàn tác: yêu cầu đóng ứng dụng; không hoàn tác thư mục Windows khi ổ đích chưa sẵn sàng.
 - Thông báo phục hồi nêu rõ trường hợp cần người dùng xử lý.
 
 ## [2.2.2] - 2026-11-25

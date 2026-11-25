@@ -93,7 +93,12 @@
       }
 
       // Check crash recoveries first
-      interruptedRecoveries = await recoverInterruptedRelocations();
+      try {
+        const recovered = await recoverInterruptedRelocations();
+        if (recovered.length > 0) interruptedRecoveries = recovered;
+      } catch (err) {
+        console.error('Crash recovery failed:', err);
+      }
 
       // Parallel fetch candidates, known folders, and history
       const [candList, kfList, histList] = await Promise.all([
