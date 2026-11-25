@@ -721,9 +721,31 @@ fn test_preflight_allows_junction_and_tool_config_strategies() {
         // Chat data must never go through the generic mover, whatever strategy it is given.
         let zalo = RelocationCandidate {
             id: "Zalo".to_string(),
-            ..candidate
+            ..candidate.clone()
         };
         assert!(TransactionalMover::preflight(&zalo).is_err());
+
+        // Same folders offered by the advanced scan, plus a parent that merely contains one.
+        let tmp = TempDir::new().unwrap();
+        let parent = tmp.path().join("Chat");
+        fs::create_dir_all(parent.join("Zalo Data/message")).unwrap();
+        for source in [
+            PathBuf::from("/Users/a/AppData/Local/ZaloPC"),
+            PathBuf::from("/Users/a/AppData/Roaming/ZaloData"),
+            parent.join("Zalo Data/message"),
+            parent,
+        ] {
+            let advanced = RelocationCandidate {
+                id: "advanced_folder".to_string(),
+                source_path: source.clone(),
+                ..candidate.clone()
+            };
+            assert!(
+                TransactionalMover::preflight(&advanced).is_err(),
+                "{}",
+                source.display()
+            );
+        }
     }
 }
 

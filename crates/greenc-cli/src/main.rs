@@ -23,6 +23,7 @@ async fn main() -> ExitCode {
         return ExitCode::from(code_u8);
     }
 
+    let _busy = greenc_platform::BusyMarker::hold();
     let ctrl = Arc::new(TaskControl::new());
 
     // Install cooperative Ctrl+C handler -> guarantees source data stays intact and exits 130.

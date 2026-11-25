@@ -42,9 +42,9 @@ SolidCompression=yes
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0.18362
-; Matches SINGLE_INSTANCE_MUTEX_NAME in greenc-core & legacy Python GreenC: prompts to close running instance.
-AppMutex=GreenCAppMutex
-CloseApplications=yes
+; No AppMutex directive: it makes silent installs (winget upgrade) abort while GreenC sits in the tray.
+; Restart Manager closes the app instead; PrepareToInstall refuses while GreenC is working on files.
+CloseApplications=force
 RestartApplications=no
 
 [Languages]
@@ -54,6 +54,10 @@ Name: "en"; MessagesFile: "compiler:Default.isl"
 [CustomMessages]
 vi.LaunchApp=Mở {#AppName}
 en.LaunchApp=Launch {#AppName}
+vi.AppBusy=GreenC đang dọn hoặc chuyển dữ liệu. Hãy chờ xong rồi cài lại.
+en.AppBusy=GreenC is cleaning or moving data. Wait for it to finish, then run setup again.
+vi.CloseApp=GreenC đang chạy. Hãy thoát GreenC ở khay hệ thống rồi bấm OK.
+en.CloseApp=GreenC is running. Exit it from the system tray, then click OK.
 vi.DataKept=Dữ liệu của GreenC (Kho dự phòng Vault, quy tắc hạn mức, cài đặt) được giữ nguyên ở %LOCALAPPDATA%\GreenC và trên ổ dữ liệu bạn đã chọn. Các thư mục đã di chuyển bằng NTFS Junction vẫn hoạt động bình thường.
 en.DataKept=GreenC data (Quarantine Vault, quota rules, settings) is preserved in %LOCALAPPDATA%\GreenC and on your chosen data drive. Relocated NTFS Junction folders continue working normally.
 
@@ -77,16 +81,43 @@ Name: "{autodesktop}\{#AppShortName}"; Filename: "{app}\{#AppExe}"; Tasks: deskt
 
 [Run]
 Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchApp}"; Flags: nowait postinstall skipifsilent
+; A silent upgrade closes the tray app, so start it again if it was running.
+Filename: "{app}\{#AppExe}"; Flags: nowait skipifnotsilent; Check: AppWasRunning
 
 [Code]
+var
+  WasRunning: Boolean;
+
+function AppWasRunning(): Boolean;
+begin
+  Result := WasRunning;
+end;
+
 function InitializeSetup(): Boolean;
 begin
   Result := True;
+  WasRunning := CheckForMutexes('GreenCAppMutex');
   if not IsWin64 then
   begin
     MsgBox('GreenC requires 64-bit Windows 10 (1903+) or Windows 11.', mbCriticalError, MB_OK);
     Result := False;
   end;
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  Result := '';
+  // Matches BUSY_MUTEX_NAME in greenc-core.
+  if CheckForMutexes('GreenCBusyMutex') then
+    Result := CustomMessage('AppBusy');
+end;
+
+function InitializeUninstall(): Boolean;
+begin
+  Result := True;
+  // Matches SINGLE_INSTANCE_MUTEX_NAME in greenc-core.
+  while Result and CheckForMutexes('GreenCAppMutex') do
+    Result := SuppressibleMsgBox(CustomMessage('CloseApp'), mbError, MB_OKCANCEL, IDCANCEL) = IDOK;
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);

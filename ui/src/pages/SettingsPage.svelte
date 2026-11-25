@@ -904,7 +904,7 @@
               dir="ltr"
               class="px-2 py-0.5 rounded bg-subtle border border-border text-[11px] text-secondary ltr-isolate"
             >
-              v{settings?.app_version ?? "2.2.0"} · Rust Engine
+              v{settings?.app_version ?? "2.2.1"} · Rust Engine
             </span>
           </div>
           <div class="text-xs text-secondary mt-0.5 flex items-center gap-1.5">

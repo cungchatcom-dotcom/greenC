@@ -32,6 +32,40 @@ pub struct MoveOptions {
     pub custom_target_path: Option<PathBuf>,
 }
 
+/// `true` when `path` is, contains or lies inside a Zalo folder, whatever catalog entry offered it.
+fn holds_zalo_data(path: &Path) -> bool {
+    let is_zalo_name = |name: &std::ffi::OsStr| {
+        name.to_string_lossy()
+            .to_lowercase()
+            .trim_start()
+            .starts_with("zalo")
+    };
+    if path
+        .components()
+        .any(|c| matches!(c, std::path::Component::Normal(n) if is_zalo_name(n)))
+    {
+        return true;
+    }
+    if fs::read_dir(path)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|e| is_zalo_name(&e.file_name()) && e.path().is_dir())
+    {
+        return true;
+    }
+    let data_dir = greenc_scanner::zalo::discover_zalo_installation(&Default::default())
+        .and_then(|d| d.data_dir);
+    data_dir.is_some_and(|d| {
+        let norm = |p: &Path| p.to_string_lossy().replace('/', "\\").to_lowercase();
+        let (d, p) = (norm(&d), norm(path));
+        let within = |child: &str, parent: &str| {
+            child == parent || child.starts_with(&format!("{}\\", parent.trim_end_matches('\\')))
+        };
+        within(&d, &p) || within(&p, &d)
+    })
+}
+
 pub struct TransactionalMover;
 
 impl TransactionalMover {
@@ -49,7 +83,7 @@ impl TransactionalMover {
     /// the vendor's own tooling), plus any candidate that failed qualification.
     pub fn preflight(candidate: &RelocationCandidate) -> Result<()> {
         // Chat data needs `ZaloRelocator` (strict copy, verification, retained original).
-        if candidate.id.eq_ignore_ascii_case("zalo") {
+        if candidate.id.eq_ignore_ascii_case("zalo") || holds_zalo_data(&candidate.source_path) {
             return Err(GreenCError::PreconditionBlocked {
                 operation: "relocate".to_string(),
                 reason: "Dữ liệu Zalo không được chuyển bằng cơ chế chung".to_string(),
