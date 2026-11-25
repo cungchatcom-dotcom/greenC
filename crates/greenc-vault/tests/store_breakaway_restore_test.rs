@@ -20,7 +20,18 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::SystemTime;
-use tempfile::tempdir;
+
+/// The default temp dir sits under AppData\Local\Temp on Windows, which is deliberately excluded from
+/// the AppData rule, so fake AppData trees live in the user profile there.
+fn fake_profile() -> tempfile::TempDir {
+    #[cfg(windows)]
+    return tempfile::Builder::new()
+        .prefix(".greenc-test-")
+        .tempdir_in(std::env::var_os("USERPROFILE").unwrap())
+        .unwrap();
+    #[cfg(not(windows))]
+    tempfile::tempdir().unwrap()
+}
 
 #[derive(Clone)]
 #[cfg_attr(not(feature = "store"), allow(dead_code))]
@@ -263,7 +274,7 @@ fn seed_appdata_vault_archive(
 
 #[test]
 fn store_packaged_restore_uses_breakaway_helper_and_verifies_sha256_while_standard_is_unchanged() {
-    let tmp = tempdir().unwrap();
+    let tmp = fake_profile();
     let payload = b"real-chrome-cache-payload-for-msix-restore-verification";
     let (db, vault_dir, victim, zip_p, man_p, archive_id, expected_sha) =
         seed_appdata_vault_archive(tmp.path(), payload);
@@ -316,7 +327,7 @@ fn store_packaged_restore_uses_breakaway_helper_and_verifies_sha256_while_standa
 #[cfg(feature = "store")]
 #[test]
 fn store_breakaway_refused_still_in_package_keeps_vault_and_guides_to_non_appdata_folder() {
-    let tmp = tempdir().unwrap();
+    let tmp = fake_profile();
     let payload = b"important-appdata-file-must-not-be-lost";
     let (db, vault_dir, victim, zip_p, man_p, archive_id, expected_sha) =
         seed_appdata_vault_archive(tmp.path(), payload);
@@ -394,7 +405,7 @@ fn store_breakaway_refused_still_in_package_keeps_vault_and_guides_to_non_appdat
 #[cfg(feature = "store")]
 #[test]
 fn store_breakaway_spawn_failure_also_keeps_vault_and_guides_user() {
-    let tmp = tempdir().unwrap();
+    let tmp = fake_profile();
     let (db, vault_dir, _victim, zip_p, man_p, archive_id, _) =
         seed_appdata_vault_archive(tmp.path(), b"older-windows-policy-test");
 
@@ -428,7 +439,7 @@ fn store_breakaway_spawn_failure_also_keeps_vault_and_guides_user() {
 #[test]
 fn store_verification_mismatch_or_missing_file_fails_and_keeps_vault_intact() {
     for (verified_exists, fake_sha) in [(false, "a".repeat(64)), (true, "0".repeat(64))] {
-        let tmp = tempdir().unwrap();
+        let tmp = fake_profile();
         let (db, vault_dir, _victim, zip_p, man_p, archive_id, _) =
             seed_appdata_vault_archive(tmp.path(), b"verify-must-catch-mismatch");
 
@@ -476,7 +487,7 @@ fn store_verification_mismatch_or_missing_file_fails_and_keeps_vault_intact() {
 
 #[test]
 fn helper_job_rejects_in_package_and_unsafe_paths_and_verifies_real_sha256() {
-    let tmp = tempdir().unwrap();
+    let tmp = fake_profile();
     let payload_root = tmp.path().join("payload");
     std::fs::create_dir_all(&payload_root).unwrap();
     let staged = payload_root.join("item_0.bin");
@@ -580,7 +591,7 @@ fn helper_job_rejects_in_package_and_unsafe_paths_and_verifies_real_sha256() {
 
 #[test]
 fn map_path_into_restore_dir_preserves_structure_and_blocks_traversal() {
-    let tmp = tempdir().unwrap();
+    let tmp = fake_profile();
     let out_dir = tmp.path().join("GreenC Restored");
     let mapped = map_path_into_restore_dir(
         Path::new(r"C:\Users\Alice\AppData\Local\Google\Chrome\f_000001"),
@@ -618,7 +629,7 @@ fn store_staging_recovery_into_appdata_uses_breakaway_and_preserves_on_refusal()
         StagingMode, StagingRecoveryOptions, StagingState,
     };
 
-    let tmp = tempdir().unwrap();
+    let tmp = fake_profile();
     let appdata_cache_root = tmp
         .path()
         .join("Users")

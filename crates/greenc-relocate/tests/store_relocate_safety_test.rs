@@ -20,7 +20,18 @@ use greenc_storage::db::GreenCDb;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use tempfile::tempdir;
+
+/// The default temp dir sits under AppData\Local\Temp on Windows, which is deliberately excluded from
+/// the AppData rule, so fake AppData trees live in the user profile there.
+fn fake_profile() -> tempfile::TempDir {
+    #[cfg(windows)]
+    return tempfile::Builder::new()
+        .prefix(".greenc-test-")
+        .tempdir_in(std::env::var_os("USERPROFILE").unwrap())
+        .unwrap();
+    #[cfg(not(windows))]
+    tempfile::tempdir().unwrap()
+}
 
 struct DummyVolApi;
 impl Win32VolumeApi for DummyVolApi {
@@ -105,7 +116,7 @@ impl BreakawayHelperClient for MockRelocBreakaway {
 
 #[test]
 fn store_undo_appdata_junction_uses_breakaway_and_preserves_target_on_refusal() {
-    let tmp = tempdir().unwrap();
+    let tmp = fake_profile();
     let db = GreenCDb::open(tmp.path().join("greenc.db")).unwrap();
     let reparse = NativeReparsePointApi;
     let vol = DummyVolApi;
@@ -220,7 +231,7 @@ fn store_undo_appdata_junction_uses_breakaway_and_preserves_target_on_refusal() 
 
 #[test]
 fn store_blocks_known_folder_undo_and_appdata_junction_repair_without_deleting_anything() {
-    let tmp = tempdir().unwrap();
+    let tmp = fake_profile();
     let db = GreenCDb::open(tmp.path().join("greenc.db")).unwrap();
     let reparse = NativeReparsePointApi;
     let vol = DummyVolApi;
