@@ -132,7 +132,7 @@ jobs:
   build-msix:
     name: Build Microsoft Store MSIX Package (x64)
     needs: quality-gate
-    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/feat/microsoft-store' || (startsWith(github.ref, 'refs/tags/v') && vars.STORE_IDENTITY_NAME != '')
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/feat/microsoft-store' || (startsWith(github.ref, 'refs/tags/v') && (vars.STORE_IDENTITY_NAME || vars.PACKAGEIDENTITYNAME) != '')
     runs-on: windows-latest
     steps:
       - name: Checkout Repository
@@ -168,9 +168,9 @@ jobs:
       - name: Package MSIX & MSIXUpload
         shell: pwsh
         env:
-          STORE_IDENTITY_NAME: ${{ vars.STORE_IDENTITY_NAME }}
-          STORE_IDENTITY_PUBLISHER: ${{ vars.STORE_IDENTITY_PUBLISHER }}
-          STORE_PUBLISHER_DISPLAY_NAME: ${{ vars.STORE_PUBLISHER_DISPLAY_NAME }}
+          STORE_IDENTITY_NAME: ${{ vars.STORE_IDENTITY_NAME || vars.PACKAGEIDENTITYNAME }}
+          STORE_IDENTITY_PUBLISHER: ${{ vars.STORE_IDENTITY_PUBLISHER || vars.PACKAGEIDENTITYPUBLISHER }}
+          STORE_PUBLISHER_DISPLAY_NAME: ${{ vars.STORE_PUBLISHER_DISPLAY_NAME || vars.PACKAGEPROPERTIESPUBLISHERDISPLAYNAME }}
         run: |
           $ver = "${{ inputs.msix_version }}"
           if ([string]::IsNullOrWhiteSpace($ver) -and "${{ github.ref }}".StartsWith("refs/tags/v")) {
@@ -188,6 +188,13 @@ jobs:
       - name: Install and smoke-test the package (self-signed, throwaway runner)
         shell: pwsh
         run: packaging/msix/smoke-test.ps1
+
+      - name: Report package identity
+        shell: pwsh
+        run: |
+          $x = [xml](Get-Content dist/msix/stage/AppxManifest.xml -Raw -Encoding UTF8)
+          $hash = (Get-ChildItem dist/msix/*.msixupload | Get-FileHash).Hash
+          Write-Output "::notice::identity name=$($x.Package.Identity.Name) publisher=$($x.Package.Identity.Publisher) version=$($x.Package.Identity.Version) display=$($x.Package.Properties.PublisherDisplayName) upload_sha256=$hash"
 
       - name: Upload MSIX Store Artifacts
         if: always()

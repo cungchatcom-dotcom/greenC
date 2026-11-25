@@ -40,6 +40,8 @@ Tài liệu này hướng dẫn từng bước để chủ dự án đóng gói 
 | `STORE_IDENTITY_PUBLISHER` | `Package/Identity/Publisher` |
 | `STORE_PUBLISHER_DISPLAY_NAME` | `Package/Properties/PublisherDisplayName` |
 
+Workflow cũng nhận các tên `PACKAGEIDENTITYNAME`, `PACKAGEIDENTITYPUBLISHER`, `PACKAGEPROPERTIESPUBLISHERDISPLAYNAME`.
+
 ---
 
 ## 4. Chạy workflow tạo gói `.msix` và `.msixupload`
