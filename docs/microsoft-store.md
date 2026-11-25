@@ -81,20 +81,25 @@ Workflow cũng nhận các tên `PACKAGEIDENTITYNAME`, `PACKAGEIDENTITYPUBLISHER
 Sao chép mẫu tiếng Anh sau vào mục **Notes for certification** khi nộp Partner Center:
 
 ```text
-Justification for runFullTrust restricted capability:
+GreenC is a classic Win32 desktop application (Rust + Tauri/WebView2) packaged as MSIX. It helps users see what fills their drives and safely clean temporary and cache files.
 
-GreenC is a desktop disk-space inspection and cleanup utility built with Rust and Tauri v2 (Win32 desktop application packaged as MSIX).
+Why runFullTrust is needed:
+1. The app's entry point is a Win32 executable (EntryPoint="Windows.FullTrustApplication"). It cannot run inside an AppContainer.
+2. Scanning drives and measuring folder sizes requires standard Win32 file access to locations the user chooses, including cache folders of other desktop apps.
+3. Before cleaning, the app uses the Windows Restart Manager API to detect files in use, so it does not remove files that are open in other programs.
+4. Cleaned cache files can be archived first into a local "Vault" (ZIP) so the user can restore them. Optional NTFS compression (WOF/CompactOS) also needs Win32 APIs.
+5. The app has a system tray icon and an optional startup task. The startup task is declared in the manifest and disabled by default.
 
-1. Why runFullTrust is required:
-   - GreenC is a native Win32 desktop application (Windows.FullTrustApplication) that analyzes user-selected local drives, calculates folder sizes (Space Lens), detects open file locks via Windows Restart Manager before touching any file, and archives user-approved cache/temp files into a local Canary Safety Vault (ZIP64) with one-click restore.
-   - It runs strictly at standard user privilege (Medium IL, no UAC elevation required) and does NOT request unvirtualizedResources, broadFileSystemAccess, or any other restricted capability.
+How it is used:
+- The app runs with standard user rights. It never requests administrator elevation, and it installs no drivers or services.
+- runFullTrust is the only restricted capability declared. broadFileSystemAccess and unvirtualizedResources are not used.
+- Cleaning is started by the user, or by automatic cleaning rules that the user configures. Windows system folders, Program Files, WindowsApps and AppData\Local\Packages are protected.
+- Updates are delivered only through Microsoft Store. The self-updater is compiled out of this edition, and the app does not download or run installers.
+- No account, no ads, no telemetry. The app's own code does not send user data over the network.
 
-2. Microsoft Store compliance & safety in the Store build (--features store):
-   - Self-updating from GitHub Releases is completely disabled; updates are delivered exclusively via Microsoft Store.
-   - Login autostart uses the manifest-declared desktop:StartupTask (Enabled="false" by default) and the Windows.ApplicationModel.StartupTask API; it never writes to HKCU\...\Run.
-   - Store package data is stored in its own isolated virtualized folder and does not read, migrate, or delete data from any standalone EXE install.
-   - System paths (C:\Windows, Program Files, WindowsApps, %LOCALAPPDATA%\Packages) are strictly protected from modification.
-   - All processing is 100% local. The Microsoft Store edition makes zero outbound network requests.
+Helper process: MSIX redirects newly created AppData files into the package's private storage. To restore a file that belongs to another app to its original AppData location, GreenC starts its own command-line helper (greenc-cli.exe from this package, copied to a private temporary folder in the user profile) outside the package context. The helper only performs the restore or undo requested by the user, verifies the result by SHA-256, and exits. The temporary folder is then deleted.
+
+How to test: open the app > Clean up > select a browser cache > Clean up with "Archive to safe Vault" enabled > open Vault > click Restore.
 ```
 
 ---

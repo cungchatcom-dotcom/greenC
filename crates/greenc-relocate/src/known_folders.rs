@@ -1,9 +1,10 @@
 //! Windows Shell Known Folders relocation orchestrator with OneDrive protection (Tasks T040, T043).
 
 use crate::candidate::{CandidateQualificationEngine, CandidateScanner};
-use crate::verified_copy::{remove_dir_all_safe, verified_copy_tree};
+use crate::mover::contains_zalo_chat_data;
+use crate::verified_copy::{verified_copy_tree_manifest, CopyTreeOptions};
 use chrono::Utc;
-use greenc_core::error::Result;
+use greenc_core::error::{GreenCError, Result};
 use greenc_core::models::{
     RelocationHealthStatus, RelocationRecord, RelocationStatus, RelocationStrategyKind,
 };
@@ -106,6 +107,15 @@ impl KnownFolderService {
 
         let current_path = shell_api.get_known_folder(guid)?;
         CandidateQualificationEngine::check_onedrive(&current_path, shell_api)?;
+        if contains_zalo_chat_data(&current_path) {
+            return Err(GreenCError::PreconditionBlocked {
+                operation: "relocate_known_folder".to_string(),
+                reason: format!(
+                    "Thư mục {} chứa dữ liệu chat Zalo nên không chuyển được. Hãy đổi vị trí lưu trữ trong Zalo trước.",
+                    current_path.display()
+                ),
+            });
+        }
 
         let target_path = custom_target_path.unwrap_or_else(|| {
             let folder_name = current_path
@@ -133,7 +143,13 @@ impl KnownFolderService {
         fs::create_dir_all(&target_path)?;
 
         // Copy files with streaming SHA-256 verification
-        let copy_stats = verified_copy_tree(&current_path, &target_path, ctrl, on_progress)?;
+        let (copy_stats, manifest) = verified_copy_tree_manifest(
+            &current_path,
+            &target_path,
+            &CopyTreeOptions::default(),
+            ctrl,
+            on_progress,
+        )?;
 
         // Redirect Windows Shell location
         if let Err(set_err) = shell_api.set_known_folder(guid, &target_path) {
@@ -143,13 +159,15 @@ impl KnownFolderService {
                 target_path.display(),
                 set_err
             );
-            remove_dir_all_safe(&target_path);
+            manifest.remove_copied(&target_path, &current_path);
             return Err(set_err);
         }
 
-        // Clean original files from C: if copy and redirect succeeded
-        remove_dir_all_safe(&current_path);
+        // Remove only what was copied; files added or changed meanwhile stay in the old folder.
+        let kept = manifest.remove_copied(&current_path, &target_path);
+        let leftover = kept > 0 || has_files(&current_path);
 
+        let old_path = current_path.clone();
         let mut record = RelocationRecord {
             id: None,
             app_id: format!("known_folder_{}", folder_id),
@@ -162,7 +180,14 @@ impl KnownFolderService {
             health_status: RelocationHealthStatus::Healthy,
             process_names: Vec::new(),
             created_at: Utc::now(),
-            detail: Some("Chuyển thư mục Windows Shell thành công".to_string()),
+            detail: Some(if leftover {
+                format!(
+                    "Chuyển thư mục Windows Shell thành công; tệp mới hoặc vừa thay đổi được giữ lại tại {}",
+                    old_path.display()
+                )
+            } else {
+                "Chuyển thư mục Windows Shell thành công".to_string()
+            }),
         };
 
         let id = db.save_relocation(&record)?;
@@ -170,4 +195,19 @@ impl KnownFolderService {
 
         Ok(record)
     }
+}
+
+/// `true` when any regular file exists below `dir` (links are not followed).
+fn has_files(dir: &std::path::Path) -> bool {
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for entry in fs::read_dir(&d).into_iter().flatten().flatten() {
+            match entry.file_type() {
+                Ok(t) if t.is_dir() => stack.push(entry.path()),
+                Ok(t) if t.is_file() => return true,
+                _ => {}
+            }
+        }
+    }
+    false
 }
