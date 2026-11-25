@@ -271,7 +271,7 @@ fn test_crash_recovery_direction_a_valid_junction() {
     // Create leftover .greenc-moving folder from crash
     let moving_dir = tmp.path().join("Slack.greenc-moving.abc-123");
     fs::create_dir_all(&moving_dir).unwrap();
-    fs::write(moving_dir.join("slack_old.dat"), b"old").unwrap();
+    fs::write(moving_dir.join("slack.dat"), b"Slack files").unwrap();
 
     // Insert database record stuck in "moving"
     let record = RelocationRecord {
@@ -309,7 +309,7 @@ fn test_crash_recovery_direction_b_missing_junction_rollback() {
     let src_dir = tmp.path().join("CapCut");
     let target_dir = tmp.path().join("D_Drive").join("CapCut");
     fs::create_dir_all(&target_dir).unwrap();
-    fs::write(target_dir.join("draft.bin"), b"partial draft").unwrap();
+    fs::write(target_dir.join("original_draft.bin"), b"original draft").unwrap();
 
     // Crash occurred before junction was created: source was renamed to moving
     let moving_dir = tmp.path().join("CapCut.greenc-moving.xyz-789");

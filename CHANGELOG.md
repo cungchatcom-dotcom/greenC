@@ -7,6 +7,13 @@ Ghi thay đổi mới vào mục **Unreleased**. Khi phát hành, `scripts/versi
 
 ## [Unreleased]
 
+### Sửa
+- Chỉ cho phép một thao tác chuyển, hoàn tác, sửa liên kết hoặc phục hồi chạy cùng lúc, kể cả giữa ứng dụng và dòng lệnh.
+- Sửa liên kết: thử tạo liên kết mới trước khi bỏ liên kết cũ; không thay thư mục đang có dữ liệu.
+- Phục hồi sau sự cố: không gỡ liên kết khi ổ đích chưa sẵn sàng hoặc liên kết trỏ nơi khác; chỉ xoá tệp đã có bản tương đương ở nơi còn lại; chỉ dùng thư mục tạm của đúng lần chuyển.
+- Chuyển và hoàn tác: khi không trả được thư mục về chỗ cũ thì giữ cả hai bản thay vì xoá bản ở ổ đích.
+- Thông báo phục hồi nêu rõ trường hợp cần người dùng xử lý.
+
 ## [2.2.2] - 2026-11-25
 
 ### Sửa (quan trọng: có thể mất tệp ở các bản trước)

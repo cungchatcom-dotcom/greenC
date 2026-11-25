@@ -1,7 +1,7 @@
 //! Crash recovery state machine and live junction health check (Tasks T039, T046, GC-ZALO2).
 
 use crate::candidate::CandidateScanner;
-use crate::verified_copy::{remove_dir_all_safe, to_extended_io_path};
+use crate::verified_copy::{is_meta_reparse_or_symlink, to_extended_io_path};
 use chrono::{Duration as ChronoDuration, Utc};
 use greenc_core::error::{GreenCError, Result};
 use greenc_core::models::{
@@ -9,16 +9,18 @@ use greenc_core::models::{
     ZaloRetainedOriginal, ZaloRetainedStatus,
 };
 use greenc_platform::traits::ReparsePointApi;
+use greenc_platform::RelocationLock;
 use greenc_storage::db::GreenCDb;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 pub struct RecoveryService;
 
 /// Fail-closed check: returns `true` if `path` exists and is a non-empty directory, a file,
 /// a symlink, or cannot be read (permission/I/O error). Returns `false` only when `path` is
 /// verified absent or a readable empty directory.
-fn path_has_content_or_uncertain(path: &Path) -> bool {
+pub(crate) fn path_has_content_or_uncertain(path: &Path) -> bool {
     let io_path = to_extended_io_path(path);
     let meta = match fs::symlink_metadata(&io_path) {
         Ok(m) => m,
@@ -34,12 +36,73 @@ fn path_has_content_or_uncertain(path: &Path) -> bool {
     }
 }
 
+/// Deletes from `redundant` the files that `keep` also holds in an equal or newer version, then
+/// the folders left empty. Returns `true` when nothing remains. Links are never followed.
+fn remove_files_held_elsewhere(redundant: &Path, keep: &Path) -> bool {
+    // Some file systems round timestamps (exFAT: 2 s).
+    const ROUNDING: Duration = Duration::from_secs(2);
+    let io_path = to_extended_io_path(redundant);
+    let Ok(entries) = fs::read_dir(&io_path) else {
+        return fs::symlink_metadata(&io_path).is_err();
+    };
+    for entry in entries.flatten() {
+        let (path, kept) = (
+            redundant.join(entry.file_name()),
+            keep.join(entry.file_name()),
+        );
+        let Ok(meta) = entry.metadata() else { continue };
+        if is_meta_reparse_or_symlink(&meta) {
+            continue;
+        }
+        if meta.is_dir() {
+            remove_files_held_elsewhere(&path, &kept);
+            continue;
+        }
+        let held = fs::symlink_metadata(to_extended_io_path(&kept)).is_ok_and(|k| {
+            let (Ok(old), Ok(new)) = (meta.modified(), k.modified()) else {
+                return false;
+            };
+            let same_version = k.len() == meta.len() && old <= new + ROUNDING;
+            k.is_file() && (same_version || new > old + ROUNDING)
+        });
+        if held {
+            let _ = fs::remove_file(to_extended_io_path(&path));
+        }
+    }
+    fs::remove_dir(&io_path).is_ok()
+}
+
+/// `true` when one path equals or lies inside the other.
+fn paths_overlap(a: &Path, b: &Path) -> bool {
+    let resolve = |p: &Path| {
+        // The link itself must not be followed, only the folders above it.
+        let full = match (
+            p.parent().and_then(|d| fs::canonicalize(d).ok()),
+            p.file_name(),
+        ) {
+            (Some(dir), Some(name)) => dir.join(name),
+            _ => p.to_path_buf(),
+        };
+        full.to_string_lossy()
+            .trim_start_matches(r"\\?\")
+            .split(['\\', '/'])
+            .filter(|s| !s.is_empty())
+            .map(str::to_lowercase)
+            .collect::<Vec<_>>()
+    };
+    let (a, b) = (resolve(a), resolve(b));
+    a.starts_with(&b) || b.starts_with(&a)
+}
+
 impl RecoveryService {
     /// Inspects the database for relocations interrupted in the `Moving` state.
     /// - Case A (valid junction pointing to existing target):
     ///   - For Zalo: preserves any `.greenc-moving.*` as `.greenc-original.<uuid>` in DB
     ///     (`health_verified = false`, never auto-deleted) and marks `Done`.
-    ///   - For other apps: cleans leftover `.greenc-moving.*` and marks `Done`.
+    ///   - For other apps: removes from its `.greenc-moving.*` what the target also holds and
+    ///     marks `Done`.
+    /// - Link to a target that is offline: nothing is touched, retried on the next run.
+    /// - Link to any other place: not GreenC's link, marks `NeedsReview`.
     /// - Case B (junction missing or broken):
     ///   - ONLY restores `.greenc-moving.*` -> `source` and removes partial `target` when
     ///     `source` is absent/empty, `moving_dir` exists, and `rename(moving_dir, source)` succeeds.
@@ -50,6 +113,10 @@ impl RecoveryService {
         db: &GreenCDb,
         reparse: &dyn ReparsePointApi,
     ) -> Result<Vec<RelocationRecord>> {
+        // A `Moving` record may belong to a move still running in the app or the command line.
+        let Some(_lock) = RelocationLock::try_acquire_for_db(db.path())? else {
+            return Ok(Vec::new());
+        };
         let interrupted = db.list_relocations(Some("moving"))?;
         let mut recovered = Vec::new();
 
@@ -73,15 +140,37 @@ impl RecoveryService {
                 .unwrap_or_else(|| PathBuf::from("C:\\"));
 
             // Check if junction exists at source and points to target
-            let has_valid_junction = if reparse.is_reparse_point(&source) {
-                if let Ok(jt) = reparse.get_junction_target(&source) {
-                    greenc_core::models::same_windows_path(&jt, &target)
+            let is_link = reparse.is_reparse_point(&source);
+            let has_valid_junction = is_link
+                && reparse
+                    .get_junction_target(&source)
+                    .is_ok_and(|jt| greenc_core::models::same_windows_path(&jt, &target));
+
+            if is_link && !(has_valid_junction && target.exists()) {
+                // The original may already be partly deleted, so it must not replace the link.
+                if has_valid_junction {
+                    record.health_status = RelocationHealthStatus::TargetOffline;
+                    record.detail = Some(format!(
+                        "Chưa truy cập được {}; GreenC sẽ kiểm tra lại khi ổ đĩa sẵn sàng",
+                        target.display()
+                    ));
                 } else {
-                    false
+                    record.status = RelocationStatus::NeedsReview;
+                    record.health_status = RelocationHealthStatus::LinkBroken;
+                    record.detail = Some(format!(
+                        "Bị gián đoạn, {} đang trỏ tới nơi khác — cần người dùng xử lý. GreenC đã giữ nguyên tất cả",
+                        source.display()
+                    ));
                 }
-            } else {
-                false
-            };
+                db.save_relocation(&record)?;
+                if record.status == RelocationStatus::NeedsReview {
+                    recovered.push(record);
+                }
+                continue;
+            }
+
+            let moving_dir =
+                Self::find_moving_dir(&source_parent, source_name, record.id.unwrap_or(0));
 
             if has_valid_junction && target.exists() {
                 // Case A: Junction was successfully created before the crash.
@@ -139,24 +228,25 @@ impl RecoveryService {
                     db.save_relocation(&record)?;
                     recovered.push(record);
                 } else {
-                    Self::clean_leftover_moving_dirs(&source_parent, source_name);
+                    let kept = moving_dir.filter(|dir| !remove_files_held_elsewhere(dir, &target));
 
                     record.status = RelocationStatus::Done;
                     record.health_status = RelocationHealthStatus::Healthy;
-                    record.detail = Some(
-                        "Khôi phục sau gián đoạn: Liên kết junction hợp lệ, đã dọn tệp tạm"
+                    record.detail = Some(match kept {
+                        None => "Khôi phục sau gián đoạn: Liên kết junction hợp lệ, đã dọn tệp tạm"
                             .to_string(),
-                    );
+                        Some(dir) => format!(
+                            "Khôi phục sau gián đoạn: Liên kết junction hợp lệ; tệp chưa có ở đích được giữ tại {}",
+                            dir.display()
+                        ),
+                    });
                     db.save_relocation(&record)?;
                     recovered.push(record);
                 }
             } else {
                 // Case B: Junction creation did not happen or link is broken.
                 // NEVER delete any directory that contains data or cannot be inspected.
-                if reparse.is_reparse_point(&source) {
-                    let _ = reparse.delete_junction(&source);
-                } else if fs::symlink_metadata(&source).is_ok()
-                    && !path_has_content_or_uncertain(&source)
+                if fs::symlink_metadata(&source).is_ok() && !path_has_content_or_uncertain(&source)
                 {
                     // Source is a verified empty regular directory shell left from an interrupted
                     // junction creation before setting the reparse tag; removing an empty dir
@@ -165,7 +255,6 @@ impl RecoveryService {
                 }
 
                 let source_occupied = fs::symlink_metadata(&source).is_ok();
-                let moving_dir = Self::find_moving_dir(&source_parent, source_name);
                 let target_has_content = path_has_content_or_uncertain(&target);
 
                 if !source_occupied {
@@ -173,11 +262,18 @@ impl RecoveryService {
                         match fs::rename(&mdir, &source) {
                             Ok(()) => {
                                 // Verified clean rollback: original `moving_dir` is now back at `source`.
-                                remove_dir_all_safe(&target);
-                                record.status = RelocationStatus::Failed;
                                 record.health_status = RelocationHealthStatus::LinkBroken;
-                                record.detail =
-                                    Some("Bị gián đoạn, đã khôi phục về vị trí cũ".to_string());
+                                if remove_files_held_elsewhere(&target, &source) {
+                                    record.status = RelocationStatus::Failed;
+                                    record.detail =
+                                        Some("Bị gián đoạn, đã khôi phục về vị trí cũ".to_string());
+                                } else {
+                                    record.status = RelocationStatus::NeedsReview;
+                                    record.detail = Some(format!(
+                                        "Bị gián đoạn, đã khôi phục về vị trí cũ; tệp chỉ có ở đích được giữ tại {} — cần người dùng xử lý",
+                                        target.display()
+                                    ));
+                                }
                                 db.save_relocation(&record)?;
                                 recovered.push(record);
                                 continue;
@@ -291,6 +387,7 @@ impl RecoveryService {
         db: &GreenCDb,
         reparse: &dyn ReparsePointApi,
     ) -> Result<RelocationRecord> {
+        let _lock = RelocationLock::acquire_for_db(db.path())?;
         let records = db.list_relocations(None)?;
         let mut record = records
             .into_iter()
@@ -307,13 +404,59 @@ impl RecoveryService {
             });
         }
 
-        // Delete old junction link if present
-        if reparse.is_reparse_point(&record.source_path) {
-            let _ = reparse.delete_junction(&record.source_path);
+        let refuse = |reason: String| {
+            Err(GreenCError::PreconditionBlocked {
+                operation: "repair_junction_target".to_string(),
+                reason,
+            })
+        };
+        let source = record.source_path.clone();
+        if record.strategy != RelocationStrategyKind::Junction
+            || !matches!(
+                record.status,
+                RelocationStatus::Done | RelocationStatus::NeedsReview
+            )
+        {
+            return refuse(format!(
+                "Bản ghi ở trạng thái '{}' không có liên kết để sửa",
+                record.status.as_str()
+            ));
         }
+        if paths_overlap(&source, new_target_path) {
+            return refuse(format!(
+                "{} và {} nằm trong nhau nên không thể liên kết",
+                source.display(),
+                new_target_path.display()
+            ));
+        }
+        let old_target = if reparse.is_reparse_point(&source) {
+            Some(reparse.get_junction_target(&source)?)
+        } else if path_has_content_or_uncertain(&source) {
+            return refuse(format!(
+                "{} đang là thư mục có dữ liệu; chưa thay đổi gì",
+                source.display()
+            ));
+        } else {
+            None
+        };
 
-        // Re-create junction pointing to new target
-        reparse.create_junction(&record.source_path, new_target_path)?;
+        // Prove that a link to the new target works here before giving up the current one: an old
+        // link whose drive is offline could not be created again.
+        let probe = source.with_file_name(format!(".greenc-relink.{}", uuid::Uuid::new_v4()));
+        Self::create_verified_junction(&probe, new_target_path, reparse)?;
+        reparse.delete_junction(&probe)?;
+
+        if old_target.is_some() {
+            reparse.delete_junction(&source)?;
+        }
+        if let Err(e) = Self::create_verified_junction(&source, new_target_path, reparse) {
+            if let Some(old) = old_target {
+                if let Err(link_err) = reparse.create_junction(&source, &old) {
+                    tracing::error!("Could not restore the previous link: {link_err}");
+                }
+            }
+            return Err(e);
+        }
 
         record.target_path = new_target_path.to_path_buf();
         record.health_status = RelocationHealthStatus::Healthy;
@@ -326,10 +469,55 @@ impl RecoveryService {
         Ok(record)
     }
 
-    fn find_moving_dir(parent: &Path, source_name: &str) -> Option<PathBuf> {
-        Self::find_all_moving_dirs(parent, source_name)
-            .into_iter()
-            .next()
+    /// Creates a junction and checks where it points; leaves nothing behind on failure.
+    fn create_verified_junction(
+        link: &Path,
+        target: &Path,
+        reparse: &dyn ReparsePointApi,
+    ) -> Result<()> {
+        let res = reparse.create_junction(link, target).and_then(|()| {
+            let got = reparse.get_junction_target(link)?;
+            if greenc_core::models::same_windows_path(&got, target) {
+                Ok(())
+            } else {
+                Err(GreenCError::Relocation(format!(
+                    "Junction target mismatch: expected {}, got {}",
+                    target.display(),
+                    got.display()
+                )))
+            }
+        });
+        if res.is_err() {
+            if reparse.is_reparse_point(link) {
+                let _ = reparse.delete_junction(link);
+            } else {
+                let _ = fs::remove_dir(link); // only ever removes an empty folder
+            }
+        }
+        res
+    }
+
+    /// The temporary folder of record `record_id`: the one labelled with it, or, for moves started
+    /// by an older version, the only unlabelled one.
+    fn find_moving_dir(parent: &Path, source_name: &str, record_id: i64) -> Option<PathBuf> {
+        let prefix = format!("{source_name}.greenc-moving.");
+        let own = format!("r{record_id}-");
+        let mut unlabelled = Vec::new();
+        for path in Self::find_all_moving_dirs(parent, source_name) {
+            let name = path.file_name()?.to_string_lossy().to_string();
+            let suffix = name.strip_prefix(&prefix).unwrap_or_default();
+            if suffix.starts_with(&own) {
+                return Some(path);
+            }
+            // UUIDs of older versions are hexadecimal, so they never start with `r`.
+            if !suffix.starts_with('r') {
+                unlabelled.push(path);
+            }
+        }
+        match unlabelled.len() {
+            1 => unlabelled.pop(),
+            _ => None,
+        }
     }
 
     fn find_all_moving_dirs(parent: &Path, source_name: &str) -> Vec<PathBuf> {
@@ -344,11 +532,5 @@ impl RecoveryService {
             }
         }
         out
-    }
-
-    fn clean_leftover_moving_dirs(parent: &Path, source_name: &str) {
-        for path in Self::find_all_moving_dirs(parent, source_name) {
-            remove_dir_all_safe(&path);
-        }
     }
 }
