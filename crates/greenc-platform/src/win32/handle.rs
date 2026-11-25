@@ -144,9 +144,31 @@ pub fn is_file_locked(path: &Path) -> bool {
     }
 }
 
-/// Reads a UTF-8 text file (matches the Unix `O_NOATIME` helper signature).
+/// Reads a UTF-8 text file and puts the previous last-access time back (NTFS may bump it on read),
+/// matching the Unix `O_NOATIME` helper. Without this, scanning a cache index would make every entry
+/// look recently used. Falls back to a plain read when attributes cannot be written.
 pub fn read_to_string_noatime(path: &Path) -> std::io::Result<String> {
-    std::fs::read_to_string(path)
+    use std::io::Read;
+    use std::os::windows::fs::OpenOptionsExt;
+
+    const FILE_READ_DATA: u32 = 0x0001;
+    const FILE_READ_ATTRIBUTES: u32 = 0x0080;
+    const FILE_WRITE_ATTRIBUTES: u32 = 0x0100;
+
+    let opened = std::fs::OpenOptions::new()
+        .access_mode(FILE_READ_DATA | FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES)
+        .share_mode((FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE).0)
+        .open(path);
+    let Ok(mut file) = opened else {
+        return std::fs::read_to_string(path);
+    };
+    let original_access = file.metadata().and_then(|m| m.accessed()).ok();
+    let mut text = String::new();
+    let result = file.read_to_string(&mut text);
+    if let Some(accessed) = original_access {
+        let _ = file.set_times(std::fs::FileTimes::new().set_accessed(accessed));
+    }
+    result.map(|_| text)
 }
 
 /// Concrete production implementation of `FileLockProbe`.
