@@ -93,6 +93,7 @@ pub fn app_home() -> PathBuf {
 
     #[cfg(windows)]
     {
+        let _ = unix_folder;
         if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
             PathBuf::from(local_app_data).join(win_folder)
         } else if let Ok(user_profile) = std::env::var("USERPROFILE") {
