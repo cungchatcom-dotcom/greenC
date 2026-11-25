@@ -17,22 +17,31 @@ use greenc_core::models::{
     RelocationHealthStatus, VaultStatus,
 };
 use greenc_core::task::TaskControl;
+use greenc_platform::app_lifecycle::{AppLifecycleApi, NativeAppLifecycleApi};
 use greenc_platform::dev_tools::{DevTool, DevToolProbe, NativeDevToolProbe};
 use greenc_platform::handle::NativeFileLockProbe;
 use greenc_platform::reparse::NativeReparsePointApi;
 use greenc_platform::traits::{
-    NativeCompactionApi, NativeProcessServiceProbe, NativeShellFolderApi, Win32VolumeApi,
-    WofAlgorithm,
+    NativeCompactionApi, NativeProcessServiceProbe, NativeShellFolderApi, ProcessServiceProbe,
+    Win32VolumeApi, WofAlgorithm,
 };
 use greenc_platform::volume::{list_drives_native, recommend_drive_info, NativeWin32VolumeApi};
 use greenc_relocate::candidate::CandidateScanner;
 use greenc_relocate::compress::InPlaceCompactor;
 use greenc_relocate::mover::{MoveOptions, TransactionalMover};
 use greenc_relocate::recovery::RecoveryService;
+use greenc_relocate::zalo_move::{
+    discover_zalo_safety_copies, estimate_zalo_move_space, format_bytes_vi,
+    is_zalo_auto_move_supported, zalo_auto_move_unsupported_reason, ZaloMoveOptions, ZaloRelocator,
+};
 use greenc_scanner::forecast::predict_fullness;
 use greenc_scanner::orphans::OrphanLeftoverRadar;
 use greenc_scanner::tracker::DiskTracker;
 use greenc_scanner::walker::walk_directory_parallel;
+use greenc_scanner::zalo::{
+    discover_zalo_installation, ZaloConfigStatus, ZaloDiscoveryOptions, ZALO_CACHE_MIN_AGE_SECS,
+    ZALO_OLD_VERSION_MIN_AGE_SECS, ZALO_PROCESS_NAMES,
+};
 use greenc_storage::db::GreenCDb;
 use greenc_storage::settings::{AppSettings, ThemeMode};
 use greenc_vault::archiver::{ArchiveOptions, ArchiverPipeline};
@@ -43,6 +52,9 @@ use greenc_vault::guard::{run_guard_for_quota, GuardRunOptions};
 use greenc_vault::profiles::PresetProfiles;
 use greenc_vault::rollback::{safe_remove_vault_artifact, RestoreOptions, RollbackEngine};
 use greenc_vault::suggest::{suggest_large_build_outputs, SuggestOptions};
+use greenc_vault::zalo_cleanup::{
+    execute_zalo_cleanup, scan_zalo_cleanup_units, ZaloCleanupOptions,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
@@ -133,6 +145,52 @@ pub enum Commands {
     Guard {
         #[command(subcommand)]
         action: GuardCommands,
+    },
+    /// Inspect, safely clean, or automatically move Zalo PC data (`status`, `clean`, `move`).
+    Zalo {
+        #[command(subcommand)]
+        action: ZaloCommands,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ZaloCommands {
+    /// Inspects Zalo PC chat data, allowlisted cache, old versions, safety copies, and relocation readiness.
+    Status,
+    /// Safely cleans allowlisted Zalo caches and obsolete versions (never touches chat data).
+    Clean {
+        /// Preview what would be cleaned without modifying disk.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Moves Zalo chat data (`Zalo Data`) to another fixed NTFS drive and creates a junction.
+    Move {
+        /// Destination drive letter or root (e.g. `D:` or `D:\`).
+        #[arg(long)]
+        to: String,
+        /// Preview the move and run preflight checks without closing Zalo or copying files.
+        #[arg(long)]
+        dry_run: bool,
+        /// Do not automatically reopen Zalo after moving.
+        #[arg(long)]
+        no_reopen: bool,
+    },
+    /// Lists temporarily retained Zalo original copies and any conflict/moving folders.
+    Originals,
+    /// Deletes a temporarily retained Zalo original copy (by `--id` or all eligible `--expired`).
+    PurgeOriginal {
+        /// Retained original ID from `zalo originals` / `zalo status`.
+        #[arg(long)]
+        id: Option<i64>,
+        /// Automatically purge all retained originals that passed health watch and exceeded 24h.
+        #[arg(long)]
+        expired: bool,
+    },
+    /// Restores a temporarily retained Zalo original copy back to its original location safely.
+    RestoreOriginal {
+        /// Retained original ID from `zalo originals` / `zalo status`.
+        #[arg(long)]
+        id: i64,
     },
 }
 
@@ -300,6 +358,8 @@ pub struct PolicySettings {
     pub autostart_enabled: bool,
     pub low_disk_shield_gb: u32,
     pub pause_on_battery_fullscreen: bool,
+    #[serde(default)]
+    pub zalo_auto_clean_enabled: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -966,8 +1026,31 @@ fn execute_inner(cli: Cli, db_path: &Path, ctrl: &Arc<TaskControl>) -> Result<se
                 let reparse_api = NativeReparsePointApi;
                 let shell_api = NativeShellFolderApi;
                 let proc_probe = NativeProcessServiceProbe;
+                let lifecycle = NativeAppLifecycleApi;
 
-                let rec = TransactionalMover::undo_relocation(
+                let existing_zalo = db.list_relocations(None).ok().and_then(|list| {
+                    list.into_iter()
+                        .find(|r| r.id == Some(record_id) && r.app_id == "zalo")
+                });
+
+                let mut shutdown_session = None;
+                if let Some(ref zrec) = existing_zalo {
+                    if lifecycle.has_visible_window(&["ZaloCall.exe"]) {
+                        return Err(GreenCError::PreconditionBlocked {
+                            operation: "relocate undo".to_string(),
+                            reason: greenc_platform::app_lifecycle::ZALO_ACTIVE_CALL_MESSAGE
+                                .to_string(),
+                        });
+                    }
+                    let session = lifecycle.graceful_shutdown(
+                        &[zrec.source_path.clone(), zrec.target_path.clone()],
+                        ZALO_PROCESS_NAMES,
+                        greenc_platform::app_lifecycle::DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT,
+                    )?;
+                    shutdown_session = Some(session);
+                }
+
+                let undo_res = TransactionalMover::undo_relocation(
                     record_id,
                     &db,
                     &vol_api,
@@ -975,7 +1058,15 @@ fn execute_inner(cli: Cli, db_path: &Path, ctrl: &Arc<TaskControl>) -> Result<se
                     &shell_api,
                     &proc_probe,
                     ctrl,
-                )?;
+                );
+
+                if let Some(mut session) = shutdown_session {
+                    if !session.captured_exes.is_empty() {
+                        let _ = lifecycle.restart_app(&mut session);
+                    }
+                }
+
+                let rec = undo_res?;
                 Ok(json!({
                     "record_id": rec.id.unwrap_or(record_id),
                     "status": rec.status.as_str(),
@@ -1295,6 +1386,9 @@ fn execute_inner(cli: Cli, db_path: &Path, ctrl: &Arc<TaskControl>) -> Result<se
                     dry_run,
                     extra_busy_tools: parsed_extra_busy,
                     suggest_roots_on_miss: suggest_roots,
+                    include_zalo_auto_clean: settings
+                        .get_zalo_auto_clean_enabled()
+                        .unwrap_or(false),
                     ..Default::default()
                 };
 
@@ -1450,6 +1544,7 @@ fn execute_inner(cli: Cli, db_path: &Path, ctrl: &Arc<TaskControl>) -> Result<se
                         autostart_enabled: settings.get_autostart_enabled()?,
                         low_disk_shield_gb: settings.get_low_disk_shield_gb()?,
                         pause_on_battery_fullscreen: settings.get_pause_on_battery_fullscreen()?,
+                        zalo_auto_clean_enabled: settings.get_zalo_auto_clean_enabled()?,
                     },
                 };
                 if let Some(parent) = output.parent() {
@@ -1560,6 +1655,11 @@ fn execute_inner(cli: Cli, db_path: &Path, ctrl: &Arc<TaskControl>) -> Result<se
                     if let Some(shield) = cfg.get("low_disk_shield_gb").and_then(|v| v.as_u64()) {
                         let _ = settings.set_low_disk_shield_gb(shield as u32);
                     }
+                    if let Some(zalo_auto) =
+                        cfg.get("zalo_auto_clean_enabled").and_then(|v| v.as_bool())
+                    {
+                        let _ = settings.set_zalo_auto_clean_enabled(zalo_auto);
+                    }
                 }
 
                 Ok(json!({
@@ -1570,7 +1670,382 @@ fn execute_inner(cli: Cli, db_path: &Path, ctrl: &Arc<TaskControl>) -> Result<se
                 }))
             }
         },
+
+        Commands::Zalo { action } => {
+            let lifecycle = NativeAppLifecycleApi;
+            let proc_probe = NativeProcessServiceProbe;
+            let lock_probe = NativeFileLockProbe;
+            let vol_api = NativeWin32VolumeApi;
+            let reparse_api = NativeReparsePointApi;
+            let shell_api = NativeShellFolderApi;
+
+            let running_exe_dirs = lifecycle.find_running_exe_dirs(ZALO_PROCESS_NAMES);
+            let zalo_running = !running_exe_dirs.is_empty()
+                || ZALO_PROCESS_NAMES
+                    .iter()
+                    .any(|p| proc_probe.is_process_running(p));
+
+            let known_relocated_sources: std::collections::HashSet<PathBuf> = db
+                .list_relocations(Some("done"))
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|r| r.app_id == "zalo")
+                .map(|r| r.source_path)
+                .collect();
+
+            let now = SystemTime::now();
+            let disc_opts = ZaloDiscoveryOptions {
+                running_exe_dirs,
+                known_relocated_sources,
+                now,
+                ..Default::default()
+            };
+
+            match action {
+                ZaloCommands::Status => {
+                    let auto_supported = is_zalo_auto_move_supported();
+                    let unsupported_reason = if auto_supported {
+                        None
+                    } else {
+                        Some(zalo_auto_move_unsupported_reason())
+                    };
+                    let disc_opt = discover_zalo_installation(&disc_opts);
+                    let safety_copies = discover_zalo_safety_copies(
+                        disc_opt.as_ref().and_then(|d| d.data_dir.as_deref()),
+                        &db,
+                    );
+                    let retained_original_bytes: u64 = safety_copies
+                        .iter()
+                        .filter(|c| c.exists_on_disk && c.kind == "original")
+                        .map(|c| c.size_bytes)
+                        .fold(0u64, u64::saturating_add);
+                    let copies_human =
+                        format_safety_copies_human(&safety_copies, retained_original_bytes);
+
+                    let Some(disc) = disc_opt else {
+                        let human = if copies_human.is_empty() {
+                            "Không tìm thấy cài đặt Zalo PC.".to_string()
+                        } else {
+                            format!("Không tìm thấy cài đặt Zalo PC.\n{copies_human}")
+                        };
+                        return Ok(json!({
+                            "installed": false,
+                            "auto_move_supported": auto_supported,
+                            "auto_move_unsupported_reason": unsupported_reason,
+                            "retained_original_bytes": retained_original_bytes,
+                            "safety_copies": safety_copies,
+                            "_human": human
+                        }));
+                    };
+                    let scan = scan_zalo_cleanup_units(
+                        &disc,
+                        now,
+                        std::time::Duration::from_secs(ZALO_CACHE_MIN_AGE_SECS),
+                        std::time::Duration::from_secs(ZALO_OLD_VERSION_MIN_AGE_SECS),
+                        &lock_probe,
+                        zalo_running,
+                        ctrl,
+                    );
+                    let config_status = match disc.config_status {
+                        ZaloConfigStatus::Found => "found",
+                        ZaloConfigStatus::Missing => "missing",
+                        ZaloConfigStatus::Invalid { .. } => "invalid",
+                        ZaloConfigStatus::RejectedUnsafe { .. } => "rejected_unsafe",
+                    };
+                    let already_other = disc.data_dir.is_some()
+                        && !disc.data_on_system_drive
+                        && !disc.data_is_known_relocation;
+
+                    let drives = list_drives_native().unwrap_or_default();
+                    let rec_drive = recommend_drive_info(&drives).map(|d| d.drive_letter);
+                    let space_estimate = if disc.data_on_system_drive {
+                        let src_letter = disc
+                            .data_drive
+                            .as_deref()
+                            .and_then(|s| s.chars().next())
+                            .filter(|c| c.is_ascii_alphabetic())
+                            .unwrap_or('C');
+                        rec_drive.and_then(|tgt| {
+                            estimate_zalo_move_space(
+                                src_letter,
+                                tgt,
+                                disc.chat_data_bytes,
+                                &vol_api,
+                            )
+                            .ok()
+                        })
+                    } else {
+                        None
+                    };
+
+                    let mut human = format!(
+                        "Zalo PC | Dữ liệu chat: {} | Bộ đệm: {} (dọn được {}) | Bản cũ: {} ({} bản){}",
+                        format_bytes_vi(disc.chat_data_bytes),
+                        format_bytes_vi(disc.cache_bytes),
+                        format_bytes_vi(scan.cache_reclaimable_bytes),
+                        format_bytes_vi(disc.old_versions_bytes),
+                        disc.old_version_dirs.len(),
+                        scan.locked_notice
+                            .as_deref()
+                            .map(|n| format!(" | {n}"))
+                            .unwrap_or_default()
+                    );
+                    if !copies_human.is_empty() {
+                        human.push('\n');
+                        human.push_str(&copies_human);
+                    }
+                    Ok(json!({
+                        "installed": true,
+                        "config_status": config_status,
+                        "data_dir": disc.data_dir.map(|p| p.to_string_lossy().to_string()),
+                        "data_drive": disc.data_drive,
+                        "data_on_system_drive": disc.data_on_system_drive,
+                        "already_on_other_drive": already_other,
+                        "chat_data_bytes": disc.chat_data_bytes,
+                        "media_bytes": disc.media_bytes,
+                        "message_bytes": disc.message_bytes,
+                        "cache_bytes": disc.cache_bytes,
+                        "cache_reclaimable_bytes": scan.cache_reclaimable_bytes,
+                        "cache_locked_bytes": scan.cache_locked_bytes,
+                        "old_versions_bytes": disc.old_versions_bytes,
+                        "old_versions_count": disc.old_version_dirs.len(),
+                        "total_reclaimable_bytes": scan.total_reclaimable_bytes,
+                        "total_locked_bytes": scan.total_locked_bytes,
+                        "zalo_running": zalo_running,
+                        "locked_notice": scan.locked_notice,
+                        "auto_move_supported": auto_supported,
+                        "auto_move_unsupported_reason": unsupported_reason,
+                        "retained_original_bytes": retained_original_bytes,
+                        "safety_copies": safety_copies,
+                        "space_estimate": space_estimate,
+                        "warnings": disc.warnings,
+                        "_human": human
+                    }))
+                }
+                ZaloCommands::Originals => {
+                    let disc_opt = discover_zalo_installation(&disc_opts);
+                    let safety_copies = discover_zalo_safety_copies(
+                        disc_opt.as_ref().and_then(|d| d.data_dir.as_deref()),
+                        &db,
+                    );
+                    let retained_original_bytes: u64 = safety_copies
+                        .iter()
+                        .filter(|c| c.exists_on_disk && c.kind == "original")
+                        .map(|c| c.size_bytes)
+                        .fold(0u64, u64::saturating_add);
+                    let human = if safety_copies.is_empty() {
+                        "Không có bản gốc giữ tạm hoặc thư mục xung đột Zalo nào.".to_string()
+                    } else {
+                        format_safety_copies_human(&safety_copies, retained_original_bytes)
+                    };
+                    Ok(json!({
+                        "retained_original_bytes": retained_original_bytes,
+                        "safety_copies": safety_copies,
+                        "_human": human
+                    }))
+                }
+                ZaloCommands::PurgeOriginal { id, expired } => {
+                    if expired {
+                        let purged =
+                            ZaloRelocator::purge_expired_originals(&db, &reparse_api, Utc::now())?;
+                        let freed: u64 = purged
+                            .iter()
+                            .map(|r| r.size_bytes)
+                            .fold(0u64, u64::saturating_add);
+                        Ok(json!({
+                            "purged_count": purged.len(),
+                            "freed_bytes": freed,
+                            "purged": purged,
+                            "_human": format!(
+                                "Đã dọn {} bản gốc Zalo giữ tạm quá hạn (giải phóng {}).",
+                                purged.len(),
+                                format_bytes_vi(freed)
+                            )
+                        }))
+                    } else if let Some(rid) = id {
+                        let purged =
+                            ZaloRelocator::purge_retained_original(rid, &db, &reparse_api)?;
+                        Ok(json!({
+                            "purged": purged,
+                            "_human": format!(
+                                "Đã xoá bản gốc Zalo #{} (giải phóng {}).",
+                                rid,
+                                format_bytes_vi(purged.size_bytes)
+                            )
+                        }))
+                    } else {
+                        Err(GreenCError::PreconditionBlocked {
+                            operation: "zalo purge-original".to_string(),
+                            reason: "Cần truyền --id <ID> hoặc --expired".to_string(),
+                        })
+                    }
+                }
+                ZaloCommands::RestoreOriginal { id } => {
+                    let restored = ZaloRelocator::restore_retained_original(
+                        id,
+                        &db,
+                        &reparse_api,
+                        &lock_probe,
+                        &proc_probe,
+                        &lifecycle,
+                        greenc_platform::app_lifecycle::DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT,
+                    )?;
+                    let human = restored
+                        .detail
+                        .clone()
+                        .unwrap_or_else(|| format!("Đã khôi phục bản gốc Zalo #{id} an toàn."));
+                    Ok(json!({
+                        "restored": restored,
+                        "_human": human
+                    }))
+                }
+                ZaloCommands::Clean { dry_run } => {
+                    let Some(disc) = discover_zalo_installation(&disc_opts) else {
+                        return Ok(json!({
+                            "installed": false,
+                            "dry_run": dry_run,
+                            "cleaned_files": 0,
+                            "logical_freed_bytes": 0,
+                            "net_freed_bytes": 0,
+                            "_human": "Không tìm thấy cài đặt Zalo PC."
+                        }));
+                    };
+                    let vault_dir = settings.vault_dir(&default_vault_dir())?;
+                    let retention_days = settings.get_retention_days()?;
+                    let report = execute_zalo_cleanup(
+                        &disc,
+                        &vault_dir,
+                        &db,
+                        &vol_api,
+                        &lock_probe,
+                        zalo_running,
+                        &ZaloCleanupOptions {
+                            dry_run,
+                            mode: RegenerableCacheMode::Vault,
+                            retention_days,
+                            now,
+                            ..Default::default()
+                        },
+                        ctrl,
+                    )?;
+                    let human = format!(
+                        "{}Zalo: {} tệp, giải phóng {} bytes (thực lợi {:+} bytes){}",
+                        if dry_run { "[Dry-run] " } else { "" },
+                        report.cleaned_files,
+                        report.logical_freed_bytes,
+                        report.net_freed_bytes,
+                        report
+                            .locked_notice
+                            .as_deref()
+                            .map(|n| format!(" — {n}"))
+                            .unwrap_or_default()
+                    );
+                    let mut val = serde_json::to_value(&report)?;
+                    if let Some(obj) = val.as_object_mut() {
+                        obj.insert("_human".to_string(), json!(human));
+                    }
+                    Ok(val)
+                }
+                ZaloCommands::Move {
+                    to,
+                    dry_run,
+                    no_reopen,
+                } => {
+                    check_precondition_arg(&to)?;
+                    let trimmed_to = to.trim();
+                    let drive_char = {
+                        let bytes = trimmed_to.as_bytes();
+                        let valid_shape = match bytes.len() {
+                            1 => bytes[0].is_ascii_alphabetic(),
+                            2 => bytes[0].is_ascii_alphabetic() && bytes[1] == b':',
+                            3 => {
+                                bytes[0].is_ascii_alphabetic()
+                                    && bytes[1] == b':'
+                                    && (bytes[2] == b'\\' || bytes[2] == b'/')
+                            }
+                            _ => false,
+                        };
+                        if valid_shape {
+                            Some((bytes[0] as char).to_ascii_uppercase())
+                        } else {
+                            None
+                        }
+                    }
+                    .ok_or_else(|| GreenCError::PreconditionBlocked {
+                        operation: "zalo move".to_string(),
+                        reason: format!("Ổ đĩa đích không hợp lệ: '{to}' (ví dụ: --to D:)"),
+                    })?;
+
+                    let Some(disc) = discover_zalo_installation(&disc_opts) else {
+                        return Err(GreenCError::NotFound {
+                            entity: "ZaloInstallation".to_string(),
+                            id: "zalo".to_string(),
+                        });
+                    };
+
+                    let report = ZaloRelocator::move_zalo_data(
+                        &disc,
+                        &ZaloMoveOptions {
+                            target_drive: drive_char,
+                            dry_run,
+                            reopen_zalo: !no_reopen,
+                            ..Default::default()
+                        },
+                        &db,
+                        &vol_api,
+                        &reparse_api,
+                        &shell_api,
+                        &lock_probe,
+                        &proc_probe,
+                        &lifecycle,
+                        ctrl,
+                        |_| {},
+                    )?;
+                    let human = report.message.clone();
+                    let mut val = serde_json::to_value(&report)?;
+                    if let Some(obj) = val.as_object_mut() {
+                        obj.insert("_human".to_string(), json!(human));
+                    }
+                    Ok(val)
+                }
+            }
+        }
     }
+}
+
+fn format_safety_copies_human(
+    copies: &[greenc_relocate::zalo_move::ZaloSafetyCopyInfo],
+    retained_bytes: u64,
+) -> String {
+    if copies.is_empty() {
+        return String::new();
+    }
+    let mut lines = Vec::new();
+    if retained_bytes > 0 {
+        lines.push(format!(
+            "Bản gốc đang giữ tạm: {}",
+            format_bytes_vi(retained_bytes)
+        ));
+    }
+    for c in copies {
+        let kind_label = match c.kind.as_str() {
+            "original" => "bản gốc giữ tạm",
+            "conflict" => "xung đột",
+            "moving" => "đang chuyển dở",
+            other => other,
+        };
+        let id_str = c.id.map(|i| format!("#{i} ")).unwrap_or_default();
+        let date_str = c
+            .created_at
+            .map(|d| d.format("%Y-%m-%d %H:%M UTC").to_string())
+            .unwrap_or_else(|| "không rõ ngày".to_string());
+        lines.push(format!(
+            "  - {id_str}[{kind_label}] {} ({date_str}): {}",
+            format_bytes_vi(c.size_bytes),
+            c.path.display()
+        ));
+    }
+    lines.join("\n")
 }
 
 fn default_suggest_roots() -> Vec<PathBuf> {

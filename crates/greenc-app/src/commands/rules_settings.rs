@@ -61,6 +61,7 @@ pub struct AppSettingsDto {
     pub store_updates_url: Option<String>,
     pub low_disk_shield_gb: u32,
     pub pause_on_battery_fullscreen: bool,
+    pub zalo_auto_clean_enabled: bool,
     pub translations: HashMap<String, String>,
     pub supported_languages: Vec<LanguageOptionDto>,
 }
@@ -73,6 +74,7 @@ pub struct SettingsPatchDto {
     pub autostart_enabled: Option<bool>,
     pub low_disk_shield_gb: Option<u32>,
     pub pause_on_battery_fullscreen: Option<bool>,
+    pub zalo_auto_clean_enabled: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -185,6 +187,9 @@ fn snapshot_settings_dto(state: &AppState) -> std::result::Result<AppSettingsDto
     let pause_on_battery_fullscreen = settings
         .get_pause_on_battery_fullscreen()
         .map_err(|e| e.to_string())?;
+    let zalo_auto_clean_enabled = settings
+        .get_zalo_auto_clean_enabled()
+        .map_err(|e| e.to_string())?;
 
     let translations = state.catalog.get_translations_for_locale(&language);
 
@@ -206,6 +211,7 @@ fn snapshot_settings_dto(state: &AppState) -> std::result::Result<AppSettingsDto
         store_updates_url: IS_STORE_BUILD.then(|| MICROSOFT_STORE_UPDATES_URL.to_string()),
         low_disk_shield_gb,
         pause_on_battery_fullscreen,
+        zalo_auto_clean_enabled,
         translations,
         supported_languages: build_supported_languages(),
     })
@@ -338,6 +344,12 @@ pub async fn update_settings(
     if let Some(pause) = patch.pause_on_battery_fullscreen {
         settings
             .set_pause_on_battery_fullscreen(pause)
+            .map_err(|e| e.to_string())?;
+    }
+
+    if let Some(zalo_auto) = patch.zalo_auto_clean_enabled {
+        settings
+            .set_zalo_auto_clean_enabled(zalo_auto)
             .map_err(|e| e.to_string())?;
     }
 

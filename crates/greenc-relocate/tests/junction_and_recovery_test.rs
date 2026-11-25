@@ -767,3 +767,157 @@ fn test_preflight_blocks_windowsapps_and_store_appdata_junctions() {
         assert!(res.is_ok());
     }
 }
+
+#[test]
+fn test_crash_recovery_case_b_non_empty_source_and_moving_keeps_all_copies() {
+    let (tmp, db, _vol_api, reparse_api, _proc_probe, _shell_api) = setup_test_env();
+
+    let src_dir = tmp.path().join("Zalo Data");
+    let moving_dir = tmp.path().join("Zalo Data.greenc-moving.crash-999");
+    let target_dir = tmp.path().join("D_Drive").join("zalo");
+
+    fs::create_dir_all(src_dir.join("message")).unwrap();
+    fs::write(
+        src_dir.join("message/new_msg.db"),
+        b"NEW-MESSAGES-IN-SOURCE",
+    )
+    .unwrap();
+    fs::create_dir_all(moving_dir.join("message")).unwrap();
+    fs::write(moving_dir.join("message/old_msg.db"), b"ORIGINAL-MESSAGES").unwrap();
+    fs::create_dir_all(target_dir.join("message")).unwrap();
+    fs::write(target_dir.join("message/target_msg.db"), b"COPIED-MESSAGES").unwrap();
+
+    db.save_relocation(&RelocationRecord {
+        id: None,
+        app_id: "zalo".to_string(),
+        app_name: "Zalo PC".to_string(),
+        strategy: RelocationStrategyKind::Junction,
+        source_path: src_dir.clone(),
+        target_path: target_dir.clone(),
+        size_bytes: 1024,
+        status: RelocationStatus::Moving,
+        health_status: RelocationHealthStatus::Healthy,
+        process_names: vec!["Zalo.exe".to_string()],
+        created_at: chrono::Utc::now(),
+        detail: None,
+    })
+    .unwrap();
+
+    let recovered = RecoveryService::recover_interrupted(&db, &reparse_api).unwrap();
+    assert_eq!(recovered.len(), 1);
+    assert_eq!(recovered[0].status, RelocationStatus::NeedsReview);
+    let detail = recovered[0].detail.as_deref().unwrap_or("");
+    assert!(
+        detail.contains("cần người dùng xử lý"),
+        "detail must explain user action needed: {detail}"
+    );
+
+    // ALL THREE copies MUST be preserved untouched!
+    assert_eq!(
+        fs::read(src_dir.join("message/new_msg.db")).unwrap(),
+        b"NEW-MESSAGES-IN-SOURCE"
+    );
+    assert_eq!(
+        fs::read(moving_dir.join("message/old_msg.db")).unwrap(),
+        b"ORIGINAL-MESSAGES"
+    );
+    assert_eq!(
+        fs::read(target_dir.join("message/target_msg.db")).unwrap(),
+        b"COPIED-MESSAGES"
+    );
+}
+
+#[test]
+fn test_crash_recovery_case_b_missing_moving_dir_keeps_non_empty_target() {
+    let (tmp, db, _vol_api, reparse_api, _proc_probe, _shell_api) = setup_test_env();
+
+    let src_dir = tmp.path().join("AppData");
+    let target_dir = tmp.path().join("D_Drive").join("AppData");
+    fs::create_dir_all(&target_dir).unwrap();
+    fs::write(target_dir.join("only_copy.db"), b"ONLY-SURVIVING-COPY").unwrap();
+
+    db.save_relocation(&RelocationRecord {
+        id: None,
+        app_id: "telegram".to_string(),
+        app_name: "Telegram".to_string(),
+        strategy: RelocationStrategyKind::Junction,
+        source_path: src_dir.clone(),
+        target_path: target_dir.clone(),
+        size_bytes: 512,
+        status: RelocationStatus::Moving,
+        health_status: RelocationHealthStatus::Healthy,
+        process_names: vec![],
+        created_at: chrono::Utc::now(),
+        detail: None,
+    })
+    .unwrap();
+
+    let recovered = RecoveryService::recover_interrupted(&db, &reparse_api).unwrap();
+    assert_eq!(recovered.len(), 1);
+    assert_eq!(recovered[0].status, RelocationStatus::NeedsReview);
+    // Target is the only surviving copy -> MUST NOT be deleted!
+    assert_eq!(
+        fs::read(target_dir.join("only_copy.db")).unwrap(),
+        b"ONLY-SURVIVING-COPY"
+    );
+}
+
+#[test]
+fn test_crash_recovery_case_a_zalo_retains_moving_as_original_in_db() {
+    let (tmp, db, _vol_api, reparse_api, _proc_probe, _shell_api) = setup_test_env();
+
+    let src_dir = tmp.path().join("Zalo Data");
+    let target_dir = tmp.path().join("D_Drive").join("zalo");
+    let moving_dir = tmp.path().join("Zalo Data.greenc-moving.watch-crash-1");
+
+    fs::create_dir_all(target_dir.join("message")).unwrap();
+    fs::write(target_dir.join("message/zalo.db"), b"TARGET-DB").unwrap();
+    fs::create_dir_all(moving_dir.join("message")).unwrap();
+    fs::write(moving_dir.join("message/zalo.db"), b"ORIG-DB").unwrap();
+    reparse_api.create_junction(&src_dir, &target_dir).unwrap();
+
+    db.save_relocation(&RelocationRecord {
+        id: None,
+        app_id: "zalo".to_string(),
+        app_name: "Zalo PC".to_string(),
+        strategy: RelocationStrategyKind::Junction,
+        source_path: src_dir.clone(),
+        target_path: target_dir.clone(),
+        size_bytes: 9,
+        status: RelocationStatus::Moving,
+        health_status: RelocationHealthStatus::Healthy,
+        process_names: vec!["Zalo.exe".to_string()],
+        created_at: chrono::Utc::now(),
+        detail: None,
+    })
+    .unwrap();
+
+    let recovered = RecoveryService::recover_interrupted(&db, &reparse_api).unwrap();
+    assert_eq!(recovered.len(), 1);
+    assert_eq!(recovered[0].status, RelocationStatus::Done);
+    assert!(
+        !moving_dir.exists(),
+        "moving_dir should be renamed to .greenc-original"
+    );
+
+    let retained = db.list_zalo_retained_originals(Some("retained")).unwrap();
+    assert_eq!(retained.len(), 1);
+    assert!(
+        !retained[0].health_verified,
+        "crash-recovered original must not auto-purge"
+    );
+    assert!(retained[0]
+        .retained_path
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .starts_with("Zalo Data.greenc-original."));
+    assert_eq!(
+        fs::read(retained[0].retained_path.join("message/zalo.db")).unwrap(),
+        b"ORIG-DB"
+    );
+    assert_eq!(
+        fs::read(target_dir.join("message/zalo.db")).unwrap(),
+        b"TARGET-DB"
+    );
+}

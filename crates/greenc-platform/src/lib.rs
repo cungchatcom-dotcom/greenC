@@ -8,6 +8,7 @@ mod unix;
 #[cfg(windows)]
 mod win32;
 
+pub mod app_lifecycle;
 pub mod dev_tools;
 pub mod traits;
 pub mod unix_parsers;
@@ -26,6 +27,11 @@ pub use unix_parsers::{
     detect_atime_reliability, detect_atime_reliability_from_proc_mounts, AtimeReliability,
 };
 
+pub use app_lifecycle::{
+    AppLifecycleApi, AppShutdownSession, MockAppLifecycleApi, MockShutdownBehavior,
+    NativeAppLifecycleApi, DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT, ZALO_ACTIVE_CALL_MESSAGE,
+    ZALO_MANUAL_QUIT_MESSAGE,
+};
 pub use dev_tools::{
     detect_busy_dev_tools, detect_busy_dev_tools_native, parse_ps_output, BusyToolsStatus, DevTool,
     DevToolProbe, MockDevToolProbe, NativeDevToolProbe, ProcessSnapshot,

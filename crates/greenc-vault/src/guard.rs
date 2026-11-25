@@ -223,6 +223,9 @@ pub struct GuardRunOptions {
     /// Optional override for the `<HOME>` directory used when resolving `<HOME>/.local/share/greenc/staging`
     /// (intended for deterministic tests without mutating process-global `HOME`).
     pub staging_home_override: Option<PathBuf>,
+    /// Opt-in toggle for scheduled automatic Zalo cache & old-version cleanup during guard runs
+    /// (OFF by default per safety policy; never moves Zalo chat data).
+    pub include_zalo_auto_clean: bool,
 }
 
 impl Default for GuardRunOptions {
@@ -241,6 +244,7 @@ impl Default for GuardRunOptions {
             ignore_cooldown: false,
             staging_dir: None,
             staging_home_override: None,
+            include_zalo_auto_clean: false,
         }
     }
 }
@@ -455,7 +459,10 @@ pub fn run_guard_for_quota(
 }
 
 fn unit_priority(unit: &CleanUnit) -> u8 {
-    if unit.kind == CleanUnitKind::RegenerableDevCache {
+    if matches!(
+        unit.kind,
+        CleanUnitKind::RegenerableDevCache | CleanUnitKind::RegenerableAppCache
+    ) {
         return 0;
     }
     match unit.profile_id.as_str() {
@@ -637,7 +644,12 @@ fn verify_unit_toctou(
     }
 
     // 4. Re-verify age right before delete.
-    if unit.min_age > Duration::ZERO {
+    //    For partial-directory cache units (`zalo_cache_dir:*`), another sibling file in the same
+    //    cache folder (e.g. a locked active file) may bump the directory's own mtime; step 5 below
+    //    still re-verifies every constituent file in `unit.files` against `unit.min_age`.
+    let is_partial_cache_dir = unit.kind == CleanUnitKind::RegenerableAppCache
+        && unit.unit_label.starts_with("zalo_cache_dir");
+    if unit.min_age > Duration::ZERO && !is_partial_cache_dir {
         if let Some(latest) = compute_unit_latest_used(&unit.root_path, now) {
             let age = now.duration_since(latest).unwrap_or(Duration::ZERO);
             if age < unit.min_age {
@@ -2082,8 +2094,11 @@ pub fn enforce_drive_quota_units(
     }
 
     // 4. Filter units strictly to this drive & non-busy tools & non-forbidden paths.
+    //    Zalo units (`zalo_*`) are only included in guard runs when explicitly opted in via
+    //    `opts.include_zalo_auto_clean` (disabled by default).
     let mut eligible: Vec<CleanUnit> = units
         .into_iter()
+        .filter(|u| opts.include_zalo_auto_clean || !u.unit_label.starts_with("zalo_"))
         .filter(|u| is_same_volume(&u.root_path, drive_root))
         .filter(|u| match u.dev_tool {
             Some(tool) => !busy_status.is_tool_busy(tool),
@@ -2183,10 +2198,11 @@ pub fn enforce_drive_quota_units(
 
         match verify_unit_toctou(&unit, drive_root, opts.now_sys, lock_probe, &mut busy_cache) {
             ToctouVerdict::Ok => {
-                let is_dir_unit = std::fs::symlink_metadata(&unit.root_path)
-                    .is_ok_and(|m| !m.file_type().is_symlink() && m.is_dir());
+                let is_dev_dir_unit = unit.kind == CleanUnitKind::RegenerableDevCache
+                    && std::fs::symlink_metadata(&unit.root_path)
+                        .is_ok_and(|m| !m.file_type().is_symlink() && m.is_dir());
 
-                if is_dir_unit {
+                if is_dev_dir_unit {
                     // Fresh busy-tool probe right before atomic rename!
                     if let Some(tool) = unit.dev_tool {
                         let fresh = busy_cache.get_fresh();
@@ -2248,6 +2264,39 @@ pub fn enforce_drive_quota_units(
                                 outcome.reasons.push(why);
                             }
                         }
+                    }
+                } else if unit.kind == CleanUnitKind::RegenerableAppCache {
+                    let expected_dev = unit.root_identity.map(|id| id.volume_serial);
+                    let mut files_del = 0u64;
+                    let mut bytes_del = 0u64;
+                    for cand in &unit.files {
+                        if let Ok((fc, bc)) = safe_remove_path_no_follow(&cand.path, expected_dev) {
+                            files_del = files_del.saturating_add(fc);
+                            bytes_del = bytes_del.saturating_add(bc);
+                        }
+                    }
+                    if files_del > 0 {
+                        let remove_root = unit.unit_label == "zalo_old_version";
+                        crate::zalo_cleanup::prune_empty_dirs_no_follow(
+                            &unit.root_path,
+                            remove_root,
+                        );
+                        outcome.cleaned_units += 1;
+                        outcome.cleaned_files = outcome.cleaned_files.saturating_add(files_del);
+                        outcome.logical_bytes = outcome.logical_bytes.saturating_add(bytes_del);
+                        outcome.direct_deleted_bytes =
+                            outcome.direct_deleted_bytes.saturating_add(bytes_del);
+                        let _ = db.record_direct_delete(&DirectDeleteRecord {
+                            id: None,
+                            timestamp: opts.now_utc,
+                            drive_root: quota.drive_root.clone(),
+                            profile_id: unit.profile_id.clone(),
+                            unit_kind: unit.unit_label.clone(),
+                            unit_path: unit.root_path.clone(),
+                            file_count: files_del,
+                            logical_bytes: bytes_del,
+                            reason: "direct regenerable app cache/version cleanup".to_string(),
+                        });
                     }
                 } else {
                     let expected_dev = unit.root_identity.map(|id| id.volume_serial);
@@ -2318,10 +2367,11 @@ pub fn enforce_drive_quota_units(
             }
             match verify_unit_toctou(&unit, drive_root, opts.now_sys, lock_probe, &mut busy_cache) {
                 ToctouVerdict::Ok => {
-                    let is_dir_unit = std::fs::symlink_metadata(&unit.root_path)
-                        .is_ok_and(|m| !m.file_type().is_symlink() && m.is_dir());
+                    let is_dev_dir_unit = unit.kind == CleanUnitKind::RegenerableDevCache
+                        && std::fs::symlink_metadata(&unit.root_path)
+                            .is_ok_and(|m| !m.file_type().is_symlink() && m.is_dir());
 
-                    if is_dir_unit {
+                    if is_dev_dir_unit {
                         // Fresh busy-tool probe immediately before atomic rename!
                         if let Some(tool) = unit.dev_tool {
                             let fresh = busy_cache.get_fresh();
@@ -2512,12 +2562,13 @@ pub fn enforce_drive_quota_units(
                         }
                     }
 
-                    let is_multi_file = unit.files.len() > 1;
+                    let is_ordered_dev_multi_file =
+                        unit.kind == CleanUnitKind::RegenerableDevCache && unit.files.len() > 1;
                     let mut unit_deleted_any = false;
 
                     for (idx, cand) in unit.files.iter().enumerate() {
                         let Some(item) = manifest_by_path.get(&cand.path) else {
-                            if is_multi_file && idx == 0 {
+                            if is_ordered_dev_multi_file && idx == 0 {
                                 break;
                             }
                             continue;
@@ -2531,13 +2582,20 @@ pub fn enforce_drive_quota_units(
                                 removed_files_count.saturating_add(res.files_deleted);
                             removed_logical_bytes =
                                 removed_logical_bytes.saturating_add(res.bytes_freed);
-                        } else if is_multi_file && idx == 0 {
+                        } else if is_ordered_dev_multi_file && idx == 0 {
                             // Never unlink content-v2 blobs if index-v5 was skipped/failed!
                             break;
                         }
                     }
 
                     if unit_deleted_any {
+                        if unit.kind == CleanUnitKind::RegenerableAppCache {
+                            let remove_root = unit.unit_label == "zalo_old_version";
+                            crate::zalo_cleanup::prune_empty_dirs_no_follow(
+                                &unit.root_path,
+                                remove_root,
+                            );
+                        }
                         removed_units_count += 1;
                     }
                 }

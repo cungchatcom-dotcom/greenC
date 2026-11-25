@@ -129,14 +129,45 @@ fn get_app_catalog_windows() -> Vec<AppCatalogProfile> {
         how_description: "Liên kết cấu hình và chỉ mục mã nguồn JetBrains".to_string(),
     });
 
-    // 6. Guided Apps: Zalo
+    // 6. Zalo PC: automatic NTFS Junction move for `<ROOT>\Zalo Data` on system drive
+    //    (standard desktop builds); falls back to Guided when config is missing or on Store builds.
+    let zalo_opts = greenc_scanner::zalo::ZaloDiscoveryOptions::default();
+    let zalo_disc = greenc_scanner::zalo::discover_zalo_installation(&zalo_opts);
+    let (zalo_strategy, zalo_source, zalo_how) = match zalo_disc {
+        Some(ref d)
+            if d.data_dir.is_some()
+                && d.data_on_system_drive
+                && !d.data_is_known_relocation
+                && !greenc_core::config::IS_STORE_BUILD =>
+        {
+            (
+                RelocationStrategyKind::Junction,
+                d.data_dir.clone().unwrap_or_default(),
+                "Đóng Zalo an toàn, chuyển dữ liệu chat sang ổ khác bằng liên kết thư mục, rồi mở lại Zalo".to_string(),
+            )
+        }
+        Some(ref d) if d.data_dir.is_some() => (
+            RelocationStrategyKind::Guided,
+            d.data_dir.clone().unwrap_or_default(),
+            "Hướng dẫn đổi thư mục lưu trữ file trong Cài đặt Zalo".to_string(),
+        ),
+        _ => (
+            RelocationStrategyKind::Guided,
+            local_appdata.join("Programs").join("Zalo"),
+            "Hướng dẫn đổi thư mục lưu trữ file trong Cài đặt Zalo".to_string(),
+        ),
+    };
     catalog.push(AppCatalogProfile {
         app_id: "zalo".to_string(),
         name: "Zalo PC".to_string(),
-        strategy: RelocationStrategyKind::Guided,
-        source_path: local_appdata.join("Programs").join("Zalo"),
-        process_names: vec!["zalo.exe".to_string()],
-        how_description: "Hướng dẫn đổi thư mục lưu trữ file trong Cài đặt Zalo".to_string(),
+        strategy: zalo_strategy,
+        source_path: zalo_source,
+        process_names: vec![
+            "zalo.exe".to_string(),
+            "zalocall.exe".to_string(),
+            "zalocap.exe".to_string(),
+        ],
+        how_description: zalo_how,
     });
 
     // 7. Guided Apps: WSL2

@@ -21,6 +21,7 @@ pub mod profiles;
 pub mod rollback;
 pub mod sniff;
 pub mod suggest;
+pub mod zalo_cleanup;
 
 pub use archiver::{ArchiveOptions, ArchivePhase, ArchiveProgress, ArchiverPipeline};
 pub use cache_units::{
@@ -56,4 +57,8 @@ pub use suggest::{
     measure_vault_summary, suggest_large_build_outputs, suggest_large_build_outputs_with_busy,
     BuildOutputSuggestion, SuggestOptions, SuggestReport, VaultSpaceSummary,
     DEFAULT_SUGGEST_MAX_DEPTH, DEFAULT_SUGGEST_MAX_DURATION_SECS, DEFAULT_SUGGEST_MIN_STALE_DAYS,
+};
+pub use zalo_cleanup::{
+    execute_zalo_cleanup, format_zalo_locked_notice, prune_empty_dirs_no_follow,
+    scan_zalo_cleanup_units, ZaloCleanupOptions, ZaloCleanupReport, ZaloCleanupScan,
 };

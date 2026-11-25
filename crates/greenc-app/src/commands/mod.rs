@@ -7,5 +7,6 @@ pub mod relocate;
 pub mod rules_settings;
 pub mod updater;
 pub mod vault;
+pub mod zalo;
 
 pub use cleanup::control_task;

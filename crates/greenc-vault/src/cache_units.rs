@@ -40,6 +40,10 @@ pub enum CleanUnitKind {
     /// Verified atomic regenerable developer cache unit (Item 2).
     /// Eligible for `direct` deletion ONLY when the drive quota sets `regenerable_cache_mode = direct`.
     RegenerableDevCache,
+    /// Verified regenerable desktop-app cache or obsolete reinstallable app version (e.g. Zalo
+    /// allowlisted caches and obsolete `Zalo-x.y.z` installations).
+    /// Goes through Vault in `vault` mode; eligible for `direct` deletion in `direct` mode.
+    RegenerableAppCache,
     /// Standard cleanup file (browser_cache, windows_temp, chat_media, crash_dumps, app_logs, old_versions).
     /// MUST ALWAYS go through the Canary Safety Vault.
     StandardFile,
@@ -73,11 +77,20 @@ pub struct CleanUnit {
 }
 
 impl CleanUnit {
-    /// Returns `true` ONLY for verified atomic regenerable developer cache units from Item 2.
+    /// Returns `true` ONLY for verified regenerable cache/reinstallable units eligible for
+    /// `direct` deletion when `regenerable_cache_mode = direct`.
     pub fn is_direct_delete_eligible(&self) -> bool {
-        self.kind == CleanUnitKind::RegenerableDevCache
-            && self.profile_id == "package_managers"
-            && self.dev_tool.is_some()
+        match self.kind {
+            CleanUnitKind::RegenerableDevCache => {
+                self.profile_id == "package_managers" && self.dev_tool.is_some()
+            }
+            CleanUnitKind::RegenerableAppCache => {
+                self.profile_id == "chat_media"
+                    && (self.unit_label.starts_with("zalo_cache")
+                        || self.unit_label == "zalo_old_version")
+            }
+            CleanUnitKind::StandardFile => false,
+        }
     }
 }
 

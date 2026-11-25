@@ -292,6 +292,7 @@ pub enum RelocationStatus {
     Done,
     Failed,
     Undone,
+    NeedsReview,
 }
 
 impl RelocationStatus {
@@ -301,6 +302,7 @@ impl RelocationStatus {
             Self::Done => "done",
             Self::Failed => "failed",
             Self::Undone => "undone",
+            Self::NeedsReview => "needs_review",
         }
     }
 
@@ -309,9 +311,61 @@ impl RelocationStatus {
             "moving" => Self::Moving,
             "failed" => Self::Failed,
             "undone" => Self::Undone,
+            "needs_review" => Self::NeedsReview,
             _ => Self::Done,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ZaloRetainedStatus {
+    Retained,
+    Purged,
+    Restored,
+    Missing,
+    NeedsReview,
+}
+
+impl ZaloRetainedStatus {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Retained => "retained",
+            Self::Purged => "purged",
+            Self::Restored => "restored",
+            Self::Missing => "missing",
+            Self::NeedsReview => "needs_review",
+        }
+    }
+
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "purged" => Self::Purged,
+            "restored" => Self::Restored,
+            "missing" => Self::Missing,
+            "needs_review" => Self::NeedsReview,
+            _ => Self::Retained,
+        }
+    }
+}
+
+/// Persistent DB record tracking a temporarily retained original `Zalo Data.greenc-original.<uuid>`
+/// directory after a verified relocation (kept for 24h by default or until user purges/restores).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZaloRetainedOriginal {
+    pub id: Option<i64>,
+    pub relocation_id: i64,
+    pub source_path: PathBuf,
+    pub target_path: PathBuf,
+    pub retained_path: PathBuf,
+    pub size_bytes: u64,
+    pub file_count: u64,
+    pub health_verified: bool,
+    pub created_at: DateTime<Utc>,
+    pub purge_after: DateTime<Utc>,
+    pub status: ZaloRetainedStatus,
+    pub resolved_at: Option<DateTime<Utc>>,
+    pub detail: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -594,6 +648,21 @@ fn windows_drive_letter(raw: &str) -> Option<char> {
     }
 }
 
+/// Compares two Windows-style paths for equality, ignoring case, separator style, trailing separators
+/// and the verbatim / NT prefixes (`\\?\`, `\\.\`, `\??\`) that `get_junction_target` and
+/// `std::fs::canonicalize` may add.
+pub fn same_windows_path(a: &std::path::Path, b: &std::path::Path) -> bool {
+    let norm = |p: &std::path::Path| {
+        let raw = p.to_string_lossy().replace('/', "\\");
+        let stripped = [r"\\?\", r"\\.\", r"\??\"]
+            .iter()
+            .find_map(|prefix| raw.strip_prefix(prefix))
+            .unwrap_or(&raw);
+        stripped.trim_end_matches('\\').to_lowercase()
+    };
+    norm(a) == norm(b)
+}
+
 /// Normalizes a user-supplied drive root:
 /// - Windows drives (`C`, `c:`, `C:\`, `C:/`) -> `C:\`
 /// - Unix mount points (`/`, `/home`, `/home/`, `/Volumes/Data`) -> `/` or `/home`
@@ -779,6 +848,14 @@ mod drive_quota_tests {
     fn is_same_volume_handles_windows_and_unix_paths() {
         use std::path::Path;
 
+        assert!(same_windows_path(
+            Path::new(r"\??\D:\GreenC\zalo"),
+            Path::new("d:/greenc/Zalo/")
+        ));
+        assert!(!same_windows_path(
+            Path::new(r"D:\GreenC\zalo2"),
+            Path::new(r"D:\GreenC\zalo")
+        ));
         assert!(is_same_volume(Path::new("C:/bk"), Path::new("C:\\")));
         assert!(is_same_volume(Path::new("c:\\Users\\a"), Path::new("C:\\")));
         assert!(!is_same_volume(Path::new("D:\\bk"), Path::new("C:\\")));

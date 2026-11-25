@@ -414,6 +414,20 @@ impl BackgroundGuardian {
                 }
             }
 
+            // Check 3b: Auto-purge expired Zalo retained originals ONLY when health watch passed
+            // AND 24-hour retention elapsed AND live junction remains healthy.
+            if let Ok(purged_zalo) =
+                greenc_relocate::zalo_move::ZaloRelocator::purge_expired_originals(
+                    &guardian_state.db,
+                    deps.reparse_api.as_ref(),
+                    chrono::Utc::now(),
+                )
+            {
+                for rec in purged_zalo {
+                    report.bytes_reclaimed = report.bytes_reclaimed.saturating_add(rec.size_bytes);
+                }
+            }
+
             // Check 4: Battery-Saver / Fullscreen Game Deferral before heavy QuotaRule compression
             let pause_on_bat_fs = settings.get_pause_on_battery_fullscreen().unwrap_or(true);
             if pause_on_bat_fs {
@@ -506,6 +520,9 @@ impl BackgroundGuardian {
                 }
                 let guard_opts = GuardRunOptions {
                     profile_ids: (*auto_clean_ids).clone(),
+                    include_zalo_auto_clean: settings
+                        .get_zalo_auto_clean_enabled()
+                        .unwrap_or(false),
                     ..Default::default()
                 };
                 match run_guard_for_quota(

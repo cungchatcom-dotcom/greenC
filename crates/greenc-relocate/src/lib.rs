@@ -9,6 +9,7 @@ pub mod mover;
 pub mod recovery;
 pub mod verified_copy;
 pub mod vhdx;
+pub mod zalo_move;
 
 pub use candidate::{
     CandidateQualificationEngine, CandidateScanner, RelocationCandidate, FREE_SPACE_RESERVE_BYTES,
@@ -25,3 +26,9 @@ pub use mover::{MoveOptions, TransactionalMover};
 pub use recovery::RecoveryService;
 pub use verified_copy::{remove_dir_all_safe, verified_copy_tree, CopyStats};
 pub use vhdx::{VhdxCompactor, VhdxImageCandidate};
+pub use zalo_move::{
+    format_zalo_move_confirmation, is_zalo_auto_move_supported, verify_junction_write_probe,
+    verify_zalo_copy_integrity, zalo_auto_move_unsupported_reason, ZaloCopyVerification,
+    ZaloMoveOptions, ZaloMovePhase, ZaloMoveProgress, ZaloMoveReport, ZaloRelocator,
+    DEFAULT_POST_REOPEN_POLL, DEFAULT_POST_REOPEN_WATCH,
+};

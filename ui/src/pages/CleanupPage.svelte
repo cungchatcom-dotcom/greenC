@@ -11,6 +11,7 @@
     type CleanupReportDto,
     type TaskProgressEvent,
   } from '$lib/api';
+  import ZaloCard from '$lib/components/ZaloCard.svelte';
   import {
     Trash2,
     ShieldCheck,
@@ -269,6 +270,9 @@
       </div>
     </div>
   </div>
+
+  <!-- Zalo PC Quick Card -->
+  <ZaloCard onChanged={triggerScan} />
 
   <!-- Candidates Table -->
   <div class="rounded-xl border border-border bg-card shadow-sm overflow-hidden">

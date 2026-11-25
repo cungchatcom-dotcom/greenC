@@ -191,12 +191,11 @@ impl TransactionalMover {
             let verified_target = reparse_api.get_junction_target(&source_path)?;
 
             // Canonical check
-            let clean_v = verified_target.to_string_lossy().to_lowercase();
-            let clean_t = target_path.to_string_lossy().to_lowercase();
-            if clean_v != clean_t && !clean_v.ends_with(&clean_t) && !clean_t.ends_with(&clean_v) {
+            if !greenc_core::models::same_windows_path(&verified_target, &target_path) {
                 return Err(GreenCError::Relocation(format!(
                     "Junction target mismatch: expected {}, got {}",
-                    clean_t, clean_v
+                    target_path.display(),
+                    verified_target.display()
                 )));
             }
 

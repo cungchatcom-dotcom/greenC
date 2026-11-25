@@ -30,6 +30,10 @@ greenc relocate apply <app_id> [--dry-run] [--json]
 greenc relocate undo <record_id> [--json]
 greenc relocate check-health [--json]
 
+greenc zalo status [--json]
+greenc zalo clean [--dry-run] [--json]
+greenc zalo move --to <drive> [--dry-run] [--no-reopen] [--json]
+
 greenc compact list [--json]
 greenc compact apply <path> [--algo xpress8k|xpress16k] [--dry-run] [--json]
 greenc compact undo <path> [--json]

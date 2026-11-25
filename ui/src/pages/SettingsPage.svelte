@@ -70,6 +70,7 @@
   let draftAutostart = $state(false);
   let draftPauseBattery = $state(true);
   let draftLowDiskGb = $state(10);
+  let draftZaloAutoClean = $state(false);
   let savingGuardian = $state(false);
   let guardianFeedback = $state<{ kind: "ok" | "err"; text: string } | null>(
     null,
@@ -79,7 +80,8 @@
     settings !== null &&
       (draftAutostart !== settings.autostart_enabled ||
         draftPauseBattery !== settings.pause_on_battery_fullscreen ||
-        draftLowDiskGb !== settings.low_disk_shield_gb),
+        draftLowDiskGb !== settings.low_disk_shield_gb ||
+        draftZaloAutoClean !== Boolean(settings.zalo_auto_clean_enabled)),
   );
 
   // Sync from sidebar quick-toggle only when the sidebar prop changes independently
@@ -123,6 +125,7 @@
       draftAutostart = cfg.autostart_enabled;
       draftPauseBattery = cfg.pause_on_battery_fullscreen;
       draftLowDiskGb = cfg.low_disk_shield_gb;
+      draftZaloAutoClean = Boolean(cfg.zalo_auto_clean_enabled);
       lastSyncedProp = cfg.autostart_enabled;
       onAutostartChanged?.(cfg.autostart_enabled);
       newDataRoot =
@@ -215,11 +218,13 @@
         autostart_enabled: draftAutostart,
         pause_on_battery_fullscreen: draftPauseBattery,
         low_disk_shield_gb: clampedGb,
+        zalo_auto_clean_enabled: draftZaloAutoClean,
       });
       settings = updated;
       draftAutostart = updated.autostart_enabled;
       draftPauseBattery = updated.pause_on_battery_fullscreen;
       draftLowDiskGb = updated.low_disk_shield_gb;
+      draftZaloAutoClean = Boolean(updated.zalo_auto_clean_enabled);
       lastSyncedProp = updated.autostart_enabled;
       onAutostartChanged?.(updated.autostart_enabled);
       guardianFeedback = {
@@ -657,6 +662,27 @@
           >
         </div>
       </div>
+
+      <label
+        class="flex items-center justify-between gap-4 pt-2 border-t border-border/60 cursor-pointer"
+      >
+        <div>
+          <div class="font-semibold text-primary">
+            {t("Zalo: tự dọn bộ đệm và bản cũ")}
+          </div>
+          <div class="text-secondary">
+            {t(
+              "Áp dụng khi ổ C: vượt ngưỡng. Không bao giờ tự chuyển dữ liệu chat khi chưa xác nhận.",
+            )}
+          </div>
+        </div>
+        <input
+          type="checkbox"
+          bind:checked={draftZaloAutoClean}
+          onchange={() => (guardianFeedback = null)}
+          class="h-4 w-4 rounded border-border text-accent cursor-pointer"
+        />
+      </label>
 
       <div
         class="flex items-center justify-between gap-3 pt-3 border-t border-border flex-wrap"

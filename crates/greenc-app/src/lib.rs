@@ -86,6 +86,12 @@ pub fn run() {
             commands::relocate::list_relocation_history,
             commands::relocate::undo_relocation,
             commands::relocate::repair_junction_target,
+            // Zalo PC Management (Discovery, Safe Clean & Auto Move)
+            commands::zalo::get_zalo_status,
+            commands::zalo::clean_zalo_now,
+            commands::zalo::move_zalo_data,
+            commands::zalo::purge_zalo_retained_original,
+            commands::zalo::restore_zalo_retained_original,
             // In-Place Compaction (User Story 4)
             commands::compact::scan_compaction_candidates,
             commands::compact::compact_files,

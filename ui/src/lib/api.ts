@@ -592,6 +592,7 @@ export interface AppSettingsDto {
   store_updates_url?: string | null;
   low_disk_shield_gb: number;
   pause_on_battery_fullscreen: boolean;
+  zalo_auto_clean_enabled?: boolean;
   translations: Record<string, string>;
   supported_languages: LanguageOptionDto[];
 }
@@ -603,6 +604,7 @@ export interface SettingsPatchDto {
   autostart_enabled?: boolean;
   low_disk_shield_gb?: number;
   pause_on_battery_fullscreen?: boolean;
+  zalo_auto_clean_enabled?: boolean;
 }
 
 export interface QuotaRuleInputDto {
@@ -788,4 +790,148 @@ export async function downloadAndInstallUpdate(
     assetName,
   });
 }
+
+// =========================================================================
+// Zalo PC Management (Discovery, Safe Clean & Auto Move)
+// =========================================================================
+
+export interface ZaloSafetyCopyDto {
+  id: number | null;
+  relocation_id: number | null;
+  kind: 'original' | 'conflict' | 'moving' | string;
+  path: string;
+  source_path: string | null;
+  target_path: string | null;
+  size_bytes: number;
+  file_count: number;
+  created_at: string | null;
+  purge_after: string | null;
+  health_verified: boolean;
+  status: string;
+  exists_on_disk: boolean;
+  detail: string | null;
+}
+
+export interface ZaloSpaceEstimateDto {
+  source_drive: string;
+  target_drive: string;
+  chat_data_bytes: number;
+  source_free_bytes: number;
+  source_required_bytes: number;
+  source_retained_bytes: number;
+  source_ok: boolean;
+  source_notice: string | null;
+  target_free_bytes: number;
+  target_required_bytes: number;
+  target_ok: boolean;
+  target_notice: string | null;
+  can_proceed: boolean;
+  blocking_reason: string | null;
+}
+
+export interface ZaloStatusDto {
+  installed: boolean;
+  config_status: string;
+  data_dir: string | null;
+  data_drive: string | null;
+  data_on_system_drive: boolean;
+  already_on_other_drive: boolean;
+  already_on_other_drive_message: string | null;
+  active_relocation_id: number | null;
+  active_relocation_target: string | null;
+  active_relocation_health: string | null;
+  chat_data_bytes: number;
+  media_bytes: number;
+  message_bytes: number;
+  cache_bytes: number;
+  cache_reclaimable_bytes: number;
+  cache_locked_bytes: number;
+  old_versions_bytes: number;
+  old_versions_count: number;
+  total_reclaimable_bytes: number;
+  total_locked_bytes: number;
+  zalo_running: boolean;
+  locked_notice: string | null;
+  auto_move_supported: boolean;
+  auto_move_unsupported_reason: string | null;
+  recommended_drive: string | null;
+  move_confirmation_text: string | null;
+  retained_original_bytes: number;
+  safety_copies: ZaloSafetyCopyDto[];
+  space_estimate: ZaloSpaceEstimateDto | null;
+  warnings: string[];
+}
+
+export interface ZaloCleanupResultDto {
+  dry_run: boolean;
+  mode: string;
+  cleaned_units: number;
+  cleaned_files: number;
+  logical_freed_bytes: number;
+  vault_bytes: number;
+  net_freed_bytes: number;
+  vault_same_drive: boolean;
+  vault_archive_id: string | null;
+  locked_skipped_files: number;
+  locked_skipped_bytes: number;
+  zalo_running: boolean;
+  locked_notice: string | null;
+}
+
+export interface ZaloMoveResultDto {
+  record_id: number | null;
+  dry_run: boolean;
+  already_on_other_drive: boolean;
+  source_path: string;
+  target_path: string;
+  target_drive: string;
+  moved_bytes: number;
+  moved_files: number;
+  message_files_verified: number;
+  media_files_verified: number;
+  reopened_zalo: boolean;
+  health_verified: boolean;
+  auto_rolled_back: boolean;
+  retained_original_id: number | null;
+  retained_original_path: string | null;
+  retained_original_bytes: number;
+  retained_purge_after: string | null;
+  status: string;
+  message: string;
+}
+
+export async function getZaloStatus(targetDrive?: string): Promise<ZaloStatusDto> {
+  return await invoke<ZaloStatusDto>('get_zalo_status', {
+    targetDrive: targetDrive ?? null,
+  });
+}
+
+export async function cleanZaloNow(enableVault: boolean = true): Promise<ZaloCleanupResultDto> {
+  return await invoke<ZaloCleanupResultDto>('clean_zalo_now', {
+    enableVault,
+  });
+}
+
+export async function moveZaloData(
+  targetDrive: string,
+  reopenZalo: boolean = true
+): Promise<ZaloMoveResultDto> {
+  return await invoke<ZaloMoveResultDto>('move_zalo_data', {
+    targetDrive,
+    reopenZalo,
+  });
+}
+
+export async function purgeZaloRetainedOriginal(retainedId: number): Promise<string> {
+  return await invoke<string>('purge_zalo_retained_original', {
+    retainedId,
+  });
+}
+
+export async function restoreZaloRetainedOriginal(retainedId: number): Promise<string> {
+  return await invoke<string>('restore_zalo_retained_original', {
+    retainedId,
+  });
+}
+
 

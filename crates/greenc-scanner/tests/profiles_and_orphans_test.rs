@@ -5,6 +5,24 @@ use std::fs;
 use std::path::PathBuf;
 use tempfile::TempDir;
 
+/// Sets times on a file or directory; plain `File::open` cannot touch directories on Windows.
+fn open_for_times(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        // FILE_WRITE_ATTRIBUTES + FILE_FLAG_BACKUP_SEMANTICS
+        std::fs::OpenOptions::new()
+            .access_mode(0x0100)
+            .share_mode(7)
+            .custom_flags(0x0200_0000)
+            .open(path)
+    }
+    #[cfg(not(windows))]
+    {
+        std::fs::File::open(path)
+    }
+}
+
 #[test]
 fn test_zalo_and_dingtalk_profile_discovery_protects_databases() {
     let tmp = TempDir::new().unwrap();
@@ -15,6 +33,7 @@ fn test_zalo_and_dingtalk_profile_discovery_protects_databases() {
 
     let cfg_dir = tmp.path().join("Roaming").join("ZaloData");
     fs::create_dir_all(cfg_dir.join("Cache")).unwrap();
+    fs::write(cfg_dir.join("Cache").join("chunk.bin"), vec![5u8; 4096]).unwrap();
     let cfg_file = cfg_dir.join("config.json");
     let db_loc = zalo_root
         .join("message")
@@ -31,16 +50,25 @@ fn test_zalo_and_dingtalk_profile_discovery_protects_databases() {
     let active_ver = local.join("Programs").join("Zalo").join("Zalo-24.9.0");
     fs::create_dir_all(&old_ver).unwrap();
     fs::create_dir_all(&active_ver).unwrap();
-    fs::write(old_ver.join("Zalo.exe"), vec![2u8; 2048]).unwrap();
+    let old_exe = old_ver.join("Zalo.exe");
+    fs::write(&old_exe, vec![2u8; 2048]).unwrap();
+    // Make old_ver older than 3 days so it qualifies as obsolete.
+    let four_days_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(4 * 86_400);
+    let _ = open_for_times(&old_exe).and_then(|f| f.set_modified(four_days_ago));
+    let _ = open_for_times(&old_ver).and_then(|f| f.set_modified(four_days_ago));
 
     let mut running_dirs = HashSet::new();
     running_dirs.insert(active_ver.clone());
 
     let zalo = discover_zalo_profile(Some(&cfg_file), Some(&local), &running_dirs).unwrap();
     assert!(zalo.reclaimable_paths.contains(&old_ver));
+    assert!(zalo.reclaimable_paths.contains(&cfg_dir.join("Cache")));
     assert!(!zalo.reclaimable_paths.contains(&active_ver));
+    assert!(!zalo.reclaimable_paths.contains(&zalo_root.join("media")));
+    assert!(!zalo.reclaimable_paths.contains(&zalo_root.join("message")));
     assert!(zalo.protected_paths.contains(&active_ver));
     assert!(zalo.protected_paths.contains(&zalo_root.join("message")));
+    assert!(zalo.protected_paths.contains(&zalo_root.join("media")));
     assert!(zalo.physical_bytes >= 6144);
 
     // DingTalk discovery

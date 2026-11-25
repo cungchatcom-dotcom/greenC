@@ -22,6 +22,7 @@
     type DriveInfo
   } from '$lib/api';
   import GuidedModal from '$lib/components/GuidedModal.svelte';
+  import ZaloCard from '$lib/components/ZaloCard.svelte';
   import {
     ArrowRightLeft,
     FolderSync,
@@ -100,9 +101,9 @@
         listRelocationHistory()
       ]);
 
-      // Known Folders have their own section that moves them through the Windows shell API;
-      // offering them here would send them down the junction path, which the backend refuses.
-      candidates = candList.filter((c) => c.strategy !== 'known_folder');
+      // Known Folders and Zalo PC have their own dedicated sections above with specialized
+      // shell/Restart-Manager flows, so hide them from the generic junction table.
+      candidates = candList.filter((c) => c.strategy !== 'known_folder' && c.id !== 'zalo');
       knownFolders = kfList;
       historyRecords = histList;
     } catch (err) {
@@ -307,6 +308,9 @@
       </button>
     </div>
   {/if}
+
+  <!-- Dedicated Zalo PC Card (Clean + Auto Move) -->
+  <ZaloCard preferredDrive={targetDrive} onChanged={loadData} />
 
   <!-- Section 1: Windows Known Folders Cards -->
   <div class="rounded-xl border border-border bg-card p-5 shadow-sm">

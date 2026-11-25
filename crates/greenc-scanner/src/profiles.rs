@@ -2,6 +2,7 @@
 //! DingTalk `*_v2/EAppFiles`, browser & developer tool caches) with HardLink deduplication (Task T030).
 
 use crate::walker::walk_directory;
+use crate::zalo::{discover_zalo_installation, ZaloDiscoveryOptions};
 use greenc_core::config::DEFAULT_PROTECTED_PATTERNS;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -23,105 +24,38 @@ pub struct DiscoveredAppProfile {
     pub physical_bytes: u64,
 }
 
-/// Parses Zalo PC `%APPDATA%\ZaloData\config.json` to discover cross-drive media folders,
-/// roaming cache, and obsolete `Zalo-*` version directories not matching any running `Zalo.exe`.
+/// Parses Zalo PC `%APPDATA%\ZaloData\config.json` safely to discover chat data (ALWAYS protected:
+/// `message` and `media` are never cleaned), allowlisted regenerable roaming caches (including
+/// `Partitions\*`), and obsolete `Zalo-*` version directories not matching any running `Zalo.exe`
+/// and older than 3 days (keeping running + newest, or 2 newest when Zalo is not running).
 pub fn discover_zalo_profile(
     config_file: Option<&Path>,
     local_appdata: Option<&Path>,
     running_exe_dirs: &HashSet<PathBuf>,
 ) -> Option<DiscoveredAppProfile> {
-    let cfg_path = config_file.map(Path::to_path_buf).or_else(|| {
-        std::env::var_os("APPDATA")
-            .map(PathBuf::from)
-            .or_else(|| {
-                std::env::var_os("HOME").map(|h| {
-                    let home = PathBuf::from(h);
-                    if cfg!(target_os = "macos") {
-                        home.join("Library").join("Application Support")
-                    } else {
-                        home.join(".config")
-                    }
-                })
-            })
-            .map(|base| base.join("ZaloData").join("config.json"))
-    })?;
-    let local = local_appdata
-        .map(Path::to_path_buf)
-        .or_else(|| std::env::var_os("LOCALAPPDATA").map(PathBuf::from))
-        .or_else(|| {
-            std::env::var_os("HOME").map(|h| {
-                let home = PathBuf::from(h);
-                if cfg!(target_os = "macos") {
-                    home.join("Library").join("Application Support")
-                } else {
-                    home.join(".local").join("share")
-                }
-            })
-        })?;
+    let opts = ZaloDiscoveryOptions {
+        config_file: config_file.map(Path::to_path_buf),
+        local_appdata: local_appdata.map(Path::to_path_buf),
+        running_exe_dirs: running_exe_dirs.clone(),
+        ..Default::default()
+    };
+    let discovery = discover_zalo_installation(&opts)?;
 
-    let mut reclaimable = Vec::new();
-    let mut protected = Vec::new();
-
-    if cfg_path.is_file() {
-        if let Ok(raw) = fs::read_to_string(&cfg_path) {
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&raw) {
-                if let Some(db_loc) = json
-                    .get("db_path")
-                    .and_then(|v| v.get("location"))
-                    .and_then(|v| v.as_str())
-                {
-                    if let Some(db_root) = Path::new(db_loc).parent() {
-                        let media_dir = db_root.join("media");
-                        let msg_dir = db_root.join("message");
-                        if media_dir.is_dir() {
-                            reclaimable.push(media_dir);
-                        }
-                        if msg_dir.is_dir() {
-                            protected.push(msg_dir);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    if let Some(cfg_parent) = cfg_path.parent() {
-        let cache_dir = cfg_parent.join("Cache");
-        if cache_dir.is_dir() {
-            reclaimable.push(cache_dir);
-        }
-    }
-
-    let running_norm: HashSet<String> = running_exe_dirs
+    let mut reclaimable: Vec<PathBuf> = discovery
+        .cache_dirs
         .iter()
-        .map(|p| p.to_string_lossy().to_lowercase())
+        .map(|c| c.path.clone())
         .collect();
+    reclaimable.extend(discovery.old_version_dirs.iter().cloned());
 
-    let programs_zalo = local.join("Programs").join("Zalo");
-    if let Ok(entries) = fs::read_dir(&programs_zalo) {
-        for entry in entries.flatten() {
-            let p = entry.path();
-            let name = entry.file_name().to_string_lossy().to_lowercase();
-            if p.is_dir() && name.starts_with("zalo-") {
-                if running_norm.contains(&p.to_string_lossy().to_lowercase()) {
-                    protected.push(p);
-                } else {
-                    reclaimable.push(p);
-                }
-            }
-        }
-    }
-
-    let pending = local.join("Zalo").join("pending");
-    if pending.is_dir() {
-        reclaimable.push(pending);
-    }
-
-    if reclaimable.is_empty() {
+    if reclaimable.is_empty() && discovery.data_dir.is_none() {
         return None;
     }
 
-    let physical_bytes = sum_physical_bytes(&reclaimable);
+    let physical_bytes = discovery
+        .cache_bytes
+        .saturating_add(discovery.old_versions_bytes);
+
     let mut excludes: Vec<String> = DEFAULT_PROTECTED_PATTERNS
         .iter()
         .map(|s| (*s).to_string())
@@ -130,16 +64,18 @@ pub fn discover_zalo_profile(
         "*.rescache".to_string(),
         "*\\Database\\*".to_string(),
         "*\\message\\*".to_string(),
+        "*\\media\\*".to_string(),
+        "config.json".to_string(),
     ]);
 
     Some(DiscoveredAppProfile {
         app_id: "zalo_pc".to_string(),
-        app_name: "Zalo Desktop (Media, Cache & Old Versions)".to_string(),
+        app_name: "Zalo PC (Bộ đệm & Bản cũ)".to_string(),
         process_name: "Zalo.exe".to_string(),
         service_name: String::new(),
-        description: "Quản lý kho Media Zalo (ZaloDownloads/resource, fileNoise hỗ trợ NTFS HardLink), Zalo Cache và các bản cài đặt Zalo cũ bị bỏ quên.".to_string(),
+        description: "Bộ đệm tái tạo được và các phiên bản Zalo cũ bị bỏ quên; giữ nguyên hoàn toàn tin nhắn, ảnh và đăng nhập.".to_string(),
         reclaimable_paths: reclaimable,
-        protected_paths: protected,
+        protected_paths: discovery.protected_paths,
         exclude_patterns: excludes,
         recommended_max_bytes: (2.5 * 1024.0 * 1024.0 * 1024.0) as u64,
         physical_bytes,

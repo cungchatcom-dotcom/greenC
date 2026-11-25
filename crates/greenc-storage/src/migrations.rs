@@ -2,7 +2,7 @@ use greenc_core::error::{GreenCError, Result};
 use rusqlite::Connection;
 use tracing::info;
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 4;
+pub const CURRENT_SCHEMA_VERSION: u32 = 5;
 
 pub const SCHEMA_V2_FULL_DDL: &str = "
 CREATE TABLE IF NOT EXISTS app_settings (
@@ -147,6 +147,22 @@ CREATE TABLE IF NOT EXISTS compaction_records (
     status TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS zalo_retained_originals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    relocation_id INTEGER NOT NULL,
+    source_path TEXT NOT NULL,
+    target_path TEXT NOT NULL,
+    retained_path TEXT NOT NULL UNIQUE,
+    size_bytes INTEGER NOT NULL DEFAULT 0,
+    file_count INTEGER NOT NULL DEFAULT 0,
+    health_verified INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    purge_after TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'retained',
+    resolved_at TEXT NOT NULL DEFAULT '',
+    detail TEXT NOT NULL DEFAULT ''
+);
 ";
 
 pub const SCHEMA_V2_INDEXES: &str = "
@@ -176,6 +192,11 @@ CREATE INDEX IF NOT EXISTS idx_relocations_status
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_compaction_target_path
     ON compaction_records(target_path);
+
+CREATE INDEX IF NOT EXISTS idx_zalo_retained_status
+    ON zalo_retained_originals(status);
+CREATE INDEX IF NOT EXISTS idx_zalo_retained_relocation
+    ON zalo_retained_originals(relocation_id);
 ";
 
 pub fn run_migrations(conn: &mut Connection) -> Result<u32> {

@@ -11,6 +11,7 @@ pub const KEY_THEME_MODE: &str = "theme_mode";
 pub const KEY_AUTOSTART: &str = "autostart_enabled";
 pub const KEY_LOW_DISK_SHIELD_GB: &str = "low_disk_shield_gb";
 pub const KEY_PAUSE_BATTERY_FS: &str = "pause_on_battery_fullscreen";
+pub const KEY_ZALO_AUTO_CLEAN: &str = "zalo_auto_clean_enabled";
 
 pub const MIN_RETENTION_DAYS: u32 = 1;
 pub const MAX_RETENTION_DAYS: u32 = 90;
@@ -174,6 +175,17 @@ impl<'a> AppSettings<'a> {
     pub fn set_pause_on_battery_fullscreen(&self, pause: bool) -> Result<()> {
         self.db
             .set_setting(KEY_PAUSE_BATTERY_FS, if pause { "1" } else { "0" })
+    }
+
+    /// Scheduled automatic cleanup of Zalo caches & old versions during drive-quota guard runs.
+    /// Strictly OFF (`false`) by default.
+    pub fn get_zalo_auto_clean_enabled(&self) -> Result<bool> {
+        Ok(self.db.get_setting(KEY_ZALO_AUTO_CLEAN)?.as_deref() == Some("1"))
+    }
+
+    pub fn set_zalo_auto_clean_enabled(&self, enabled: bool) -> Result<()> {
+        self.db
+            .set_setting(KEY_ZALO_AUTO_CLEAN, if enabled { "1" } else { "0" })
     }
 
     pub fn vault_dir(&self, default_dir: &Path) -> Result<PathBuf> {

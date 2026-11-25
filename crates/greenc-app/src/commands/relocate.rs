@@ -179,6 +179,95 @@ pub async fn relocate_directory(
         let proc_probe = NativeProcessServiceProbe;
         let reparse_api = NativeReparsePointApi;
 
+        if candidate_id.eq_ignore_ascii_case("zalo") {
+            let lifecycle = greenc_platform::app_lifecycle::NativeAppLifecycleApi;
+            let running_exe_dirs =
+                greenc_platform::app_lifecycle::AppLifecycleApi::find_running_exe_dirs(
+                    &lifecycle,
+                    greenc_scanner::zalo::ZALO_PROCESS_NAMES,
+                );
+            let known_relocated_sources: std::collections::HashSet<PathBuf> = state_inner
+                .db
+                .list_relocations(Some("done"))
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|r| r.app_id == "zalo")
+                .map(|r| r.source_path)
+                .collect();
+            let disc = greenc_scanner::zalo::discover_zalo_installation(
+                &greenc_scanner::zalo::ZaloDiscoveryOptions {
+                    running_exe_dirs,
+                    known_relocated_sources,
+                    ..Default::default()
+                },
+            )
+            .ok_or_else(|| "Không tìm thấy cài đặt Zalo PC".to_string())?;
+
+            let opts = greenc_relocate::zalo_move::ZaloMoveOptions {
+                target_drive: drive_char.to_ascii_uppercase(),
+                reopen_zalo: true,
+                ..Default::default()
+            };
+            let state_progress = state_inner.clone();
+            let task_id_clone = task_id_worker.clone();
+            let report = greenc_relocate::zalo_move::ZaloRelocator::move_zalo_data(
+                &disc,
+                &opts,
+                &state_inner.db,
+                &vol_api,
+                &reparse_api,
+                &shell_api,
+                &lock_probe,
+                &proc_probe,
+                &lifecycle,
+                &task_ctrl,
+                move |p| {
+                    state_progress.emit_progress(&TaskProgressEvent {
+                        task_id: task_id_clone.clone(),
+                        kind: "relocate".to_string(),
+                        state: if p.phase == greenc_relocate::zalo_move::ZaloMovePhase::Done {
+                            "completed"
+                        } else {
+                            "running"
+                        }
+                        .to_string(),
+                        percent: p.percent,
+                        phase: p.phase.as_str().to_string(),
+                        title: p.phase.label_vi().to_string(),
+                        detail: p.detail,
+                        done_files: p.done_files,
+                        total_files: p.total_files,
+                        done_bytes: p.done_bytes,
+                        total_bytes: p.total_bytes,
+                        throughput_bps: 0,
+                        eta_seconds: 0,
+                    });
+                },
+            )
+            .map_err(|err| format!("Lỗi khi di chuyển: {err}"))?;
+
+            return Ok(RelocationResultDto {
+                id: report.record_id,
+                candidate_id: "zalo".to_string(),
+                app_name: "Zalo PC".to_string(),
+                strategy: "junction".to_string(),
+                source_path: report.source_path.to_string_lossy().to_string(),
+                target_path: report.target_path.to_string_lossy().to_string(),
+                size_bytes: report.moved_bytes,
+                status: report.status,
+                health_status: if report.health_verified {
+                    "healthy"
+                } else {
+                    "link_broken"
+                }
+                .to_string(),
+                detail: Some(report.message),
+                created_at: chrono::Utc::now().to_rfc3339(),
+                success: true,
+                error_message: None,
+            });
+        }
+
         let candidates = CandidateScanner::discover_all(
             drive_char,
             &vol_api,
@@ -484,8 +573,35 @@ pub async fn undo_relocation(
         let reparse = NativeReparsePointApi;
         let shell_api = NativeShellFolderApi;
         let proc_probe = NativeProcessServiceProbe;
+        let lifecycle = greenc_platform::app_lifecycle::NativeAppLifecycleApi;
 
-        let undone_rec = TransactionalMover::undo_relocation(
+        let existing_zalo = state_inner.db.list_relocations(None).ok().and_then(|list| {
+            list.into_iter()
+                .find(|r| r.id == Some(record_id) && r.app_id == "zalo")
+        });
+
+        let mut shutdown_session = None;
+        if let Some(ref zrec) = existing_zalo {
+            if greenc_platform::app_lifecycle::AppLifecycleApi::has_visible_window(
+                &lifecycle,
+                &["ZaloCall.exe"],
+            ) {
+                return Err(format!(
+                    "Không thể hoàn tác: {}",
+                    greenc_platform::app_lifecycle::ZALO_ACTIVE_CALL_MESSAGE
+                ));
+            }
+            let session = greenc_platform::app_lifecycle::AppLifecycleApi::graceful_shutdown(
+                &lifecycle,
+                &[zrec.source_path.clone(), zrec.target_path.clone()],
+                greenc_scanner::zalo::ZALO_PROCESS_NAMES,
+                greenc_platform::app_lifecycle::DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT,
+            )
+            .map_err(|e| format!("Không thể hoàn tác: {e}"))?;
+            shutdown_session = Some(session);
+        }
+
+        let undo_res = TransactionalMover::undo_relocation(
             record_id,
             &state_inner.db,
             &vol_api,
@@ -493,8 +609,18 @@ pub async fn undo_relocation(
             &shell_api,
             &proc_probe,
             &task_ctrl,
-        )
-        .map_err(|e| format!("Không thể hoàn tác: {e}"))?;
+        );
+
+        if let Some(mut session) = shutdown_session {
+            if !session.captured_exes.is_empty() {
+                let _ = greenc_platform::app_lifecycle::AppLifecycleApi::restart_app(
+                    &lifecycle,
+                    &mut session,
+                );
+            }
+        }
+
+        let undone_rec = undo_res.map_err(|e| format!("Không thể hoàn tác: {e}"))?;
 
         Ok(RelocationResultDto {
             id: undone_rec.id,

@@ -217,7 +217,6 @@ impl PresetProfiles {
     #[cfg(windows)]
     fn resolve_profile_paths_windows(profile_id: &str) -> Vec<PathBuf> {
         let local_app_data = std::env::var("LOCALAPPDATA").map(PathBuf::from).ok();
-        let app_data = std::env::var("APPDATA").map(PathBuf::from).ok();
         let user_profile = std::env::var("USERPROFILE").map(PathBuf::from).ok();
         let windir = std::env::var("windir")
             .or_else(|_| std::env::var("SystemRoot"))
@@ -250,12 +249,10 @@ impl PresetProfiles {
                 }
             }
             "chat_media" => {
-                if let Some(ref ad) = app_data {
-                    paths.push(ad.join(r"ZaloData\Cache"));
-                    paths.push(ad.join(r"ZaloData\fileNoise"));
-                }
+                // Zalo caches & obsolete versions are scanned via the strict allowlist in
+                // `crate::zalo_cleanup::scan_zalo_cleanup_units` (never touching `message`,
+                // `media`, `Local Storage`, `IndexedDB`, `config.json`, or `*.db*`).
                 if let Some(ref lad) = local_app_data {
-                    paths.push(lad.join(r"Zalo\pending"));
                     paths.push(lad.join(r"DingTalk\dumps"));
                 }
             }
@@ -329,8 +326,6 @@ impl PresetProfiles {
                 paths.push(caches.join("com.apple.Safari"));
             }
             "chat_media" => {
-                paths.push(app_support.join("ZaloData/Cache"));
-                paths.push(app_support.join("ZaloData/fileNoise"));
                 paths.push(app_support.join("discord/Cache"));
                 paths.push(app_support.join("discord/Code Cache"));
                 paths.push(app_support.join("Slack/Cache"));
@@ -468,14 +463,47 @@ impl PresetProfiles {
 
         let target_dirs = Self::resolve_profile_paths(profile_id);
         let now = SystemTime::now();
-        Self::scan_profile_dirs_as_units(
+        let mut units = Self::scan_profile_dirs_as_units(
             &profile,
             &target_dirs,
             now,
             task_control,
             lock_probe,
             busy_status,
-        )
+        );
+
+        if profile_id == "chat_media" && !task_control.is_cancelled() {
+            let lifecycle = greenc_platform::app_lifecycle::NativeAppLifecycleApi;
+            let running_exe_dirs =
+                greenc_platform::app_lifecycle::AppLifecycleApi::find_running_exe_dirs(
+                    &lifecycle,
+                    greenc_scanner::zalo::ZALO_PROCESS_NAMES,
+                );
+            let proc_probe = greenc_platform::traits::NativeProcessServiceProbe;
+            let zalo_running = !running_exe_dirs.is_empty()
+                || greenc_scanner::zalo::ZALO_PROCESS_NAMES.iter().any(|p| {
+                    greenc_platform::traits::ProcessServiceProbe::is_process_running(&proc_probe, p)
+                });
+            let zalo_opts = greenc_scanner::zalo::ZaloDiscoveryOptions {
+                running_exe_dirs,
+                now,
+                ..Default::default()
+            };
+            if let Some(disc) = greenc_scanner::zalo::discover_zalo_installation(&zalo_opts) {
+                let scan = crate::zalo_cleanup::scan_zalo_cleanup_units(
+                    &disc,
+                    now,
+                    Duration::from_secs(greenc_scanner::zalo::ZALO_CACHE_MIN_AGE_SECS),
+                    Duration::from_secs(greenc_scanner::zalo::ZALO_OLD_VERSION_MIN_AGE_SECS),
+                    lock_probe,
+                    zalo_running,
+                    task_control,
+                );
+                units.extend(scan.units);
+            }
+        }
+
+        units
     }
 
     /// Scans explicit `target_dirs` for a given `profile` into atomic [`CleanUnit`] entries.

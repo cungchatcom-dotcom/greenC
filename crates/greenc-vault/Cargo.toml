@@ -15,6 +15,7 @@ store = [
 [dependencies]
 greenc-core.workspace = true
 greenc-platform.workspace = true
+greenc-scanner.workspace = true
 greenc-storage.workspace = true
 serde.workspace = true
 serde_json.workspace = true
