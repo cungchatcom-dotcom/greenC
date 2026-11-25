@@ -70,7 +70,7 @@ Workflow cũng nhận các tên `PACKAGEIDENTITYNAME`, `PACKAGEIDENTITYPUBLISHER
 4. **Age ratings**: điền bảng câu hỏi IARC theo gợi ý trong [`docs/store-listing/en.md`](store-listing/en.md) / [`docs/store-listing/vi.md`](store-listing/vi.md) (mọi câu hỏi về nội dung nhạy cảm đều chọn **No** → xếp hạng Everyone / 3+).
 5. **Packages**: tải lên tệp `GreenC-<a.b.c.0>-x64.msixupload`.
    - Kiểm tra hệ thống xác nhận đúng kiến trúc **x64**, MinVersion **10.0.18362.0**, và không báo lỗi Identity.
-6. **Store listings**: thêm ít nhất hai ngôn ngữ **English** (`docs/store-listing/en.md`) và **Vietnamese** (`docs/store-listing/vi.md`), kèm ảnh chụp màn hình từ `docs/screenshots/en/` và `docs/screenshots/`.
+6. **Store listings**: thêm ít nhất hai ngôn ngữ **English** (`docs/store-listing/en.md`) và **Vietnamese** (`docs/store-listing/vi.md`), kèm ảnh chụp màn hình từ `docs/store-listing/screenshots/en/` và `docs/store-listing/screenshots/vi/`.
 7. **Submission options → Notes for certification**: dán đoạn giải trình quyền `runFullTrust` bên dưới.
 8. Kiểm tra lại toàn bộ mục đã xanh → bấm **Submit to the Store**.
 

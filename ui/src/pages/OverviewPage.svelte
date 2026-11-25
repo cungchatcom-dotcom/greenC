@@ -116,9 +116,9 @@
 
   // Burn-Rate Velocity
   let burnRateStr = $derived.by(() => {
-    if (!summary || summary.burn_rate_bps === 0) return '0 B/ngày';
+    if (!summary || summary.burn_rate_bps === 0) return '0 B / 24h';
     const absStr = formatSize(Math.abs(summary.burn_rate_bps));
-    return summary.burn_rate_bps > 0 ? `+${absStr}/ngày` : `-${absStr}/ngày`;
+    return summary.burn_rate_bps > 0 ? `+${absStr} / 24h` : `-${absStr} / 24h`;
   });
 </script>
 
@@ -150,11 +150,11 @@
         {#if availableDrives.length > 0}
           {#each availableDrives as drive}
             <option value={drive.drive_letter}>
-              Ổ {drive.drive_letter}: {drive.label ? `(${drive.label})` : ''}
+              {t('Ổ đĩa')} {drive.drive_letter}: {drive.label ? `(${drive.label})` : ''}
             </option>
           {/each}
         {:else}
-          <option value="C">Ổ C:</option>
+          <option value="C">{t('Ổ đĩa')} C:</option>
         {/if}
       </select>
 

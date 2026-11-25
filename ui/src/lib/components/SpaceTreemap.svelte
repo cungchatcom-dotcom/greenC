@@ -94,7 +94,8 @@
       squarify(children.slice(1), newRow, box, totalBytes, result);
     } else {
       const remainingBox = layoutRow(row, box, totalBytes, result);
-      squarify(children, [], remainingBox, totalBytes, result);
+      const rowBytes = row.reduce((sum, item) => sum + item.physical_bytes, 0);
+      squarify(children, [], remainingBox, totalBytes - rowBytes, result);
     }
   }
 
