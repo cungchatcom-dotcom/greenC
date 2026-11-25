@@ -6,7 +6,7 @@ use greenc_storage::settings::AppSettings;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use tauri::{AppHandle, Emitter};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,6 +42,7 @@ pub struct AppState {
     pub active_tasks: Arc<RwLock<HashMap<String, Arc<TaskControl>>>>,
     pub app_handle: Arc<RwLock<Option<AppHandle>>>,
     pub app_dir: PathBuf,
+    busy_marker: Arc<Mutex<Option<greenc_platform::BusyMarker>>>,
 }
 
 impl std::fmt::Debug for AppState {
@@ -65,6 +66,7 @@ impl AppState {
             active_tasks: Arc::new(RwLock::new(HashMap::new())),
             app_handle: Arc::new(RwLock::new(None)),
             app_dir,
+            busy_marker: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -81,12 +83,22 @@ impl AppState {
     pub fn register_task(&self, task_id: String, control: Arc<TaskControl>) {
         if let Ok(mut tasks) = self.active_tasks.write() {
             tasks.insert(task_id, control);
+            if let Ok(mut marker) = self.busy_marker.lock() {
+                if marker.is_none() {
+                    *marker = greenc_platform::BusyMarker::hold();
+                }
+            }
         }
     }
 
     pub fn unregister_task(&self, task_id: &str) {
         if let Ok(mut tasks) = self.active_tasks.write() {
             tasks.remove(task_id);
+            if tasks.is_empty() {
+                if let Ok(mut marker) = self.busy_marker.lock() {
+                    *marker = None;
+                }
+            }
         }
     }
 

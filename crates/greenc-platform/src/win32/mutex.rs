@@ -1,5 +1,5 @@
 use crate::handle::OwnedHandle;
-use greenc_core::config::SINGLE_INSTANCE_MUTEX_NAME;
+use greenc_core::config::{BUSY_MUTEX_NAME, SINGLE_INSTANCE_MUTEX_NAME};
 use greenc_core::error::{GreenCError, Result};
 use std::os::windows::ffi::OsStrExt;
 use windows::core::PCWSTR;
@@ -88,5 +88,29 @@ impl GreenCAppMutex {
 
             Ok(Self { _handle: owned })
         }
+    }
+}
+
+/// Named mutex whose existence tells the installer that files are being changed.
+#[derive(Debug)]
+pub struct BusyMarker {
+    _handle: OwnedHandle,
+}
+
+// SAFETY: The mutex is created unowned and is never waited on or released, so no thread affinity
+// applies; a kernel handle may be closed from any thread.
+unsafe impl Send for BusyMarker {}
+
+impl BusyMarker {
+    pub fn hold() -> Option<Self> {
+        let wide: Vec<u16> = std::ffi::OsStr::new(BUSY_MUTEX_NAME)
+            .encode_wide()
+            .chain(Some(0))
+            .collect();
+        // SAFETY: `wide` is NUL-terminated and outlives the call; the handle is owned immediately.
+        let handle = unsafe { CreateMutexW(None, false, PCWSTR(wide.as_ptr())) }.ok()?;
+        Some(Self {
+            _handle: OwnedHandle::new(handle)?,
+        })
     }
 }

@@ -23,6 +23,9 @@ pub const STORE_DATA_FOLDER_NAME: &str = "GreenC-Store";
 pub const LEGACY_DATA_FOLDER_NAME: &str = "Green C";
 pub const SINGLE_INSTANCE_MUTEX_NAME: &str = "GreenCAppMutex";
 
+/// Exists while GreenC is changing files; the installer refuses to close the app meanwhile.
+pub const BUSY_MUTEX_NAME: &str = "GreenCBusyMutex";
+
 // Retention & Watermark Bounds
 pub const DEFAULT_WATERMARK_RATIO: f64 = 0.85;
 pub const DEFAULT_RETENTION_DAYS: u32 = 7;

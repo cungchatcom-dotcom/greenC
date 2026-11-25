@@ -81,3 +81,13 @@ impl GreenCAppMutex {
         Ok(Self { file })
     }
 }
+
+/// Windows installers look for this marker; other platforms have no equivalent.
+#[derive(Debug)]
+pub struct BusyMarker(());
+
+impl BusyMarker {
+    pub fn hold() -> Option<Self> {
+        Some(Self(()))
+    }
+}

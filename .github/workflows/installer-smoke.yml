@@ -9,7 +9,7 @@ on:
       to:
         default: '2.2.0'
   push:
-    branches: ['test/installer-smoke']
+    branches: ['test/installer-smoke', 'fix/silent-upgrade']
 
 permissions:
   contents: read
@@ -22,6 +22,8 @@ jobs:
       FROM: ${{ inputs.from || '2.1.2' }}
       TO: ${{ inputs.to || '2.2.0' }}
     steps:
+      - uses: actions/checkout@v4
+
       - name: Upgrade and launch
         shell: pwsh
         run: |
@@ -54,8 +56,6 @@ jobs:
             Start-App $dir $env:FROM
             $db = Get-ChildItem $env:LOCALAPPDATA,$env:APPDATA -Recurse -Filter 'greenc.db' -ErrorAction SilentlyContinue | Select-Object -First 1
             Write-Output "::notice::database after $($env:FROM): $([bool]$db)"
-            try { $null = Install-GreenC $env:TO; Write-Output "::notice::silent upgrade while running: ok" }
-            catch { Write-Output "::warning::silent upgrade while running: $($_.Exception.Message)" }
             Get-Process GreenC -ErrorAction SilentlyContinue | Stop-Process -Force
             Start-Sleep 3
             $dir = Install-GreenC $env:TO
@@ -64,8 +64,29 @@ jobs:
             Write-Output "::notice::cli zalo status exit=$LASTEXITCODE $(($out -replace '\s+',' ').Substring(0,[Math]::Min(200,($out -replace '\s+',' ').Length)))"
             if ($LASTEXITCODE -ne 0) { throw 'zalo status failed' }
             Get-Process GreenC -ErrorAction SilentlyContinue | Stop-Process -Force
-            $sch = & (Join-Path $dir 'greenc-cli.exe') doctor 2>&1 | Out-String
-            Write-Output $sch
+            # Same binaries, installer script from this branch: upgrade while the app is running.
+            Start-App $dir $env:TO
+            New-Item -ItemType Directory -Force dist/GreenC | Out-Null
+            Copy-Item (Join-Path $dir 'GreenC.exe'),(Join-Path $dir 'greenc-cli.exe') dist/GreenC
+            $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+            if (-not (Test-Path $iscc)) { choco install innosetup -y | Out-Null }
+            & $iscc /Q /DAppVersion=9.9.9 packaging/greenc.iss
+            if ($LASTEXITCODE -ne 0) { throw 'iscc failed' }
+            $setup = (Resolve-Path dist/GreenC-Setup-9.9.9.exe).Path
+            function Run-Setup { $p = Start-Process $setup -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-' -PassThru; if (-not $p.WaitForExit(180000)) { throw 'installer hung' }; $p.ExitCode }
+            $busy = [Threading.Mutex]::new($false, 'GreenCBusyMutex')
+            $code = Run-Setup
+            $alive = [bool](Get-Process GreenC -ErrorAction SilentlyContinue)
+            $busy.Dispose()
+            Write-Output "::notice::setup while busy: exit=$code app_alive=$alive"
+            if ($code -eq 0 -or -not $alive) { throw 'setup must refuse while GreenC is busy' }
+            $code = Run-Setup
+            $ver = (Get-ItemProperty $key).DisplayVersion
+            Write-Output "::notice::setup while running: exit=$code registered=$ver"
+            if ($code -ne 0 -or $ver -ne '9.9.9') { throw 'silent upgrade while running failed' }
+            Start-Sleep 10
+            if (-not (Get-Process GreenC -ErrorAction SilentlyContinue)) { throw 'app was not started again' }
+            Start-App $dir '9.9.9'
           } catch {
             Write-Output "::error::$($_.Exception.Message)"
             exit 1
