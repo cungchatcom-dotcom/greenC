@@ -235,3 +235,92 @@ fn test_verify_detects_in_place_file_mutation_outside_message_dir() {
         "Expected IntegrityMismatch when file content differs with same length, got {err:?}"
     );
 }
+
+#[test]
+fn failed_copy_never_touches_files_that_were_already_in_the_destination() {
+    use greenc_relocate::verified_copy::verified_copy_tree;
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (src, dst) = (tmp.path().join("D_Documents"), tmp.path().join("Documents"));
+    fs::create_dir_all(src.join("sub")).unwrap();
+    fs::create_dir_all(&dst).unwrap();
+    fs::write(src.join("a.txt"), b"moved a").unwrap();
+    fs::write(src.join("same.txt"), b"equal").unwrap();
+    fs::write(src.join("sub/report.docx"), b"old version").unwrap();
+    fs::write(src.join("desktop.ini"), b"one").unwrap();
+    fs::write(dst.join("desktop.ini"), b"two").unwrap();
+    fs::write(dst.join("same.txt"), b"equal").unwrap();
+    fs::write(dst.join("mine.txt"), b"precious").unwrap();
+
+    // Conflicting file: refuse, overwrite nothing, remove only what this copy created.
+    fs::create_dir_all(dst.join("sub")).unwrap();
+    fs::write(dst.join("sub/report.docx"), b"newer version").unwrap();
+    assert!(verified_copy_tree(&src, &dst, &TaskControl::new(), |_, _| {}).is_err());
+    assert_eq!(fs::read(dst.join("mine.txt")).unwrap(), b"precious");
+    assert_eq!(
+        fs::read(dst.join("sub/report.docx")).unwrap(),
+        b"newer version"
+    );
+    assert_eq!(fs::read(dst.join("same.txt")).unwrap(), b"equal");
+    assert_eq!(fs::read(dst.join("desktop.ini")).unwrap(), b"two");
+    assert!(!dst.join("a.txt").exists());
+
+    // Cancelled: same guarantee.
+    fs::remove_file(dst.join("sub/report.docx")).unwrap();
+    let ctrl = TaskControl::new();
+    ctrl.cancel();
+    assert!(verified_copy_tree(&src, &dst, &ctrl, |_, _| {}).is_err());
+    assert_eq!(fs::read(dst.join("mine.txt")).unwrap(), b"precious");
+
+    // No conflict: merges.
+    verified_copy_tree(&src, &dst, &TaskControl::new(), |_, _| {}).unwrap();
+    assert_eq!(
+        fs::read(dst.join("sub/report.docx")).unwrap(),
+        b"old version"
+    );
+    assert_eq!(fs::read(dst.join("mine.txt")).unwrap(), b"precious");
+}
+
+#[test]
+fn removing_the_copied_source_keeps_new_and_changed_files() {
+    use greenc_relocate::verified_copy::{verified_copy_tree_manifest, CopyTreeOptions};
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (src, dst) = (tmp.path().join("Downloads"), tmp.path().join("D/Downloads"));
+    fs::create_dir_all(src.join("done")).unwrap();
+    fs::write(src.join("done/old.zip"), b"old").unwrap();
+    fs::write(src.join("edited.txt"), b"v1").unwrap();
+    let (_, manifest) = verified_copy_tree_manifest(
+        &src,
+        &dst,
+        &CopyTreeOptions::default(),
+        &TaskControl::new(),
+        |_, _| {},
+    )
+    .unwrap();
+    assert!(manifest.matches_tree(&src));
+
+    fs::write(src.join("edited.txt"), b"v2 longer").unwrap();
+    fs::write(src.join("new.pdf"), b"saved during the copy").unwrap();
+    assert!(!manifest.matches_tree(&src));
+
+    assert_eq!(manifest.remove_copied(&src, &dst), 1);
+    assert_eq!(fs::read(src.join("edited.txt")).unwrap(), b"v2 longer");
+    assert!(src.join("new.pdf").exists());
+    assert!(!src.join("done").exists());
+    assert_eq!(fs::read(dst.join("done/old.zip")).unwrap(), b"old");
+
+    // A copy that vanished from the destination is never removed from the source.
+    let (s2, d2) = (tmp.path().join("s2"), tmp.path().join("d2"));
+    fs::create_dir_all(&s2).unwrap();
+    fs::write(s2.join("only.txt"), b"x").unwrap();
+    let (_, m2) = verified_copy_tree_manifest(
+        &s2,
+        &d2,
+        &CopyTreeOptions::default(),
+        &TaskControl::new(),
+        |_, _| {},
+    )
+    .unwrap();
+    fs::remove_file(d2.join("only.txt")).unwrap();
+    assert_eq!(m2.remove_copied(&s2, &d2), 1);
+    assert!(s2.join("only.txt").exists());
+}

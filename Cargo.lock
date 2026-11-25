@@ -1661,7 +1661,7 @@ dependencies = [
 
 [[package]]
 name = "greenc-app"
-version = "2.2.1"
+version = "2.2.2"
 dependencies = [
  "chrono",
  "greenc-core",
@@ -1687,7 +1687,7 @@ dependencies = [
 
 [[package]]
 name = "greenc-cli"
-version = "2.2.1"
+version = "2.2.2"
 dependencies = [
  "chrono",
  "clap",
@@ -1707,7 +1707,7 @@ dependencies = [
 
 [[package]]
 name = "greenc-core"
-version = "2.2.1"
+version = "2.2.2"
 dependencies = [
  "chrono",
  "parking_lot",
@@ -1719,7 +1719,7 @@ dependencies = [
 
 [[package]]
 name = "greenc-i18n"
-version = "2.2.1"
+version = "2.2.2"
 dependencies = [
  "greenc-core",
  "serde",
@@ -1729,7 +1729,7 @@ dependencies = [
 
 [[package]]
 name = "greenc-platform"
-version = "2.2.1"
+version = "2.2.2"
 dependencies = [
  "greenc-core",
  "libc",
@@ -1742,7 +1742,7 @@ dependencies = [
 
 [[package]]
 name = "greenc-relocate"
-version = "2.2.1"
+version = "2.2.2"
 dependencies = [
  "chrono",
  "greenc-core",
@@ -1761,7 +1761,7 @@ dependencies = [
 
 [[package]]
 name = "greenc-scanner"
-version = "2.2.1"
+version = "2.2.2"
 dependencies = [
  "chrono",
  "greenc-core",
@@ -1778,7 +1778,7 @@ dependencies = [
 
 [[package]]
 name = "greenc-storage"
-version = "2.2.1"
+version = "2.2.2"
 dependencies = [
  "chrono",
  "greenc-core",
@@ -1793,7 +1793,7 @@ dependencies = [
 
 [[package]]
 name = "greenc-vault"
-version = "2.2.1"
+version = "2.2.2"
 dependencies = [
  "chrono",
  "greenc-core",

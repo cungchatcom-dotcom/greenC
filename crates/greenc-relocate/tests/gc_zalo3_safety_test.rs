@@ -554,10 +554,17 @@ fn item2_undo_does_not_swallow_delete_error() {
         let _ = fs::set_permissions(&target_parent, fs::Permissions::from_mode(0o755));
         let _ = fs::set_permissions(&target, fs::Permissions::from_mode(0o755));
 
+        // The undo itself succeeded, and the leftover is kept and named to the user.
+        let record = res.unwrap();
         assert!(
-            res.is_err(),
-            "undo_relocation MUST NOT swallow target deletion errors; got {res:?}"
+            record
+                .detail
+                .as_deref()
+                .is_some_and(|d| d.contains(&target.display().to_string())),
+            "leftover target must be reported; got {record:?}"
         );
+        assert_eq!(fs::read(src.join("data.bin")).unwrap(), b"HELLO");
+        assert_eq!(fs::read(target.join("data.bin")).unwrap(), b"HELLO");
     }
 }
 
