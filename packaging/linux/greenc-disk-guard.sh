@@ -182,8 +182,8 @@ elif [[ -n "$ps_out" ]]; then
     $1 == self_pid { next }
     $2 ~ /^(grep|egrep|fgrep|rg|awk|gawk|mawk|sed|ps)$/ { next }
     $2 ~ /^(cargo|rustc|rustdoc|clippy-driver)$/ { tools["cargo"]=1 }
-    $2 ~ /^(gradle|gradlew)$/ || /GradleDaemon|GradleWrapperMain|GradleWorkerMain|KotlinCompileDaemon/ { tools["gradle"]=1 }
-    $2 ~ /^(npm|pnpm|yarn)$/ || /npm-cli\.js/ { tools["npm"]=1 }
+    $2 ~ /^(gradle|gradlew)$/ || ($2 == "java" && /GradleDaemon|GradleWrapperMain|GradleWorkerMain|KotlinCompileDaemon/) { tools["gradle"]=1 }
+    $2 ~ /^(npm|pnpm|yarn)$/ || ($2 ~ /^node/ && /npm-cli\.js/) { tools["npm"]=1 }
     $2 ~ /^(pip|pip3|uv)$/ || ($2 ~ /^python/ && /(^|[[:space:]])-m[[:space:]]+(pip|pip3|uv)([[:space:]]|$)/) { tools["pip"]=1 }
     END {
       out=""
