@@ -114,8 +114,17 @@ fn backdate_dir(path: &Path, age_days: u64, now: SystemTime) {
         let _ = std::fs::File::open(path)
             .and_then(|f| f.set_times(FileTimes::new().set_modified(ts).set_accessed(ts)));
     }
-    #[cfg(not(unix))]
-    let _ = (path, ts);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        // FILE_WRITE_ATTRIBUTES + FILE_FLAG_BACKUP_SEMANTICS: required to set times on a directory.
+        let _ = std::fs::OpenOptions::new()
+            .access_mode(0x0100)
+            .share_mode(7)
+            .custom_flags(0x0200_0000)
+            .open(path)
+            .and_then(|f| f.set_times(FileTimes::new().set_modified(ts).set_accessed(ts)));
+    }
 }
 
 #[test]

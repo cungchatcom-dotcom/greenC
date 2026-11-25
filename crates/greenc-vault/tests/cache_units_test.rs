@@ -21,6 +21,23 @@ fn set_times(path: &Path, mtime: SystemTime, atime: SystemTime) {
     f.set_times(times).unwrap();
 }
 
+fn backdate_dir_to(path: &Path, ts: SystemTime) {
+    let times = FileTimes::new().set_modified(ts).set_accessed(ts);
+    #[cfg(unix)]
+    let opened = std::fs::File::open(path);
+    #[cfg(windows)]
+    let opened = {
+        use std::os::windows::fs::OpenOptionsExt;
+        // FILE_WRITE_ATTRIBUTES + FILE_FLAG_BACKUP_SEMANTICS: required to set times on a directory.
+        std::fs::OpenOptions::new()
+            .access_mode(0x0100)
+            .share_mode(7)
+            .custom_flags(0x0200_0000)
+            .open(path)
+    };
+    let _ = opened.and_then(|f| f.set_times(times));
+}
+
 fn write_aged_file(path: &Path, bytes: &[u8], mtime: SystemTime, atime: SystemTime) {
     if let Some(p) = path.parent() {
         std::fs::create_dir_all(p).unwrap();
@@ -141,24 +158,14 @@ fn build_fake_gradle_tree(root: &Path, now: SystemTime) -> std::path::PathBuf {
 
     // Backdate directory mtimes/atimes for old_hash_01 and 7.6 so dir metadata matches files.
     // (Directory mtime is bumped when child files are created.)
-    #[cfg(unix)]
-    {
-        for rel in [
-            "8.11.1/transforms/old_hash_01/transformed",
-            "8.11.1/transforms/old_hash_01",
-            "7.6/transforms/legacy_hash",
-            "7.6/transforms",
-            "7.6",
-        ] {
-            let dir_p = caches.join(rel);
-            let _ = std::fs::File::open(&dir_p).and_then(|f| {
-                f.set_times(
-                    FileTimes::new()
-                        .set_modified(twenty_days_ago)
-                        .set_accessed(twenty_days_ago),
-                )
-            });
-        }
+    for rel in [
+        "8.11.1/transforms/old_hash_01/transformed",
+        "8.11.1/transforms/old_hash_01",
+        "7.6/transforms/legacy_hash",
+        "7.6/transforms",
+        "7.6",
+    ] {
+        backdate_dir_to(&caches.join(rel), twenty_days_ago);
     }
 
     caches

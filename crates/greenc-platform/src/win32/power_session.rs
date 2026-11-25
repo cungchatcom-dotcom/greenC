@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex};
 use windows::core::PCWSTR;
 use windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
 use windows::Win32::System::Registry::{
-    RegCloseKey, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW, HKEY,
-    HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_SZ,
+    RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
+    HKEY, HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_OPTION_NON_VOLATILE, REG_SZ,
 };
 use windows::Win32::UI::Shell::{
     SHQueryUserNotificationState, QUNS_BUSY, QUNS_PRESENTATION_MODE, QUNS_RUNNING_D3D_FULL_SCREEN,
@@ -128,14 +128,19 @@ fn to_wide_null(s: &str) -> Vec<u16> {
 pub fn set_autostart_registry_native(app_name: &str, exe_path: &Path, enabled: bool) -> Result<()> {
     let subkey_w = to_wide_null(RUN_REGISTRY_SUBKEY);
     let mut raw_key = HKEY::default();
-    // SAFETY: Opens `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` for the current user only.
+    // SAFETY: Opens or creates `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` for the current
+    // user only. The key can be missing on fresh profiles, so it must be created on demand.
     let open_err = unsafe {
-        RegOpenKeyExW(
+        RegCreateKeyExW(
             HKEY_CURRENT_USER,
             PCWSTR(subkey_w.as_ptr()),
             0,
+            PCWSTR::null(),
+            REG_OPTION_NON_VOLATILE,
             KEY_SET_VALUE | KEY_QUERY_VALUE,
+            None,
             &mut raw_key,
+            None,
         )
     };
     if open_err.is_err() {
