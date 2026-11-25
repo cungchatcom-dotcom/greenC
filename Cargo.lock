@@ -1734,6 +1734,7 @@ dependencies = [
  "greenc-core",
  "libc",
  "serde",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.21",
  "windows 0.58.0",

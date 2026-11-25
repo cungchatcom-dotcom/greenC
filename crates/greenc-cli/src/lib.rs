@@ -151,6 +151,10 @@ pub enum Commands {
         #[command(subcommand)]
         action: ZaloCommands,
     },
+    /// Internal Microsoft Store (MSIX) breakaway restore helper.
+    /// Accepts NO path arguments on the command line; reads validated job JSON from stdin only.
+    #[command(name = "__restore-helper", hide = true)]
+    RestoreHelper,
 }
 
 #[derive(Subcommand, Debug)]
@@ -294,6 +298,9 @@ pub enum VaultCommands {
         archive_id: String,
         #[arg(long = "file-id")]
         file_ids: Vec<i64>,
+        /// Optional destination directory outside AppData (e.g. `Documents\GreenC Restored`).
+        #[arg(long = "to")]
+        to: Option<PathBuf>,
     },
     Purge {
         #[arg(long)]
@@ -836,11 +843,13 @@ fn execute_inner(cli: Cli, db_path: &Path, ctrl: &Arc<TaskControl>) -> Result<se
             VaultCommands::Restore {
                 archive_id,
                 file_ids,
+                to,
             } => {
                 let db_id = resolve_archive_id(&db, &archive_id)?;
                 let vault_dir = settings.vault_dir(&default_vault_dir())?;
                 let restore_opts = RestoreOptions {
                     vault_dir: Some(vault_dir),
+                    restore_dir: to,
                     ..Default::default()
                 };
                 let sha256_verified = restore_opts.verify_sha256;
@@ -850,9 +859,15 @@ fn execute_inner(cli: Cli, db_path: &Path, ctrl: &Arc<TaskControl>) -> Result<se
                 } else {
                     engine.restore_files_selective(db_id, &file_ids)?
                 };
+                let restored_paths: Vec<String> = res
+                    .restored_paths
+                    .iter()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .collect();
                 Ok(json!({
                     "restored_archive_id": archive_id,
                     "restored_files_count": res.restored_count,
+                    "restored_paths": restored_paths,
                     "status": "RESTORED",
                     "sha256_verified": sha256_verified,
                     "_human": format!("Restored {} files from archive {}", res.restored_count, archive_id)
@@ -2010,7 +2025,145 @@ fn execute_inner(cli: Cli, db_path: &Path, ctrl: &Arc<TaskControl>) -> Result<se
                 }
             }
         }
+        Commands::RestoreHelper => Err(GreenCError::PreconditionBlocked {
+            operation: "__restore-helper".to_string(),
+            reason:
+                "__restore-helper phải được chạy trực tiếp qua stdin/stdout (không qua execute_cli)"
+                    .to_string(),
+        }),
     }
+}
+
+/// Dispatches a validated [`greenc_platform::breakaway::RestoreHelperRequest`] after checking
+/// package identity. If `running_in_package` is `true`, stops immediately with
+/// [`greenc_platform::breakaway::EXIT_HELPER_STILL_IN_PACKAGE`] without touching disk.
+pub fn run_restore_helper_request(
+    req: greenc_platform::breakaway::RestoreHelperRequest,
+    running_in_package: bool,
+) -> (i32, greenc_platform::breakaway::RestoreHelperResponse) {
+    use greenc_platform::breakaway::{
+        current_package_full_name, RestoreHelperRequest, RestoreHelperResponse,
+        EXIT_HELPER_STILL_IN_PACKAGE,
+    };
+
+    if running_in_package {
+        return (
+            EXIT_HELPER_STILL_IN_PACKAGE,
+            RestoreHelperResponse::still_in_package(current_package_full_name().as_deref()),
+        );
+    }
+
+    match req {
+        RestoreHelperRequest::RestoreFiles {
+            payload_root,
+            conflict_strategy,
+            verify_sha256,
+            restore_hardlinks,
+            restore_timestamps,
+            items,
+        } => greenc_vault::rollback::execute_restore_files_job(
+            &payload_root,
+            conflict_strategy,
+            verify_sha256,
+            restore_hardlinks,
+            restore_timestamps,
+            &items,
+            running_in_package,
+        ),
+        RestoreHelperRequest::RestoreStagedDir {
+            staged_dir,
+            original_path,
+            expected_dev,
+            expected_ino,
+        } => greenc_vault::guard::execute_restore_staged_dir_job(
+            &staged_dir,
+            &original_path,
+            expected_dev,
+            expected_ino,
+            running_in_package,
+        ),
+        RestoreHelperRequest::UndoRelocationDir {
+            source_path,
+            target_path,
+        } => {
+            let reparse = NativeReparsePointApi;
+            greenc_relocate::mover::execute_undo_relocation_dir_job(
+                &source_path,
+                &target_path,
+                &reparse,
+                running_in_package,
+            )
+        }
+    }
+}
+
+/// Entrypoint for hidden `greenc-cli __restore-helper`:
+/// - Self-checks MSIX package identity via `GetCurrentPackageFullName` FIRST.
+/// - Reads bounded JSON request from stdin (never accepts arbitrary paths on CLI).
+/// - Writes structured JSON [`greenc_platform::breakaway::RestoreHelperResponse`] to stdout.
+/// - Never opens SQLite or creates files under `%LOCALAPPDATA%\GreenC-Store`.
+pub fn run_restore_helper_stdio() -> i32 {
+    use greenc_platform::breakaway::{
+        current_package_full_name, is_running_in_msix_package, RestoreHelperRequest,
+        RestoreHelperResponse, EXIT_HELPER_STILL_IN_PACKAGE, MAX_RESTORE_HELPER_STDIN_BYTES,
+    };
+    use std::io::Read;
+
+    if is_running_in_msix_package() {
+        let resp = RestoreHelperResponse::still_in_package(current_package_full_name().as_deref());
+        if let Ok(json) = serde_json::to_string(&resp) {
+            println!("{json}");
+        }
+        return EXIT_HELPER_STILL_IN_PACKAGE;
+    }
+
+    let mut raw = Vec::new();
+    let read_res = std::io::stdin()
+        .take(MAX_RESTORE_HELPER_STDIN_BYTES + 1)
+        .read_to_end(&mut raw);
+    if let Err(e) = read_res {
+        let resp = RestoreHelperResponse::failed(
+            "stdin_read_error",
+            format!("Không đọc được dữ liệu stdin của __restore-helper: {e}"),
+        );
+        if let Ok(json) = serde_json::to_string(&resp) {
+            println!("{json}");
+        }
+        return EXIT_OPERATIONAL_ERROR;
+    }
+    if (raw.len() as u64) > MAX_RESTORE_HELPER_STDIN_BYTES {
+        let resp = RestoreHelperResponse::failed(
+            "stdin_too_large",
+            format!(
+                "Yêu cầu __restore-helper vượt quá giới hạn {} byte",
+                MAX_RESTORE_HELPER_STDIN_BYTES
+            ),
+        );
+        if let Ok(json) = serde_json::to_string(&resp) {
+            println!("{json}");
+        }
+        return EXIT_PRECONDITION_BLOCKED;
+    }
+
+    let req: RestoreHelperRequest = match serde_json::from_slice(&raw) {
+        Ok(r) => r,
+        Err(e) => {
+            let resp = RestoreHelperResponse::failed(
+                "invalid_request_json",
+                format!("JSON yêu cầu __restore-helper không hợp lệ: {e}"),
+            );
+            if let Ok(json) = serde_json::to_string(&resp) {
+                println!("{json}");
+            }
+            return EXIT_PRECONDITION_BLOCKED;
+        }
+    };
+
+    let (code, resp) = run_restore_helper_request(req, false);
+    if let Ok(json) = serde_json::to_string(&resp) {
+        println!("{json}");
+    }
+    code
 }
 
 fn format_safety_copies_human(

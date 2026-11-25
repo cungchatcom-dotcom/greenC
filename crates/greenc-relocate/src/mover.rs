@@ -1,19 +1,31 @@
 //! Transactional Mover implementing the 4-phase safe relocation state machine and 1-click Undo (Tasks T039, T046).
 
 use crate::candidate::{CandidateQualificationEngine, RelocationCandidate};
-use crate::verified_copy::{remove_dir_all_safe, verified_copy_tree};
+use crate::verified_copy::{
+    remove_dir_all_safe, to_extended_io_path, verified_copy_tree, verified_copy_tree_strict,
+};
 use chrono::Utc;
+use greenc_core::config::is_windows_appdata_app_dir;
 use greenc_core::error::{GreenCError, Result};
 use greenc_core::models::{
     RelocationHealthStatus, RelocationRecord, RelocationStatus, RelocationStrategyKind,
 };
 use greenc_core::task::TaskControl;
+use greenc_platform::breakaway::{
+    current_package_full_name, format_breakaway_unavailable_guidance, BreakawayHelperClient,
+    NativeBreakawayHelperClient, PrivateBreakawayJobDir, RestoreHelperRequest,
+    RestoreHelperResponse, EXIT_HELPER_STILL_IN_PACKAGE,
+};
+use greenc_platform::handle::ensure_not_protected_system_path;
 use greenc_platform::traits::{
     ProcessServiceProbe, ReparsePointApi, ShellFolderApi, Win32VolumeApi,
 };
 use greenc_storage::db::GreenCDb;
+use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::io::Read;
+use std::path::{Component, Path, PathBuf};
 
 pub struct MoveOptions {
     pub target_drive: char,
@@ -259,6 +271,31 @@ impl TransactionalMover {
         proc_probe: &dyn ProcessServiceProbe,
         ctrl: &TaskControl,
     ) -> Result<RelocationRecord> {
+        let client = NativeBreakawayHelperClient;
+        Self::undo_relocation_with_breakaway(
+            record_id,
+            db,
+            volume_api,
+            reparse_api,
+            shell_api,
+            proc_probe,
+            ctrl,
+            &client,
+        )
+    }
+
+    /// 1-Click Undo with an injectable [`BreakawayHelperClient`] for deterministic Store MSIX tests.
+    #[allow(clippy::too_many_arguments)]
+    pub fn undo_relocation_with_breakaway(
+        record_id: i64,
+        db: &GreenCDb,
+        volume_api: &dyn Win32VolumeApi,
+        reparse_api: &dyn ReparsePointApi,
+        shell_api: &dyn ShellFolderApi,
+        proc_probe: &dyn ProcessServiceProbe,
+        ctrl: &TaskControl,
+        breakaway_client: &dyn BreakawayHelperClient,
+    ) -> Result<RelocationRecord> {
         let records = db.list_relocations(None)?;
         let mut record = records
             .into_iter()
@@ -302,6 +339,98 @@ impl TransactionalMover {
                     });
                 }
 
+                if cfg!(feature = "store")
+                    && breakaway_client.is_packaged()
+                    && is_windows_appdata_app_dir(&source_path)
+                {
+                    let job_dir = PrivateBreakawayJobDir::create().map_err(|e| {
+                        GreenCError::PreconditionBlocked {
+                            operation: "undo_relocation_store_breakaway".to_string(),
+                            reason: format_breakaway_unavailable_guidance(
+                                "hoàn tác chuyển thư mục",
+                                &e.to_string(),
+                            ),
+                        }
+                    })?;
+                    let req = RestoreHelperRequest::UndoRelocationDir {
+                        source_path: source_path.clone(),
+                        target_path: target_path.clone(),
+                    };
+                    let req_bytes = serde_json::to_vec(&req)?;
+                    let exec_out = match breakaway_client.execute(&job_dir, &req_bytes) {
+                        Ok(out) => out,
+                        Err(err) => {
+                            return Err(GreenCError::PreconditionBlocked {
+                                operation: "undo_relocation_store_breakaway".to_string(),
+                                reason: format_breakaway_unavailable_guidance(
+                                    "hoàn tác chuyển thư mục",
+                                    &err.to_string(),
+                                ),
+                            });
+                        }
+                    };
+                    if exec_out.exit_code == EXIT_HELPER_STILL_IN_PACKAGE {
+                        let detail =
+                            serde_json::from_str::<RestoreHelperResponse>(&exec_out.stdout)
+                                .ok()
+                                .and_then(|r| r.error)
+                                .unwrap_or_else(|| {
+                                    "Tiến trình trợ giúp vẫn còn trong gói MSIX".to_string()
+                                });
+                        return Err(GreenCError::PreconditionBlocked {
+                            operation: "undo_relocation_store_breakaway".to_string(),
+                            reason: format_breakaway_unavailable_guidance(
+                                "hoàn tác chuyển thư mục",
+                                &detail,
+                            ),
+                        });
+                    }
+                    let resp: RestoreHelperResponse = serde_json::from_str(&exec_out.stdout)
+                        .map_err(|e| {
+                            GreenCError::Relocation(format!(
+                                "Phản hồi hoàn tác ngoài gói không hợp lệ (exit={}): {e}; dữ liệu tại '{}' được giữ nguyên",
+                                exec_out.exit_code,
+                                target_path.display()
+                            ))
+                        })?;
+                    if !resp.running_outside_package
+                        || resp.error_code.as_deref() == Some("still_in_package")
+                    {
+                        let detail = resp.error.unwrap_or_else(|| {
+                            "Không xác nhận được trạng thái ngoài gói MSIX".to_string()
+                        });
+                        return Err(GreenCError::PreconditionBlocked {
+                            operation: "undo_relocation_store_breakaway".to_string(),
+                            reason: format_breakaway_unavailable_guidance(
+                                "hoàn tác chuyển thư mục",
+                                &detail,
+                            ),
+                        });
+                    }
+                    if exec_out.exit_code != 0
+                        || !resp.ok
+                        || resp.verified_dir.as_deref() != Some(source_path.as_path())
+                    {
+                        let detail = resp
+                            .error
+                            .unwrap_or_else(|| format!("exit code {}", exec_out.exit_code));
+                        return Err(GreenCError::Relocation(format!(
+                            "Hoàn tác chuyển thư mục ngoài gói MSIX thất bại (dữ liệu tại '{}' được giữ nguyên): {detail}",
+                            target_path.display()
+                        )));
+                    }
+
+                    // Only delete secondary-disk copy AFTER outside-package verification passed!
+                    remove_dir_all_safe(&target_path);
+                    record.status = RelocationStatus::Undone;
+                    record.detail = Some(
+                        "Hoàn tác di chuyển về AppData thật thành công (đã xác minh ngoài gói MSIX)"
+                            .to_string(),
+                    );
+                    db.save_relocation(&record)?;
+                    return Ok(record);
+                }
+
                 let source_parent = source_path
                     .parent()
                     .map(|p| p.to_path_buf())
@@ -339,6 +468,13 @@ impl TransactionalMover {
                 Ok(record)
             }
             RelocationStrategyKind::KnownFolder => {
+                if cfg!(feature = "store") {
+                    return Err(GreenCError::PreconditionBlocked {
+                        operation: "undo_relocation".to_string(),
+                        reason: "Bản Microsoft Store tạm tắt hoàn tác chuyển thư mục hệ thống (Known Folders) do cơ chế ảo hoá HKCU của MSIX; dữ liệu hiện tại được giữ nguyên. Hãy đổi vị trí trong File Explorer → Properties → Location hoặc dùng bản cài EXE.".to_string(),
+                    });
+                }
+
                 let source_path = record.source_path.clone();
                 let target_path = record.target_path.clone();
 
@@ -379,6 +515,279 @@ impl TransactionalMover {
             }
         }
     }
+}
+
+fn validate_relocation_helper_path(path: &Path, operation: &str) -> Result<()> {
+    if !path.is_absolute() || path.components().any(|c| matches!(c, Component::ParentDir)) {
+        return Err(GreenCError::PreconditionBlocked {
+            operation: operation.to_string(),
+            reason: format!(
+                "Đường dẫn '{}' không tuyệt đối hoặc chứa '..'",
+                path.display()
+            ),
+        });
+    }
+    ensure_not_protected_system_path(path, operation)?;
+    Ok(())
+}
+
+fn hash_file_sha256(path: &Path) -> Result<String> {
+    let mut f = fs::File::open(to_extended_io_path(path))?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = f.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(format!("{:02x}", hasher.finalize()))
+}
+
+type FileHashMap = BTreeMap<PathBuf, (u64, String)>;
+
+fn collect_tree_hashes(root: &Path) -> Result<(FileHashMap, u64)> {
+    let mut map = BTreeMap::new();
+    let mut total_bytes = 0u64;
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry_res in fs::read_dir(to_extended_io_path(&dir))? {
+            let entry = entry_res?;
+            let path = entry.path();
+            let meta = fs::symlink_metadata(&path)?;
+            if meta.file_type().is_symlink() {
+                return Err(GreenCError::PreconditionBlocked {
+                    operation: "undo_relocation_verify".to_string(),
+                    reason: format!("Phát hiện symlink ngoài ý muốn tại '{}'", path.display()),
+                });
+            }
+            if meta.is_dir() {
+                stack.push(path);
+            } else if meta.is_file() {
+                let rel = path
+                    .strip_prefix(root)
+                    .map(Path::to_path_buf)
+                    .map_err(|e| GreenCError::Relocation(e.to_string()))?;
+                let sha = hash_file_sha256(&path)?;
+                let len = meta.len();
+                total_bytes = total_bytes.saturating_add(len);
+                map.insert(rel, (len, sha));
+            }
+        }
+    }
+    Ok((map, total_bytes))
+}
+
+/// Executes an `UndoRelocationDir` job inside the unpackaged `greenc-cli __restore-helper` child
+/// process: strictly copies `target_path` to a temporary sibling of `source_path`, removes the
+/// junction at `source_path`, renames the verified copy into `source_path`, and verifies every
+/// file's existence and SHA-256 hash against `target_path` from outside the MSIX package.
+/// Never deletes `target_path` on failure.
+pub fn execute_undo_relocation_dir_job(
+    source_path: &Path,
+    target_path: &Path,
+    reparse_api: &dyn ReparsePointApi,
+    running_in_package: bool,
+) -> (i32, RestoreHelperResponse) {
+    if running_in_package {
+        return (
+            EXIT_HELPER_STILL_IN_PACKAGE,
+            RestoreHelperResponse::still_in_package(current_package_full_name().as_deref()),
+        );
+    }
+
+    if let Err(e) = validate_relocation_helper_path(source_path, "undo_relocation_source") {
+        return (
+            2,
+            RestoreHelperResponse::failed("invalid_source_path", e.to_string()),
+        );
+    }
+    if let Err(e) = validate_relocation_helper_path(target_path, "undo_relocation_target") {
+        return (
+            2,
+            RestoreHelperResponse::failed("invalid_target_path", e.to_string()),
+        );
+    }
+
+    let tmeta = match fs::symlink_metadata(target_path) {
+        Ok(m) if !m.file_type().is_symlink() && m.is_dir() => m,
+        Ok(_) => {
+            return (
+                2,
+                RestoreHelperResponse::failed(
+                    "invalid_target_dir",
+                    format!(
+                        "Thư mục đích '{}' là symlink hoặc không phải thư mục thật",
+                        target_path.display()
+                    ),
+                ),
+            );
+        }
+        Err(e) => {
+            return (
+                1,
+                RestoreHelperResponse::failed(
+                    "target_missing",
+                    format!("Không thấy thư mục đích '{}': {e}", target_path.display()),
+                ),
+            );
+        }
+    };
+    let _ = tmeta;
+
+    let Some(source_parent) = source_path.parent() else {
+        return (
+            2,
+            RestoreHelperResponse::failed(
+                "invalid_source_parent",
+                format!("Đường dẫn '{}' không có thư mục cha", source_path.display()),
+            ),
+        );
+    };
+    if let Err(e) = fs::create_dir_all(source_parent) {
+        return (
+            1,
+            RestoreHelperResponse::failed(
+                "create_parent_failed",
+                format!(
+                    "Không tạo được thư mục cha '{}': {e}",
+                    source_parent.display()
+                ),
+            ),
+        );
+    }
+
+    let restore_tmp = source_parent.join(format!("restoring.{}", uuid::Uuid::new_v4()));
+    let ctrl = TaskControl::new();
+    if let Err(e) = verified_copy_tree_strict(target_path, &restore_tmp, &ctrl, |_, _| {}) {
+        remove_dir_all_safe(&restore_tmp);
+        return (
+            1,
+            RestoreHelperResponse::failed(
+                "copy_failed",
+                format!(
+                    "Sao chép hoàn tác từ '{}' thất bại: {e}",
+                    target_path.display()
+                ),
+            ),
+        );
+    }
+
+    // Vacate `source_path` safely: only remove a junction or an empty directory, NEVER delete user data.
+    if reparse_api.is_reparse_point(source_path) {
+        if let Err(e) = reparse_api.delete_junction(source_path) {
+            remove_dir_all_safe(&restore_tmp);
+            return (
+                1,
+                RestoreHelperResponse::failed(
+                    "delete_junction_failed",
+                    format!(
+                        "Không xoá được liên kết tại '{}': {e}",
+                        source_path.display()
+                    ),
+                ),
+            );
+        }
+    } else if fs::symlink_metadata(source_path).is_ok() {
+        if let Err(e) = fs::remove_dir(source_path) {
+            remove_dir_all_safe(&restore_tmp);
+            return (
+                2,
+                RestoreHelperResponse::failed(
+                    "source_occupied",
+                    format!(
+                        "Thư mục '{}' đang có dữ liệu hoặc không thể dọn rỗng ({e}); giữ nguyên mọi bản",
+                        source_path.display()
+                    ),
+                ),
+            );
+        }
+    }
+
+    if let Err(e) = fs::rename(&restore_tmp, source_path) {
+        return (
+            1,
+            RestoreHelperResponse::failed(
+                "rename_failed",
+                format!(
+                    "Không đổi tên được bản hoàn tác về '{}': {e}",
+                    source_path.display()
+                ),
+            ),
+        );
+    }
+
+    // Verify from outside the package that `source_path` is a real directory matching `target_path`
+    // file-for-file with exact SHA-256 digests.
+    if reparse_api.is_reparse_point(source_path)
+        || !fs::symlink_metadata(source_path)
+            .is_ok_and(|m| !m.file_type().is_symlink() && m.is_dir())
+    {
+        return (
+            1,
+            RestoreHelperResponse::failed(
+                "verify_dir_failed",
+                format!(
+                    "Xác minh ngoài gói thất bại: '{}' không phải thư mục thật sau hoàn tác",
+                    source_path.display()
+                ),
+            ),
+        );
+    }
+
+    let (expected_map, expected_bytes) = match collect_tree_hashes(target_path) {
+        Ok(v) => v,
+        Err(e) => {
+            return (
+                1,
+                RestoreHelperResponse::failed(
+                    "verify_target_read_failed",
+                    format!("Không đọc được cây đích để đối chiếu: {e}"),
+                ),
+            );
+        }
+    };
+    let (actual_map, _) = match collect_tree_hashes(source_path) {
+        Ok(v) => v,
+        Err(e) => {
+            return (
+                1,
+                RestoreHelperResponse::failed(
+                    "verify_source_read_failed",
+                    format!("Không đọc được cây sau hoàn tác để đối chiếu: {e}"),
+                ),
+            );
+        }
+    };
+
+    if expected_map != actual_map {
+        return (
+            1,
+            RestoreHelperResponse::failed(
+                "integrity_mismatch",
+                format!(
+                    "Xác minh ngoài gói thất bại: tệp/băm SHA-256 tại '{}' không khớp '{}'",
+                    source_path.display(),
+                    target_path.display()
+                ),
+            ),
+        );
+    }
+
+    (
+        0,
+        RestoreHelperResponse {
+            ok: true,
+            running_outside_package: true,
+            error_code: None,
+            error: None,
+            files: Vec::new(),
+            verified_dir: Some(source_path.to_path_buf()),
+            verified_file_count: expected_map.len() as u64,
+            verified_bytes: expected_bytes,
+        },
+    )
 }
 
 /// Extracts the drive letter from a Windows PathBuf/Path (e.g., 'C' from "C:\\Users" or "\\\\?\\C:\\...").

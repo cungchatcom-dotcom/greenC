@@ -14,6 +14,15 @@ use std::sync::Arc;
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
+
+    // Short-circuit internal MSIX breakaway helper BEFORE touching SQLite or `default_db_path()`
+    // so an unpackaged child process never creates a plain `%LOCALAPPDATA%\GreenC-Store` folder.
+    if matches!(cli.command, greenc_cli::Commands::RestoreHelper) {
+        let code = greenc_cli::run_restore_helper_stdio();
+        let code_u8 = u8::try_from(code.clamp(0, 255)).unwrap_or(1);
+        return ExitCode::from(code_u8);
+    }
+
     let ctrl = Arc::new(TaskControl::new());
 
     // Install cooperative Ctrl+C handler -> guarantees source data stays intact and exits 130.

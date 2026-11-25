@@ -22,7 +22,7 @@ pub use compress::{
     CompactionCandidate, InPlaceCompactor, COLD_AGE_THRESHOLD_DAYS, MIN_COMPACTION_FILE_SIZE,
 };
 pub use known_folders::{KnownFolderInfo, KnownFolderService};
-pub use mover::{MoveOptions, TransactionalMover};
+pub use mover::{execute_undo_relocation_dir_job, MoveOptions, TransactionalMover};
 pub use recovery::RecoveryService;
 pub use verified_copy::{remove_dir_all_safe, verified_copy_tree, CopyStats};
 pub use vhdx::{VhdxCompactor, VhdxImageCandidate};

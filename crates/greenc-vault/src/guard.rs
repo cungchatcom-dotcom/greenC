@@ -28,17 +28,22 @@ use crate::cache_units::{
 };
 use crate::cleanup::{CleanupOptions, DeletionMethod, SafeCleaner};
 use crate::profiles::PresetProfiles;
-use crate::rollback::safe_remove_vault_artifact;
+use crate::rollback::{safe_remove_vault_artifact, validate_restore_file_path};
 use crate::sniff::FormatSniffer;
 use crate::suggest::{suggest_large_build_outputs_with_busy, SuggestOptions};
 use chrono::{DateTime, Utc};
-use greenc_core::config::MIN_VAULT_RESERVE_BYTES;
+use greenc_core::config::{is_windows_appdata_app_dir, MIN_VAULT_RESERVE_BYTES};
 use greenc_core::error::{GreenCError, Result};
 use greenc_core::models::{
     is_same_volume, CleanCandidate, DirectDeleteRecord, DriveQuota, FileManifestItem,
     GuardCooldownState, QuotaLevel, RegenerableCacheMode,
 };
 use greenc_core::task::TaskControl;
+use greenc_platform::breakaway::{
+    current_package_full_name, format_breakaway_unavailable_guidance, BreakawayHelperClient,
+    NativeBreakawayHelperClient, PrivateBreakawayJobDir, RestoreHelperRequest,
+    RestoreHelperResponse, EXIT_HELPER_STILL_IN_PACKAGE,
+};
 use greenc_platform::detect_atime_reliability;
 use greenc_platform::dev_tools::{BusyToolsStatus, DevTool, DevToolProbe};
 #[cfg(not(unix))]
@@ -195,13 +200,26 @@ pub struct StagingRecoveryReport {
 
 /// Optional overrides for [`recover_staging_dir_with_options`] (defaults enforce live current user
 /// UID and `PresetProfiles::managed_dev_cache_roots()`).
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct StagingRecoveryOptions {
     /// Explicit list of managed developer cache roots (`None` -> `PresetProfiles::managed_dev_cache_roots()`).
     pub allowed_cache_roots: Option<Vec<PathBuf>>,
     /// Expected owner UID on Unix (`None` -> `greenc_platform::current_user_uid()`).
     #[cfg(unix)]
     pub expected_uid: Option<u32>,
+    /// Optional injectable MSIX breakaway helper client (defaults to [`NativeBreakawayHelperClient`]).
+    pub breakaway_client: Option<std::sync::Arc<dyn BreakawayHelperClient>>,
+}
+
+impl std::fmt::Debug for StagingRecoveryOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut ds = f.debug_struct("StagingRecoveryOptions");
+        ds.field("allowed_cache_roots", &self.allowed_cache_roots);
+        #[cfg(unix)]
+        ds.field("expected_uid", &self.expected_uid);
+        ds.field("has_breakaway_client", &self.breakaway_client.is_some());
+        ds.finish()
+    }
 }
 
 /// Runtime options for a drive-quota guard pass.
@@ -978,7 +996,12 @@ pub fn resolve_staging_dir_checked(
 
     // 1. User-specified explicit staging directory
     if let Some(exp) = explicit_staging {
-        if path_is_inside_dir(exp, allowed_parent) {
+        if cfg!(feature = "store") && is_windows_appdata_app_dir(exp) {
+            reject_reasons.push(format!(
+                "Bản Store không đặt khu chờ chỉ định '{}' trong AppData ảo hoá",
+                exp.display()
+            ));
+        } else if path_is_inside_dir(exp, allowed_parent) {
             reject_reasons.push(format!(
                 "khu chờ chỉ định '{}' nằm trong cây cache",
                 exp.display()
@@ -1324,6 +1347,221 @@ fn stage_directory_unit(
     })
 }
 
+/// Executes a `RestoreStagedDir` job inside the unpackaged `greenc-cli __restore-helper` child
+/// process: re-validates `staged_dir` and `original_path`, moves `staged_dir` back to real
+/// `original_path` without overwriting an existing destination, and verifies from outside the
+/// MSIX package that `original_path` exists on the real filesystem.
+pub fn execute_restore_staged_dir_job(
+    staged_dir: &Path,
+    original_path: &Path,
+    expected_dev: Option<u64>,
+    expected_ino: Option<u64>,
+    running_in_package: bool,
+) -> (i32, RestoreHelperResponse) {
+    if running_in_package {
+        return (
+            EXIT_HELPER_STILL_IN_PACKAGE,
+            RestoreHelperResponse::still_in_package(current_package_full_name().as_deref()),
+        );
+    }
+
+    if !staged_dir.is_absolute()
+        || path_has_parent_dir(staged_dir)
+        || is_windows_appdata_app_dir(staged_dir)
+    {
+        return (
+            2,
+            RestoreHelperResponse::failed(
+                "invalid_staged_dir",
+                format!(
+                    "Thư mục khu chờ '{}' không hợp lệ hoặc nằm trong AppData",
+                    staged_dir.display()
+                ),
+            ),
+        );
+    }
+
+    if let Err(e) = validate_restore_file_path(original_path, "restore_staged_dir") {
+        return (
+            2,
+            RestoreHelperResponse::failed("invalid_original_path", e.to_string()),
+        );
+    }
+
+    if let Err(why) = is_trusted_user_dir(staged_dir, None) {
+        return (
+            2,
+            RestoreHelperResponse::failed("untrusted_staged_dir", why),
+        );
+    }
+
+    if let (Some(ed), Some(ei)) = (expected_dev, expected_ino) {
+        match query_file_identity(staged_dir) {
+            Some(live) if live.volume_serial == ed && live.file_index == ei => {}
+            _ => {
+                return (
+                    2,
+                    RestoreHelperResponse::failed(
+                        "identity_mismatch",
+                        format!(
+                            "Định danh vật lý (dev/inode) của '{}' không khớp nhật ký khu chờ",
+                            staged_dir.display()
+                        ),
+                    ),
+                );
+            }
+        }
+    }
+
+    if std::fs::symlink_metadata(original_path).is_ok() {
+        return (
+            2,
+            RestoreHelperResponse::failed(
+                "restore_conflict",
+                format!(
+                    "Đường dẫn đích '{}' đã tồn tại trên đĩa thật; từ chối ghi đè",
+                    original_path.display()
+                ),
+            ),
+        );
+    }
+
+    if let Some(parent) = original_path.parent() {
+        if let Ok(pmeta) = std::fs::symlink_metadata(parent) {
+            if pmeta.file_type().is_symlink() || !pmeta.is_dir() {
+                return (
+                    2,
+                    RestoreHelperResponse::failed(
+                        "invalid_parent",
+                        format!(
+                            "Thư mục cha '{}' là symlink hoặc không phải thư mục thật",
+                            parent.display()
+                        ),
+                    ),
+                );
+            }
+        } else if let Err(e) = std::fs::create_dir_all(parent) {
+            return (
+                1,
+                RestoreHelperResponse::failed(
+                    "create_parent_failed",
+                    format!("Không tạo được thư mục cha '{}': {e}", parent.display()),
+                ),
+            );
+        }
+    }
+
+    if let Err(e) = std::fs::rename(staged_dir, original_path) {
+        return (
+            1,
+            RestoreHelperResponse::failed(
+                "rename_failed",
+                format!(
+                    "Không thể chuyển '{}' về '{}': {e}",
+                    staged_dir.display(),
+                    original_path.display()
+                ),
+            ),
+        );
+    }
+
+    // Verify from outside the package that `original_path` is now a real directory on disk.
+    match std::fs::symlink_metadata(original_path) {
+        Ok(m) if !m.file_type().is_symlink() && m.is_dir() => {}
+        _ => {
+            return (
+                1,
+                RestoreHelperResponse::failed(
+                    "verify_missing",
+                    format!(
+                        "Xác minh ngoài gói thất bại: không thấy thư mục thật '{}' sau khôi phục khu chờ",
+                        original_path.display()
+                    ),
+                ),
+            );
+        }
+    }
+
+    (
+        0,
+        RestoreHelperResponse {
+            ok: true,
+            running_outside_package: true,
+            error_code: None,
+            error: None,
+            files: Vec::new(),
+            verified_dir: Some(original_path.to_path_buf()),
+            verified_file_count: 0,
+            verified_bytes: 0,
+        },
+    )
+}
+
+fn restore_staged_dir_to_real_path(
+    staged_path: &Path,
+    original_path: &Path,
+    expected_dev: Option<u64>,
+    expected_ino: Option<u64>,
+    client: &dyn BreakawayHelperClient,
+) -> std::result::Result<(), String> {
+    if cfg!(feature = "store") && client.is_packaged() && is_windows_appdata_app_dir(original_path)
+    {
+        let job_dir = PrivateBreakawayJobDir::create().map_err(|e| {
+            format_breakaway_unavailable_guidance("khôi phục khu chờ", &e.to_string())
+        })?;
+        let req = RestoreHelperRequest::RestoreStagedDir {
+            staged_dir: staged_path.to_path_buf(),
+            original_path: original_path.to_path_buf(),
+            expected_dev,
+            expected_ino,
+        };
+        let req_bytes = serde_json::to_vec(&req)
+            .map_err(|e| format!("Không tuần tự hoá được yêu cầu khôi phục khu chờ: {e}"))?;
+        let out = client.execute(&job_dir, &req_bytes).map_err(|e| {
+            format_breakaway_unavailable_guidance("khôi phục khu chờ", &e.to_string())
+        })?;
+
+        if out.exit_code == EXIT_HELPER_STILL_IN_PACKAGE {
+            let detail = serde_json::from_str::<RestoreHelperResponse>(&out.stdout)
+                .ok()
+                .and_then(|r| r.error)
+                .unwrap_or_else(|| "Tiến trình trợ giúp vẫn còn trong gói MSIX".to_string());
+            return Err(format_breakaway_unavailable_guidance(
+                "khôi phục khu chờ",
+                &detail,
+            ));
+        }
+
+        let resp: RestoreHelperResponse = serde_json::from_str(&out.stdout).map_err(|e| {
+            format!(
+                "Phản hồi khôi phục khu chờ ngoài gói không hợp lệ (exit={}): {e}",
+                out.exit_code
+            )
+        })?;
+        if !resp.running_outside_package || resp.error_code.as_deref() == Some("still_in_package") {
+            let detail = resp
+                .error
+                .unwrap_or_else(|| "Không xác nhận được trạng thái ngoài gói MSIX".to_string());
+            return Err(format_breakaway_unavailable_guidance(
+                "khôi phục khu chờ",
+                &detail,
+            ));
+        }
+        if out.exit_code != 0 || !resp.ok || resp.verified_dir.as_deref() != Some(original_path) {
+            return Err(resp.error.unwrap_or_else(|| {
+                format!(
+                    "Khôi phục khu chờ ngoài gói thất bại cho '{}' (exit={})",
+                    original_path.display(),
+                    out.exit_code
+                )
+            }));
+        }
+        return Ok(());
+    }
+
+    std::fs::rename(staged_path, original_path).map_err(|e| e.to_string())
+}
+
 /// Rolls back a staged directory unit to its `original_path` ONLY when `original_path` does not
 /// already exist. If `original_path` already exists:
 /// - For `RegenerableDevCache`: verifies staging `(dev, ino)` identity, deletes the redundant
@@ -1369,7 +1607,14 @@ fn rollback_staged_dir_unit(staged: &mut StagedDirUnit) -> StagingRollbackOutcom
         return StagingRollbackOutcome::KeptInStaging(msg);
     }
 
-    match std::fs::rename(&staged.journal.staged_path, &staged.journal.original_path) {
+    let client = NativeBreakawayHelperClient;
+    match restore_staged_dir_to_real_path(
+        &staged.journal.staged_path,
+        &staged.journal.original_path,
+        staged.journal.staged_dev,
+        staged.journal.staged_ino,
+        &client,
+    ) {
         Ok(()) => {
             let _ = std::fs::remove_file(&staged.journal_path);
             StagingRollbackOutcome::Restored
@@ -1867,7 +2112,16 @@ pub fn recover_staging_dir_with_options(
                         report.conflicts.push(msg);
                     }
                 } else {
-                    match std::fs::rename(&expected_staged_path, &verified_orig) {
+                    let default_client = NativeBreakawayHelperClient;
+                    let client: &dyn BreakawayHelperClient =
+                        opts.breakaway_client.as_deref().unwrap_or(&default_client);
+                    match restore_staged_dir_to_real_path(
+                        &expected_staged_path,
+                        &verified_orig,
+                        Some(exp_dev),
+                        Some(exp_ino),
+                        client,
+                    ) {
                         Ok(()) => {
                             let _ = std::fs::remove_file(&jpath);
                             report.restored_to_original += 1;

@@ -9,6 +9,7 @@ mod unix;
 mod win32;
 
 pub mod app_lifecycle;
+pub mod breakaway;
 pub mod dev_tools;
 pub mod traits;
 pub mod unix_parsers;

@@ -170,6 +170,27 @@ impl RecoveryService {
 
                 if !source_occupied {
                     if let Some(mdir) = moving_dir {
+                        // In Store (MSIX) packaged mode, never rename into virtualized AppData directly:
+                        // mark `NeedsReview` preserving BOTH `mdir` and `target` so nothing is hidden
+                        // in LocalCache or deleted prematurely.
+                        if cfg!(feature = "store")
+                            && greenc_platform::breakaway::is_running_in_msix_package()
+                            && greenc_core::config::is_windows_appdata_app_dir(&source)
+                        {
+                            let mut kept = vec![mdir.display().to_string()];
+                            if target_has_content {
+                                kept.push(target.display().to_string());
+                            }
+                            record.status = RelocationStatus::NeedsReview;
+                            record.health_status = RelocationHealthStatus::LinkBroken;
+                            record.detail = Some(format!(
+                                "Bị gián đoạn trong AppData ở bản Microsoft Store — GreenC không đổi tên trực tiếp vào AppData ảo hoá và đã giữ nguyên tất cả bản để xử lý an toàn: {}",
+                                kept.join(", ")
+                            ));
+                            db.save_relocation(&record)?;
+                            recovered.push(record);
+                            continue;
+                        }
                         match fs::rename(&mdir, &source) {
                             Ok(()) => {
                                 // Verified clean rollback: original `moving_dir` is now back at `source`.
@@ -304,6 +325,20 @@ impl RecoveryService {
             return Err(GreenCError::NotFound {
                 entity: "NewTargetPath".to_string(),
                 id: new_target_path.display().to_string(),
+            });
+        }
+
+        // Guard BEFORE deleting the existing junction so Store builds never destroy a link they
+        // cannot recreate due to MSIX AppData virtualization.
+        if cfg!(feature = "store")
+            && greenc_core::config::is_windows_appdata_app_dir(&record.source_path)
+        {
+            return Err(GreenCError::PreconditionBlocked {
+                operation: "repair_junction_target".to_string(),
+                reason: format!(
+                    "Bản Microsoft Store không tạo/sửa NTFS Junction trong AppData ('{}') do cơ chế ảo hoá AppData của MSIX; liên kết hiện tại được giữ nguyên.",
+                    record.source_path.display()
+                ),
             });
         }
 

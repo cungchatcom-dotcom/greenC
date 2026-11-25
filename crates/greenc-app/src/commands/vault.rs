@@ -136,14 +136,20 @@ pub async fn get_vault_archives(
     Ok(dtos)
 }
 
-/// Restores a full Vault archive back to original paths with conflict avoidance.
+/// Restores a full Vault archive back to original paths (or an explicit non-AppData `target_dir`)
+/// with conflict avoidance.
 #[tauri::command]
 pub async fn restore_vault_archive(
     archive_id: String,
+    target_dir: Option<String>,
     state: State<'_, AppState>,
 ) -> std::result::Result<VaultRestoreReportDto, String> {
     let db_id = resolve_archive_db_id(&archive_id, &state)?;
     let state_inner = state.inner().clone();
+    let restore_dir = target_dir
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map(std::path::PathBuf::from);
 
     tokio::task::spawn_blocking(move || {
         let vault_dir = state_inner
@@ -154,6 +160,7 @@ pub async fn restore_vault_archive(
             &state_inner.db,
             RestoreOptions {
                 vault_dir: Some(vault_dir),
+                restore_dir,
                 ..Default::default()
             },
         );
@@ -278,11 +285,12 @@ pub async fn inspect_vault_archive(
     })
 }
 
-/// Selectively extracts specific files from an archive.
+/// Selectively extracts specific files from an archive (optionally into an alternate non-AppData `target_dir`).
 #[tauri::command]
 pub async fn restore_vault_files_selective(
     archive_id: String,
     rel_arcnames: Vec<String>,
+    target_dir: Option<String>,
     state: State<'_, AppState>,
 ) -> std::result::Result<VaultRestoreReportDto, String> {
     let db_id = resolve_archive_db_id(&archive_id, &state)?;
@@ -302,6 +310,10 @@ pub async fn restore_vault_files_selective(
     }
 
     let state_inner = state.inner().clone();
+    let restore_dir = target_dir
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map(std::path::PathBuf::from);
     tokio::task::spawn_blocking(move || {
         let vault_dir = state_inner
             .settings()
@@ -311,6 +323,7 @@ pub async fn restore_vault_files_selective(
             &state_inner.db,
             RestoreOptions {
                 vault_dir: Some(vault_dir),
+                restore_dir,
                 ..Default::default()
             },
         );

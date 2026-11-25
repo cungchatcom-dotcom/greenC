@@ -2212,6 +2212,20 @@ impl ZaloRelocator {
             });
         }
 
+        if cfg!(feature = "store")
+            && greenc_core::config::is_windows_appdata_app_dir(&rec.source_path)
+        {
+            return Err(GreenCError::PreconditionBlocked {
+                operation: "zalo_restore_original".to_string(),
+                reason: format!(
+                    "Bản Microsoft Store không hỗ trợ tự động khôi phục thư mục Zalo trong AppData ('{}') do cơ chế ảo hoá MSIX; bản gốc ({}) và bản đích ({}) được giữ nguyên. Hãy dùng bản cài EXE hoặc khôi phục thủ công.",
+                    rec.source_path.display(),
+                    rec.retained_path.display(),
+                    rec.target_path.display()
+                ),
+            });
+        }
+
         if lifecycle.has_visible_window(&["ZaloCall.exe"]) {
             return Err(GreenCError::PreconditionBlocked {
                 operation: "zalo_restore_original".to_string(),

@@ -37,17 +37,18 @@ pub use cleanup::{
 };
 pub use guard::{
     backup_vault_archive, cooldown_duration_for_failures, enforce_drive_quota_units,
-    estimate_unit_net_bytes, is_valid_staging_unit_id, recover_staging_dir,
-    recover_staging_dir_with_options, resolve_staging_dir_checked, run_guard_for_quota,
-    scan_drive_units, GuardDriveOutcome, GuardRunOptions, StagingJournalEntry, StagingMode,
-    StagingRecoveryOptions, StagingRecoveryReport, StagingState, BUSY_TOOL_CACHE_TTL,
+    estimate_unit_net_bytes, execute_restore_staged_dir_job, is_valid_staging_unit_id,
+    recover_staging_dir, recover_staging_dir_with_options, resolve_staging_dir_checked,
+    run_guard_for_quota, scan_drive_units, GuardDriveOutcome, GuardRunOptions, StagingJournalEntry,
+    StagingMode, StagingRecoveryOptions, StagingRecoveryReport, StagingState, BUSY_TOOL_CACHE_TTL,
     DEFAULT_GUARD_RETENTION_DAYS, FIXED_RETRY_COOLDOWN_MINUTES, GUARD_AUTO_CLEAN_PROFILE_IDS,
     MAX_STAGING_JOURNAL_BYTES, MIN_EFFECTIVE_NET_RATIO,
 };
 pub use manifest::{compute_bytes_sha256, compute_file_sha256, VaultManifest};
 pub use profiles::{CleanupProfile, PresetProfiles, ProfileCategory};
 pub use rollback::{
-    safe_remove_vault_artifact, validate_vault_artifact_path, RestoreConflictStrategy,
+    execute_restore_files_job, map_path_into_restore_dir, safe_remove_vault_artifact,
+    validate_restore_file_path, validate_vault_artifact_path, RestoreConflictStrategy,
     RestoreOptions, RestoreResult, RollbackEngine,
 };
 pub use sniff::{
