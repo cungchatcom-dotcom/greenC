@@ -69,7 +69,7 @@ jobs:
           CARGO_TERM_COLOR: never
         run: |
           set -o pipefail
-          if ! cargo clippy --workspace --all-targets --message-format short -- -D warnings 2>&1 | tee clippy.log; then
+          if ! cargo clippy --workspace --all-targets --keep-going --message-format short -- -D warnings 2>&1 | tee clippy.log; then
             grep -E "(error|warning)(\[|:)" clippy.log | grep -v "could not compile" | head -9 | while IFS= read -r l; do echo "::error::$l"; done
             exit 1
           fi
@@ -81,7 +81,16 @@ jobs:
         run: cargo run -p greenc-i18n -- check
 
       - name: Run Workspace Tests
-        run: cargo test --workspace
+        shell: bash
+        env:
+          CARGO_TERM_COLOR: never
+        run: |
+          set -o pipefail
+          if ! cargo test --workspace --no-fail-fast 2>&1 | tee test.log; then
+            grep -A2 -E "panicked at|^error(\[|:)" test.log | grep -vE "^--|RUST_BACKTRACE" | head -9 | while IFS= read -r l; do echo "::error::$l"; done
+            grep -E "^test .*FAILED" test.log | head -9 | while IFS= read -r l; do echo "::warning::$l"; done
+            exit 1
+          fi
 
   release-windows:
     name: Build Windows Installer Release

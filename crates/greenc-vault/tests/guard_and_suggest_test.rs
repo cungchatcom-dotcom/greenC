@@ -114,6 +114,8 @@ fn backdate_dir(path: &Path, age_days: u64, now: SystemTime) {
         let _ = std::fs::File::open(path)
             .and_then(|f| f.set_times(FileTimes::new().set_modified(ts).set_accessed(ts)));
     }
+    #[cfg(not(unix))]
+    let _ = (path, ts);
 }
 
 #[test]

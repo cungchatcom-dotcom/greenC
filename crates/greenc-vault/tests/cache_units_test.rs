@@ -8,6 +8,7 @@ use greenc_vault::cache_units::{
     is_forbidden_dev_cache_path, is_linux_app_log_file, scan_dev_cache_root, CleanUnitKind,
     DEFAULT_DEV_CACHE_MIN_AGE_SECS,
 };
+#[cfg(all(unix, not(target_os = "macos")))]
 use greenc_vault::profiles::PresetProfiles;
 use std::fs::FileTimes;
 use std::path::Path;
