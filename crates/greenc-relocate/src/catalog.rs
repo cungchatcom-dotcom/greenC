@@ -28,6 +28,7 @@ pub const ADVANCED_SKIP_LIST: &[&str] = &[
     "windowsapps",
     "greenc",
     "greenc-store",
+    "zalo",
 ];
 
 #[derive(Debug, Clone)]
