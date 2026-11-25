@@ -8,8 +8,9 @@ use windows::Win32::Foundation::{
     INVALID_HANDLE_VALUE,
 };
 use windows::Win32::Security::{
-    EqualSid, GetKernelObjectSecurity, GetSecurityDescriptorOwner, GetTokenInformation, TokenUser,
-    OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, TOKEN_QUERY, TOKEN_USER,
+    EqualSid, GetKernelObjectSecurity, GetSecurityDescriptorOwner, GetTokenInformation, TokenOwner,
+    TokenUser, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, TOKEN_OWNER, TOKEN_QUERY,
+    TOKEN_USER,
 };
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_NORMAL,
@@ -276,7 +277,42 @@ pub fn is_owned_by_current_user(path: &Path) -> std::io::Result<bool> {
     }
 
     // SAFETY: Both SIDs are valid pointers living inside `sd_buf` and `token_buf`.
-    Ok(unsafe { EqualSid(owner_sid, current_sid).is_ok() })
+    if unsafe { EqualSid(owner_sid, current_sid).is_ok() } {
+        return Ok(true);
+    }
+
+    // Elevated administrators create objects owned by the token's default owner (usually
+    // BUILTIN\Administrators), so accept exactly that SID too. Non-elevated tokens report the user
+    // SID here, which keeps the check strict for normal users.
+    let mut owner_len = 0u32;
+    // SAFETY: Queries the required buffer size for `TokenOwner`.
+    let _ = unsafe { GetTokenInformation(token_guard.raw(), TokenOwner, None, 0, &mut owner_len) };
+    if owner_len == 0 {
+        return Ok(false);
+    }
+    let mut owner_buf = vec![0u8; owner_len as usize];
+    // SAFETY: `owner_buf` has exact length `owner_len` allocated for `TOKEN_OWNER`.
+    if unsafe {
+        GetTokenInformation(
+            token_guard.raw(),
+            TokenOwner,
+            Some(owner_buf.as_mut_ptr().cast()),
+            owner_len,
+            &mut owner_len,
+        )
+    }
+    .is_err()
+    {
+        return Ok(false);
+    }
+    // SAFETY: Buffer was filled by `GetTokenInformation(TokenOwner)` and starts with `TOKEN_OWNER`.
+    let default_owner: PSID =
+        unsafe { std::ptr::read_unaligned(owner_buf.as_ptr().cast::<TOKEN_OWNER>()) }.Owner;
+    if default_owner.is_invalid() {
+        return Ok(false);
+    }
+    // SAFETY: Both SIDs are valid pointers living inside `sd_buf` and `owner_buf`.
+    Ok(unsafe { EqualSid(owner_sid, default_owner).is_ok() })
 }
 
 /// Verifies that `path` is a real directory (not a symlink/reparse point) owned by the current
