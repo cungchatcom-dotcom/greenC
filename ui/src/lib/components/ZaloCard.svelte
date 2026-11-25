@@ -352,7 +352,9 @@
         <div>
           <h2 class="text-base font-bold text-primary">Zalo PC</h2>
           <p class="text-xs text-secondary">
-            {t('Dọn bộ đệm, xóa bản cũ hoặc chuyển dữ liệu chat sang ổ khác an toàn.')}
+            {status && !status.auto_move_supported
+              ? t('Dùng tùy chọn lưu trữ của Zalo, có hướng dẫn từng bước')
+              : t('Dọn bộ đệm, xóa bản cũ hoặc chuyển dữ liệu chat sang ổ khác an toàn.')}
           </p>
         </div>
       </div>
