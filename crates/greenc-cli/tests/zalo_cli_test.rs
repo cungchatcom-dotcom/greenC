@@ -42,10 +42,10 @@ fn cli_zalo_status_and_clean_dry_run_json_contract() {
     assert_eq!(status_out.exit_code, EXIT_SUCCESS);
     let parsed: serde_json::Value = serde_json::from_str(&status_out.stdout).unwrap();
     assert!(parsed.get("installed").and_then(|v| v.as_bool()).is_some());
-    assert!(parsed
-        .get("auto_move_supported")
-        .and_then(|v| v.as_bool())
-        .is_some());
+    assert_eq!(
+        parsed.get("auto_move_supported").and_then(|v| v.as_bool()),
+        Some(false)
+    );
 
     let clean_out = run_args(
         &["greenc", "zalo", "clean", "--dry-run", "--json"],

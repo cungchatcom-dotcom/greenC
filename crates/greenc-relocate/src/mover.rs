@@ -36,6 +36,13 @@ impl TransactionalMover {
     /// user's Desktop/Documents registration) and guided apps such as WSL/Docker (moved only with
     /// the vendor's own tooling), plus any candidate that failed qualification.
     pub fn preflight(candidate: &RelocationCandidate) -> Result<()> {
+        // Chat data needs `ZaloRelocator` (strict copy, verification, retained original).
+        if candidate.id.eq_ignore_ascii_case("zalo") {
+            return Err(GreenCError::PreconditionBlocked {
+                operation: "relocate".to_string(),
+                reason: "Dữ liệu Zalo không được chuyển bằng cơ chế chung".to_string(),
+            });
+        }
         if !matches!(
             candidate.strategy,
             RelocationStrategyKind::Junction | RelocationStrategyKind::ToolConfig

@@ -10,8 +10,8 @@ Ghi thay đổi mới vào mục **Unreleased**. Khi phát hành, `scripts/versi
 ## [2.2.0] - 2026-11-25
 
 ### Thêm
-- **Zalo: dọn và chuyển ổ.** Tự dọn là tuỳ chọn, mặc định tắt. Dọn bộ đệm và các bản cài cũ của Zalo (giữ bản đang dùng và bản liền trước; không đụng tin nhắn, ảnh, tệp, đăng nhập). Chuyển dữ liệu chat sang ổ khác có kiểm chứng từng tệp, giữ bản gốc 24 giờ, có hoàn tác và tự phục hồi khi bị ngắt giữa chừng.
-- `greenc-cli zalo`: xem tình trạng, dọn và chuyển dữ liệu Zalo từ dòng lệnh.
+- **Dọn Zalo.** Dọn bộ đệm và các bản cài cũ của Zalo; không đụng tin nhắn, ảnh, tệp đã nhận, đăng nhập. Tự dọn là tuỳ chọn, mặc định tắt. Khi Zalo đang chạy, giữ bản đang chạy và bản mới nhất; khi không chạy, giữ hai bản mới nhất.
+- `greenc-cli zalo`: xem tình trạng và dọn Zalo từ dòng lệnh. Tự động chuyển dữ liệu chat sang ổ khác chưa mở trong bản này; vẫn có hướng dẫn chuyển bằng tuỳ chọn của Zalo.
 - Mã nguồn và quy trình đóng gói MSIX cho Microsoft Store (chưa phát hành trên Store).
 
 ### Thay đổi
@@ -19,6 +19,9 @@ Ghi thay đổi mới vào mục **Unreleased**. Khi phát hành, `scripts/versi
 - Đọc chỉ mục bộ đệm không còn làm đổi thời điểm truy cập của tệp.
 
 ### Sửa
+- Quy tắc hạn mức cũ (từ bản 2.0) không còn đưa ảnh và tệp Zalo vào Kho dự phòng.
+- Mở lại trang Chuyển dữ liệu khi đang chuyển không còn kích hoạt khôi phục sự cố.
+- Windows: liên kết qua đường dẫn tên ngắn 8.3 hoặc ổ SUBST bị báo nhầm là hỏng.
 - Windows: bật khởi động cùng máy thất bại khi khoá Registry Run chưa tồn tại.
 - Windows: các mục đã chờ xoá không bao giờ được xoá thật.
 - Windows: đường dẫn dạng `\\?\` bị coi là ổ khác.

@@ -68,10 +68,14 @@ pub const DEFAULT_ORIGINAL_RETENTION_HOURS: i64 = 24;
 /// already performed during `verified_copy_tree_strict`).
 const VERIFY_NON_MESSAGE_FULL_HASH_LIMIT: u64 = 64 * 1024 * 1024;
 
+/// Automatic Zalo relocation stays off until undo, crash recovery and the 24 h purge are safe while
+/// Zalo is being used: chat history cannot be re-created, so these paths must never be reachable early.
+const ZALO_AUTO_MOVE_RELEASED: bool = false;
+
 /// Returns `true` only on standard (non-Store) Windows builds where NTFS junctions in user
 /// directories are natively supported and not virtualized by MSIX.
 pub const fn is_zalo_auto_move_supported() -> bool {
-    cfg!(windows) && !IS_STORE_BUILD
+    ZALO_AUTO_MOVE_RELEASED && cfg!(windows) && !IS_STORE_BUILD
 }
 
 /// Reason shown when automatic Zalo relocation is not available on this platform/edition.
@@ -80,6 +84,8 @@ pub fn zalo_auto_move_unsupported_reason() -> String {
         "Bản Microsoft Store không hỗ trợ tự động chuyển dữ liệu Zalo do cơ chế ảo hoá AppData của MSIX. Vui lòng dùng hướng dẫn thủ công trong Zalo.".to_string()
     } else if !cfg!(windows) {
         "Tự động chuyển dữ liệu Zalo PC chỉ hỗ trợ trên Windows. Vui lòng dùng hướng dẫn thủ công trong Zalo.".to_string()
+    } else if !ZALO_AUTO_MOVE_RELEASED {
+        "Tự động chuyển dữ liệu Zalo đang được hoàn thiện. Vui lòng dùng hướng dẫn thủ công trong Zalo.".to_string()
     } else {
         String::new()
     }

@@ -138,7 +138,7 @@ fn get_app_catalog_windows() -> Vec<AppCatalogProfile> {
             if d.data_dir.is_some()
                 && d.data_on_system_drive
                 && !d.data_is_known_relocation
-                && !greenc_core::config::IS_STORE_BUILD =>
+                && crate::zalo_move::is_zalo_auto_move_supported() =>
         {
             (
                 RelocationStrategyKind::Junction,

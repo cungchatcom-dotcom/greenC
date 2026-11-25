@@ -660,7 +660,15 @@ pub fn same_windows_path(a: &std::path::Path, b: &std::path::Path) -> bool {
             .unwrap_or(&raw);
         stripped.trim_end_matches('\\').to_lowercase()
     };
-    norm(a) == norm(b)
+    if norm(a) == norm(b) {
+        return true;
+    }
+    // Junctions store the canonical target, while the recorded path may use an 8.3 short name
+    // (`RUNNER~1`) or a SUBST drive. Both must resolve, so a missing target never matches.
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(ca), Ok(cb)) => norm(&ca) == norm(&cb),
+        _ => false,
+    }
 }
 
 /// Normalizes a user-supplied drive root:
@@ -842,6 +850,27 @@ mod drive_quota_tests {
         assert_eq!(normalize_drive_root("/bad\\path"), None);
         assert_eq!(normalize_drive_root("1:"), None);
         assert_eq!(normalize_drive_root(""), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn same_windows_path_resolves_aliases_but_never_matches_missing_targets() {
+        let base = std::env::temp_dir().join(format!("greenc-alias-{}", std::process::id()));
+        let real = base.join("real");
+        let other = base.join("other");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        let alias = base.join("alias");
+        std::os::unix::fs::symlink(&real, &alias).unwrap();
+
+        assert!(same_windows_path(&alias, &real));
+        assert!(!same_windows_path(&alias, &other));
+        std::fs::remove_dir(&real).unwrap();
+        assert!(!same_windows_path(&alias, &real));
+
+        std::fs::remove_file(&alias).unwrap();
+        std::fs::remove_dir(&other).unwrap();
+        std::fs::remove_dir(&base).unwrap();
     }
 
     #[test]

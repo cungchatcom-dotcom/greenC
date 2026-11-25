@@ -480,6 +480,11 @@ pub async fn recover_interrupted_relocations(
     state: State<'_, AppState>,
 ) -> std::result::Result<Vec<RelocationResultDto>, String> {
     let state_inner = state.inner().clone();
+    // A `moving` record may belong to a move that is still running (the window can be closed and
+    // reopened meanwhile); recovering it would delete the copy being written.
+    if state_inner.has_foreground_tasks() {
+        return Ok(Vec::new());
+    }
     tokio::task::spawn_blocking(move || {
         let reparse = NativeReparsePointApi;
         let recovered = RecoveryService::recover_interrupted(&state_inner.db, &reparse)

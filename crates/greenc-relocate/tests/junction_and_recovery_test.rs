@@ -717,6 +717,13 @@ fn test_preflight_allows_junction_and_tool_config_strategies() {
             ineligible_reason: None,
         };
         TransactionalMover::preflight(&candidate).expect("must be allowed");
+
+        // Chat data must never go through the generic mover, whatever strategy it is given.
+        let zalo = RelocationCandidate {
+            id: "Zalo".to_string(),
+            ..candidate
+        };
+        assert!(TransactionalMover::preflight(&zalo).is_err());
     }
 }
 

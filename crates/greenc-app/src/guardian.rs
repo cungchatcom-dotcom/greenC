@@ -948,6 +948,17 @@ pub fn measure_quota_rule_usage(rule: &QuotaRule) -> u64 {
     total
 }
 
+/// Zalo chats, photos and received files. Rules seeded by the 2.0 app listed these folders
+/// (`<data root>\media` under any root name), so quota enforcement must skip them.
+fn is_zalo_user_content(dir: &Path, rule: &QuotaRule) -> bool {
+    let is_zalo_rule = rule.process_name.eq_ignore_ascii_case("zalo.exe");
+    dir.to_string_lossy().split(['/', '\\']).any(|part| {
+        let part = part.trim().to_lowercase();
+        ["zalo data", "zalo received files", "zalodownloads"].contains(&part.as_str())
+            || (is_zalo_rule && ["media", "message"].contains(&part.as_str()))
+    })
+}
+
 fn collect_rule_files(
     root: &Path,
     rule: &QuotaRule,
@@ -959,6 +970,9 @@ fn collect_rule_files(
     while let Some(dir) = stack.pop() {
         if ctrl.is_cancelled() {
             return Err(GreenCError::Cancelled);
+        }
+        if is_zalo_user_content(&dir, rule) {
+            continue;
         }
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
@@ -1016,4 +1030,52 @@ fn collect_rule_files(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod zalo_rule_tests {
+    use super::*;
+
+    #[test]
+    fn quota_rules_never_collect_zalo_chats_or_media() {
+        let tmp = tempfile::tempdir().unwrap();
+        let files = [
+            "Zalo Data/media/photo.jpg",
+            "Zalo Data/message/zalo.db",
+            "Custom Root/media/photo.jpg",
+            "Documents/Zalo Received Files/report.docx",
+            "ZaloData/Cache/f_0001",
+        ];
+        for f in files {
+            let p = tmp.path().join(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, b"x").unwrap();
+        }
+        let rule = QuotaRule {
+            id: None,
+            app_name: "Zalo Desktop".to_string(),
+            process_name: "Zalo.exe".to_string(),
+            service_name: String::new(),
+            target_paths: vec![
+                tmp.path().to_path_buf(),
+                tmp.path().join("Custom Root/media"),
+                tmp.path().join("Zalo Data/media"),
+            ],
+            max_bytes: 1,
+            watermark_ratio: 0.85,
+            retention_days: 7,
+            min_file_age_seconds: 0,
+            exclude_patterns: vec![],
+            protected_files: vec![],
+            enabled: true,
+            created_at: chrono::Utc::now(),
+        };
+        let mut found = Vec::new();
+        let mut total = 0;
+        for t in &rule.target_paths {
+            collect_rule_files(t, &rule, &TaskControl::new(), &mut found, &mut total).unwrap();
+        }
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].0.ends_with("f_0001"));
+    }
 }
