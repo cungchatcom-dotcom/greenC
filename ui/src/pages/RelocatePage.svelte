@@ -54,6 +54,7 @@
   let interruptedRecoveries = $state<RelocationResultDto[]>([]);
   let availableDrives = $state<DriveInfo[]>([]);
   let targetDrive = $state('D');
+  let isStoreBuild = $state(false);
 
   let isLoading = $state(false);
   let isRelocating = $state(false);
@@ -81,6 +82,7 @@
     isLoading = true;
     try {
       const bootstrap = await getBootstrapState();
+      isStoreBuild = Boolean(bootstrap?.is_store_build);
       if (bootstrap?.drives && bootstrap.drives.length > 0) {
         availableDrives = bootstrap.drives.filter((d) => d.is_eligible && !d.is_system);
         if (availableDrives.length > 0 && !availableDrives.some((d) => d.drive_letter === targetDrive)) {
@@ -336,6 +338,10 @@
                 <CloudOff class="h-3 w-3" />
                 <span>OneDrive ({t('Bỏ qua')})</span>
               </div>
+            {:else if isStoreBuild}
+              <div class="text-[11px] text-secondary mt-2">
+                {t('Bản Microsoft Store không hỗ trợ chuyển thư mục hệ thống tự động. Hãy đổi trong File Explorer → Properties → Location.')}
+              </div>
             {/if}
           </div>
 
@@ -345,7 +351,7 @@
             </span>
             <button
               onclick={() => handleRelocateKnownFolder(kf)}
-              disabled={kf.is_onedrive || isRelocating || kf.is_redirected}
+              disabled={kf.is_onedrive || isStoreBuild || isRelocating || kf.is_redirected}
               class="text-xs font-medium px-2.5 py-1 rounded-md bg-accent text-white hover:bg-accent-hover disabled:opacity-50 transition-colors"
             >
               {kf.is_redirected ? t('Đã chuyển') : t('Chuyển')}
@@ -397,6 +403,11 @@
                       ({t('Cần đóng {app}', { app: cand.name })})
                     </span>
                   {/if}
+                  {#if !cand.is_eligible && cand.ineligible_reason}
+                    <div class="text-[11px] font-normal text-secondary mt-0.5">
+                      {cand.ineligible_reason}
+                    </div>
+                  {/if}
                 </td>
                 <td class="py-3 px-3">
                   <span class={`inline-block px-2 py-0.5 rounded text-xs font-medium ${badge.class}`}>
@@ -421,7 +432,8 @@
                 <td class="py-3 px-3 text-right">
                   <button
                     onclick={() => handleRelocateDirectory(cand)}
-                    disabled={isRelocating || cand.is_locked}
+                    disabled={isRelocating || cand.is_locked || (cand.strategy !== 'guided' && !cand.is_eligible)}
+                    title={!cand.is_eligible && cand.ineligible_reason ? cand.ineligible_reason : undefined}
                     class="px-3 py-1 text-xs font-semibold rounded-md bg-accent text-white hover:bg-accent-hover disabled:opacity-50 transition-colors"
                   >
                     {cand.strategy === 'guided' ? t('Hướng dẫn') : t('Chuyển')}
@@ -455,7 +467,14 @@
               <tbody class="divide-y divide-border/60">
                 {#each advancedCandidates as cand}
                   <tr class="hover:bg-subtle/50 transition-colors">
-                    <td class="py-2.5 px-3 font-medium text-primary">{cand.name}</td>
+                    <td class="py-2.5 px-3 font-medium text-primary">
+                      {cand.name}
+                      {#if !cand.is_eligible && cand.ineligible_reason}
+                        <div class="text-[11px] font-normal text-secondary mt-0.5">
+                          {cand.ineligible_reason}
+                        </div>
+                      {/if}
+                    </td>
                     <td class="py-2.5 px-3 text-xs text-secondary font-mono truncate max-w-xs" title={cand.source_path}>
                       {cand.source_path}
                     </td>
@@ -463,8 +482,9 @@
                     <td class="py-2.5 px-3 text-right">
                       <button
                         onclick={() => handleRelocateDirectory(cand)}
-                        disabled={isRelocating || cand.is_locked}
-                        class="px-2.5 py-1 text-xs font-medium rounded-md bg-subtle hover:bg-border text-primary transition-colors"
+                        disabled={isRelocating || cand.is_locked || !cand.is_eligible}
+                        title={!cand.is_eligible && cand.ineligible_reason ? cand.ineligible_reason : undefined}
+                        class="px-2.5 py-1 text-xs font-medium rounded-md bg-subtle hover:bg-border text-primary disabled:opacity-50 transition-colors"
                       >
                         {t('Chuyển')}
                       </button>

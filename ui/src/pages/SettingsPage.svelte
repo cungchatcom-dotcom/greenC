@@ -233,6 +233,14 @@
         kind: "err",
         text: err instanceof Error ? err.message : String(err),
       };
+      // Refresh live OS autostart status (e.g. DisabledByUser / DisabledByPolicy) on failure
+      try {
+        const refreshed = await getAppSettings();
+        settings = refreshed;
+        draftAutostart = refreshed.autostart_enabled;
+      } catch {
+        // Keep existing UI state if refresh also fails
+      }
     } finally {
       savingGuardian = false;
     }
@@ -574,12 +582,29 @@
               "Chạy ngầm ở khay hệ thống (< 15 MB RAM) để tự bảo vệ ổ đĩa mỗi ngày.",
             )}
           </div>
+          {#if settings?.autostart_status === "disabled_by_user"}
+            <div class="text-danger mt-0.5">
+              {t(
+                "Đang bị tắt trong Windows Settings / Task Manager. Hãy bật lại trong Settings → Apps → Startup.",
+              )}
+            </div>
+          {:else if settings?.autostart_status === "disabled_by_policy"}
+            <div class="text-danger mt-0.5">
+              {t("Bị chặn bởi chính sách quản trị hệ thống.")}
+            </div>
+          {:else if settings?.autostart_status === "enabled_by_policy"}
+            <div class="text-secondary mt-0.5">
+              {t("Đang được bật bắt buộc bởi chính sách quản trị hệ thống.")}
+            </div>
+          {/if}
         </div>
         <input
           type="checkbox"
           bind:checked={draftAutostart}
+          disabled={settings?.autostart_status === "disabled_by_policy" ||
+            settings?.autostart_status === "enabled_by_policy"}
           onchange={() => (guardianFeedback = null)}
-          class="h-4 w-4 rounded border-border text-accent cursor-pointer"
+          class="h-4 w-4 rounded border-border text-accent cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
         />
       </label>
 
@@ -874,47 +899,60 @@
       </div>
 
       <div class="flex items-center gap-2">
-        <button
-          type="button"
-          disabled={checkingUpdate}
-          onclick={handleCheckUpdates}
-          class="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-border bg-subtle hover:bg-card text-xs font-semibold text-primary disabled:opacity-60 transition-colors"
-        >
-          <RefreshCw
-            class={`h-3.5 w-3.5 text-accent ${checkingUpdate ? "animate-spin" : ""}`}
-          />
-          <span
-            >{checkingUpdate
-              ? t("Đang kiểm tra...")
-              : t("Kiểm tra cập nhật")}</span
+        {#if settings?.is_store_build}
+          <a
+            href={settings.store_updates_url ??
+              "ms-windows-store://downloadsandupdates"}
+            target="_blank"
+            rel="noreferrer"
+            class="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-accent/35 bg-accent/10 hover:bg-accent/15 text-xs font-semibold text-accent transition-colors"
           >
-        </button>
+            <RefreshCw class="h-3.5 w-3.5" />
+            <span>{t("Cập nhật qua Microsoft Store")}</span>
+          </a>
+        {:else}
+          <button
+            type="button"
+            disabled={checkingUpdate}
+            onclick={handleCheckUpdates}
+            class="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-border bg-subtle hover:bg-card text-xs font-semibold text-primary disabled:opacity-60 transition-colors"
+          >
+            <RefreshCw
+              class={`h-3.5 w-3.5 text-accent ${checkingUpdate ? "animate-spin" : ""}`}
+            />
+            <span
+              >{checkingUpdate
+                ? t("Đang kiểm tra...")
+                : t("Kiểm tra cập nhật")}</span
+            >
+          </button>
 
-        {#if updateResult?.has_update}
-          {#if updateResult.download_url && updateResult.asset_name}
-            <button
-              type="button"
-              disabled={installingUpdate}
-              onclick={handleInstallUpdate}
-              class="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-accent hover:bg-accent-hover text-white text-xs font-semibold shadow-sm disabled:opacity-60"
-            >
-              <Download class="h-3.5 w-3.5" />
-              <span
-                >{installingUpdate
-                  ? t("Đang tải bản cập nhật...")
-                  : `${t("Cập nhật ngay")} v${updateResult.latest_version}`}</span
+          {#if updateResult?.has_update}
+            {#if updateResult.download_url && updateResult.asset_name}
+              <button
+                type="button"
+                disabled={installingUpdate}
+                onclick={handleInstallUpdate}
+                class="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-accent hover:bg-accent-hover text-white text-xs font-semibold shadow-sm disabled:opacity-60"
               >
-            </button>
-          {:else}
-            <a
-              href={updateResult.release_url}
-              target="_blank"
-              rel="noreferrer"
-              class="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-accent hover:bg-accent-hover text-white text-xs font-semibold shadow-sm"
-            >
-              <Download class="h-3.5 w-3.5" />
-              <span>{t("Tải bản mới")}</span>
-            </a>
+                <Download class="h-3.5 w-3.5" />
+                <span
+                  >{installingUpdate
+                    ? t("Đang tải bản cập nhật...")
+                    : `${t("Cập nhật ngay")} v${updateResult.latest_version}`}</span
+                >
+              </button>
+            {:else}
+              <a
+                href={updateResult.release_url}
+                target="_blank"
+                rel="noreferrer"
+                class="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-accent hover:bg-accent-hover text-white text-xs font-semibold shadow-sm"
+              >
+                <Download class="h-3.5 w-3.5" />
+                <span>{t("Tải bản mới")}</span>
+              </a>
+            {/if}
           {/if}
         {/if}
       </div>

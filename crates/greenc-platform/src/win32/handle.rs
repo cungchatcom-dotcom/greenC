@@ -25,7 +25,8 @@ const DELETE_ACCESS: u32 = 0x0001_0000;
 const READ_CONTROL_ACCESS: u32 = 0x0002_0000;
 
 /// Canonicalizes `path` (when existing) and blocks mutations against Windows OS system trees
-/// (`\Windows`, `\Program Files`, `\Program Files (x86)`, `\System Volume Information`).
+/// (`\Windows`, `\Program Files`, `\Program Files (x86)`, `\System Volume Information`,
+/// `WindowsApps`, and `%LOCALAPPDATA%\Packages`).
 pub fn ensure_not_protected_system_path(path: &Path, operation: &str) -> Result<()> {
     let resolved = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let raw = resolved.to_string_lossy();
@@ -46,6 +47,24 @@ pub fn ensure_not_protected_system_path(path: &Path, operation: &str) -> Result<
                 operation: operation.to_string(),
                 reason: format!(
                     "System directory '{}' is strictly protected from modification",
+                    resolved.display()
+                ),
+            });
+        }
+    }
+    if greenc_core::config::is_windows_apps_or_packages_path(&resolved) {
+        // In standard (non-Store) builds, allow explicit VHDX compaction of WSL2 ext4.vhdx
+        // images living under `%LOCALAPPDATA%\Packages\<Distro>\LocalState\ext4.vhdx`, while
+        // still strictly blocking `WindowsApps` and all other mutations inside `Packages`.
+        let is_standard_wsl_vhdx = !cfg!(feature = "store")
+            && operation == "compact_vhdx"
+            && !clean.split('\\').any(|seg| seg == "windowsapps")
+            && clean.ends_with(".vhdx");
+        if !is_standard_wsl_vhdx {
+            return Err(GreenCError::PreconditionBlocked {
+                operation: operation.to_string(),
+                reason: format!(
+                    "Windows Store / MSIX package path '{}' is strictly protected from modification",
                     resolved.display()
                 ),
             });

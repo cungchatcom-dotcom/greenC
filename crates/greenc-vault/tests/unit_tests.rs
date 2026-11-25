@@ -210,3 +210,49 @@ fn old_versions_profile_follows_windir_instead_of_hard_coded_c_drive() {
     assert!(paths.contains(&tmp.path().join("Windows.old")));
     assert!(paths.iter().all(|p| p.starts_with(tmp.path())), "{paths:?}");
 }
+
+#[test]
+fn test_store_staging_skips_appdata_vault_and_uses_non_appdata_home() {
+    let tmp = tempdir().unwrap();
+    let fake_appdata_vault = tmp
+        .path()
+        .join("AppData")
+        .join("Local")
+        .join("GreenC-Store")
+        .join("Vault");
+    let fake_home = tmp.path().join("UserHome");
+    let unit_root = tmp.path().join("cache_root").join("unit_a");
+    let allowed_parent = tmp.path().join("cache_root");
+    std::fs::create_dir_all(&fake_appdata_vault).unwrap();
+    std::fs::create_dir_all(&fake_home).unwrap();
+    std::fs::create_dir_all(&unit_root).unwrap();
+
+    let chosen = greenc_vault::guard::resolve_staging_dir_checked(
+        &unit_root,
+        &allowed_parent,
+        &fake_appdata_vault,
+        None,
+        Some(&fake_home),
+        None,
+    )
+    .expect("staging dir should resolve");
+
+    if cfg!(feature = "store") {
+        assert!(
+            !chosen.starts_with(&fake_appdata_vault),
+            "Store builds must skip AppData-hosted Vault staging, got {}",
+            chosen.display()
+        );
+        assert!(
+            chosen.starts_with(&fake_home),
+            "Store builds must fall back to user-owned non-AppData staging, got {}",
+            chosen.display()
+        );
+    } else {
+        assert!(
+            chosen.starts_with(&fake_appdata_vault),
+            "Standard builds keep using same-drive Vault staging, got {}",
+            chosen.display()
+        );
+    }
+}

@@ -345,5 +345,10 @@
   "Đặt mức tối đa cho từng ổ. GreenC sẽ tự động theo dõi, dọn rác vào Kho an toàn và giữ ổ luôn xanh mỗi ngày.",
   "Ổ đĩa luôn xanh",
   "Ổ đĩa đang xanh ({pct}% / mục tiêu < {max}%) — GreenC đang tự bảo vệ mỗi ngày",
-  "Ổ đĩa đang ở {pct}%, sắp chạm ngưỡng mục tiêu {max}%"
+  "Ổ đĩa đang ở {pct}%, sắp chạm ngưỡng mục tiêu {max}%",
+  "Cập nhật qua Microsoft Store",
+  "Đang bị tắt trong Windows Settings / Task Manager. Hãy bật lại trong Settings → Apps → Startup.",
+  "Bị chặn bởi chính sách quản trị hệ thống.",
+  "Đang được bật bắt buộc bởi chính sách quản trị hệ thống.",
+  "Bản Microsoft Store không hỗ trợ chuyển thư mục hệ thống tự động. Hãy đổi trong File Explorer → Properties → Location."
 ]

@@ -10,7 +10,8 @@ pub mod tray;
 pub use state::*;
 
 use greenc_core::error::Result;
-use greenc_platform::GreenCAppMutex;
+use greenc_platform::{notify_already_running, GreenCAppMutex};
+#[cfg(not(feature = "store"))]
 use greenc_storage::legacy_migration::auto_migrate_legacy_db;
 use std::sync::Arc;
 use tauri::Manager;
@@ -23,19 +24,21 @@ pub fn acquire_single_instance() -> Result<GreenCAppMutex> {
 
 pub fn run() {
     // Acquire single-instance mutex lock before launching desktop shell.
-    // If another instance of GreenC is already running, exit gracefully.
+    // If another instance of GreenC (including an EXE or Microsoft Store edition) is already
+    // running, inform the user and exit gracefully.
     let _app_mutex = match acquire_single_instance() {
         Ok(mutex) => mutex,
         Err(err) => {
-            eprintln!(
-                "GreenC is already running or could not acquire single-instance mutex: {err}"
-            );
             tracing::warn!("Aborting desktop application startup: {err}");
+            notify_already_running(
+                "GreenC đang chạy (có thể ở khay hệ thống hoặc phiên bản cài đặt khác).\nHãy mở biểu tượng GreenC ở khay hệ thống hoặc thoát phiên bản đang chạy trước.",
+            );
             return;
         }
     };
 
     let db_path = greenc_core::config::default_db_path();
+    #[cfg(not(feature = "store"))]
     let _ = auto_migrate_legacy_db(&db_path);
     let app_state = AppState::new(db_path).expect("Failed to initialize AppState");
     // Re-point Vault archives whose ZIP moved (project rename, data-root change, legacy import)
@@ -46,11 +49,16 @@ pub fn run() {
 
     let start_minimized = std::env::args().any(|a| a == "--minimized" || a == "--autostart");
 
-    tauri::Builder::default()
-        .plugin(tauri_plugin_autostart::init(
-            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-            Some(vec!["--minimized"]),
-        ))
+    let builder = tauri::Builder::default();
+    // Store (MSIX) builds manage autostart exclusively via `desktop:StartupTask`, never via
+    // `tauri-plugin-autostart` (which writes `HKCU\...\Run`).
+    #[cfg(not(all(windows, feature = "store")))]
+    let builder = builder.plugin(tauri_plugin_autostart::init(
+        tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+        Some(vec!["--minimized"]),
+    ));
+
+    builder
         .plugin(tauri_plugin_notification::init())
         .manage(app_state)
         .invoke_handler(tauri::generate_handler![

@@ -48,13 +48,13 @@ pub use known_folders::{
     FOLDERID_VIDEOS,
 };
 
-pub use mutex::GreenCAppMutex;
+pub use mutex::{notify_already_running, GreenCAppMutex};
 
 #[cfg(windows)]
 pub use power_session::OwnedRegKey;
 pub use power_session::{
     is_autostart_enabled_native, query_power_session_native, set_autostart_registry_native,
-    MockPowerSessionApi, NativePowerSessionApi, PowerSessionApi, PowerSessionState,
+    AutostartState, MockPowerSessionApi, NativePowerSessionApi, PowerSessionApi, PowerSessionState,
 };
 
 pub use reparse::{

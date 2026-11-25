@@ -57,6 +57,26 @@ impl TransactionalMover {
                 }),
             });
         }
+        if greenc_core::config::is_windows_apps_or_packages_path(&candidate.source_path) {
+            return Err(GreenCError::PreconditionBlocked {
+                operation: "relocate".to_string(),
+                reason: format!(
+                    "'{}' nằm trong vùng bảo vệ WindowsApps/Packages và không được di chuyển",
+                    candidate.source_path.display()
+                ),
+            });
+        }
+        if cfg!(feature = "store")
+            && greenc_core::config::is_windows_appdata_app_dir(&candidate.source_path)
+        {
+            return Err(GreenCError::PreconditionBlocked {
+                operation: "relocate".to_string(),
+                reason: format!(
+                    "Bản Microsoft Store không tạo NTFS Junction trong AppData ('{}') do cơ chế ảo hoá AppData của MSIX.",
+                    candidate.source_path.display()
+                ),
+            });
+        }
         Ok(())
     }
 

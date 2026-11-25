@@ -719,3 +719,51 @@ fn test_preflight_allows_junction_and_tool_config_strategies() {
         TransactionalMover::preflight(&candidate).expect("must be allowed");
     }
 }
+
+#[test]
+fn test_preflight_blocks_windowsapps_and_store_appdata_junctions() {
+    let windowsapps_cand = RelocationCandidate {
+        id: "wa".to_string(),
+        name: "WindowsApps".to_string(),
+        strategy: RelocationStrategyKind::Junction,
+        source_path: PathBuf::from(r"C:\Program Files\WindowsApps\ExamplePkg"),
+        default_target_path: PathBuf::from(r"D:\GreenC\Apps\ExamplePkg"),
+        size_bytes: 1,
+        file_count: 1,
+        is_locked: false,
+        locked_processes: vec![],
+        how_description: String::new(),
+        is_advanced: false,
+        is_eligible: true,
+        ineligible_reason: None,
+    };
+    assert!(matches!(
+        TransactionalMover::preflight(&windowsapps_cand),
+        Err(greenc_core::error::GreenCError::PreconditionBlocked { .. })
+    ));
+
+    let appdata_cand = RelocationCandidate {
+        id: "tg".to_string(),
+        name: "Telegram".to_string(),
+        strategy: RelocationStrategyKind::Junction,
+        source_path: PathBuf::from(r"C:\Users\Alice\AppData\Roaming\Telegram Desktop"),
+        default_target_path: PathBuf::from(r"D:\GreenC\Apps\Telegram"),
+        size_bytes: 1,
+        file_count: 1,
+        is_locked: false,
+        locked_processes: vec![],
+        how_description: String::new(),
+        is_advanced: false,
+        is_eligible: true,
+        ineligible_reason: None,
+    };
+    let res = TransactionalMover::preflight(&appdata_cand);
+    if cfg!(feature = "store") {
+        assert!(matches!(
+            res,
+            Err(greenc_core::error::GreenCError::PreconditionBlocked { .. })
+        ));
+    } else {
+        assert!(res.is_ok());
+    }
+}

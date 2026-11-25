@@ -586,5 +586,10 @@
   "Đã lưu cài đặt — Khởi động cùng hệ điều hành đang bật.": "Đã lưu cài đặt — Khởi động cùng hệ điều hành đang bật.",
   "Đã lưu cài đặt.": "Đã lưu cài đặt.",
   "Đang tải danh sách quy tắc...": "Đang tải danh sách quy tắc...",
-  "Làm mới danh sách ổ đĩa": "Làm mới danh sách ổ đĩa"
+  "Làm mới danh sách ổ đĩa": "Làm mới danh sách ổ đĩa",
+  "Cập nhật qua Microsoft Store": "Cập nhật qua Microsoft Store",
+  "Đang bị tắt trong Windows Settings / Task Manager. Hãy bật lại trong Settings → Apps → Startup.": "Đang bị tắt trong Windows Settings / Task Manager. Hãy bật lại trong Settings → Apps → Startup.",
+  "Bị chặn bởi chính sách quản trị hệ thống.": "Bị chặn bởi chính sách quản trị hệ thống.",
+  "Đang được bật bắt buộc bởi chính sách quản trị hệ thống.": "Đang được bật bắt buộc bởi chính sách quản trị hệ thống.",
+  "Bản Microsoft Store không hỗ trợ chuyển thư mục hệ thống tự động. Hãy đổi trong File Explorer → Properties → Location.": "Bản Microsoft Store không hỗ trợ chuyển thư mục hệ thống tự động. Hãy đổi trong File Explorer → Properties → Location."
 }

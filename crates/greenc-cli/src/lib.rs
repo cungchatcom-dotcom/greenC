@@ -449,6 +449,7 @@ fn execute_inner(cli: Cli, db_path: &Path, ctrl: &Arc<TaskControl>) -> Result<se
                 .collect();
 
             Ok(json!({
+                "edition": if greenc_core::config::IS_STORE_BUILD { "store" } else { "standard" },
                 "drives": drive_json,
                 "recommended_drive": recommended,
                 "burn_rate_forecast": {

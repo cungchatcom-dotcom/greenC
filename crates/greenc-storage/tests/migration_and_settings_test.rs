@@ -346,11 +346,20 @@ fn test_legacy_migration_unique_index_and_on_conflict_upsert() {
 #[test]
 fn legacy_migration_can_be_disabled_for_sandboxed_runs() {
     use greenc_storage::legacy_migration::{get_legacy_db_candidates, SKIP_LEGACY_MIGRATION_ENV};
-    // Not set by default in this test process: absolute machine-wide candidates are present.
-    if std::env::var(SKIP_LEGACY_MIGRATION_ENV).is_err() {
-        assert!(!get_legacy_db_candidates().is_empty());
+    #[cfg(feature = "store")]
+    {
+        // Microsoft Store (MSIX) builds never auto-migrate legacy or standalone EXE databases.
+        let _ = SKIP_LEGACY_MIGRATION_ENV;
+        assert!(get_legacy_db_candidates().is_empty());
     }
-    std::env::set_var(SKIP_LEGACY_MIGRATION_ENV, "1");
-    assert!(get_legacy_db_candidates().is_empty());
-    std::env::remove_var(SKIP_LEGACY_MIGRATION_ENV);
+    #[cfg(not(feature = "store"))]
+    {
+        // Not set by default in this test process: absolute machine-wide candidates are present.
+        if std::env::var(SKIP_LEGACY_MIGRATION_ENV).is_err() {
+            assert!(!get_legacy_db_candidates().is_empty());
+        }
+        std::env::set_var(SKIP_LEGACY_MIGRATION_ENV, "1");
+        assert!(get_legacy_db_candidates().is_empty());
+        std::env::remove_var(SKIP_LEGACY_MIGRATION_ENV);
+    }
 }

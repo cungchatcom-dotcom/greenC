@@ -7,6 +7,35 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+/// Detailed OS-level login autostart state (matches the Windows/MSIX StartupTask surface).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AutostartState {
+    Enabled,
+    Disabled,
+    DisabledByUser,
+    DisabledByPolicy,
+    EnabledByPolicy,
+    Unavailable,
+}
+
+impl AutostartState {
+    pub const fn is_enabled(self) -> bool {
+        matches!(self, Self::Enabled | Self::EnabledByPolicy)
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Enabled => "enabled",
+            Self::Disabled => "disabled",
+            Self::DisabledByUser => "disabled_by_user",
+            Self::DisabledByPolicy => "disabled_by_policy",
+            Self::EnabledByPolicy => "enabled_by_policy",
+            Self::Unavailable => "unavailable",
+        }
+    }
+}
+
 /// Snapshot of system power and fullscreen/presentation session state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PowerSessionState {
@@ -38,6 +67,13 @@ pub trait PowerSessionApi: Send + Sync {
     fn query_state(&self) -> Result<PowerSessionState>;
     fn set_autostart(&self, app_name: &str, exe_path: &Path, enabled: bool) -> Result<()>;
     fn is_autostart_enabled(&self, app_name: &str) -> Result<bool>;
+    fn autostart_state(&self, app_name: &str) -> Result<AutostartState> {
+        Ok(if self.is_autostart_enabled(app_name)? {
+            AutostartState::Enabled
+        } else {
+            AutostartState::Disabled
+        })
+    }
 }
 
 /// Queries live AC/battery status on macOS (`pmset -g batt`) or Linux (`/sys/class/power_supply`).

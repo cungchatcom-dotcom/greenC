@@ -6,6 +6,11 @@ use std::fs::{File, OpenOptions};
 use std::os::unix::io::AsRawFd;
 use std::path::PathBuf;
 
+/// Reports to the user that another instance of GreenC is already running.
+pub fn notify_already_running(message: &str) {
+    eprintln!("{message}");
+}
+
 /// RAII single-instance guard backed by an advisory exclusive `flock` on Unix.
 ///
 /// The kernel automatically releases the lock when the file descriptor is closed or the

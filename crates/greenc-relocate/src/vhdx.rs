@@ -66,24 +66,27 @@ impl VhdxCompactor {
                 });
             }
 
-            // Standard WSL2 Distro Packages
-            let packages_dir = base.join("Packages");
-            if packages_dir.exists() && packages_dir.is_dir() {
-                if let Ok(entries) = fs::read_dir(&packages_dir) {
-                    for entry in entries.flatten() {
-                        let path = entry.path();
-                        if path.is_dir() {
-                            let vhdx = path.join("LocalState").join("ext4.vhdx");
-                            if vhdx.exists() {
-                                let size = fs::metadata(&vhdx).map(|m| m.len()).unwrap_or(0);
-                                let pkg_name = entry.file_name().to_string_lossy().to_string();
-                                results.push(VhdxImageCandidate {
-                                    path: vhdx,
-                                    name: format!("WSL2 Linux Distro ({})", pkg_name),
-                                    size_bytes: size,
-                                    is_locked,
-                                    running_processes: running.clone(),
-                                });
+            // Standard WSL2 Distro Packages (skipped in Store/MSIX builds where %LOCALAPPDATA%\Packages is protected)
+            #[cfg(not(feature = "store"))]
+            {
+                let packages_dir = base.join("Packages");
+                if packages_dir.exists() && packages_dir.is_dir() {
+                    if let Ok(entries) = fs::read_dir(&packages_dir) {
+                        for entry in entries.flatten() {
+                            let path = entry.path();
+                            if path.is_dir() {
+                                let vhdx = path.join("LocalState").join("ext4.vhdx");
+                                if vhdx.exists() {
+                                    let size = fs::metadata(&vhdx).map(|m| m.len()).unwrap_or(0);
+                                    let pkg_name = entry.file_name().to_string_lossy().to_string();
+                                    results.push(VhdxImageCandidate {
+                                        path: vhdx,
+                                        name: format!("WSL2 Linux Distro ({})", pkg_name),
+                                        size_bytes: size,
+                                        is_locked,
+                                        running_processes: running.clone(),
+                                    });
+                                }
                             }
                         }
                     }

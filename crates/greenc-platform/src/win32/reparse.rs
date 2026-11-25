@@ -39,6 +39,16 @@ impl ReparsePointApi for NativeReparsePointApi {
     fn create_junction(&self, link: &Path, target: &Path) -> Result<()> {
         ensure_not_protected_system_path(link, "create_junction(link)")?;
         ensure_not_protected_system_path(target, "create_junction(target)")?;
+        #[cfg(feature = "store")]
+        if greenc_core::config::is_windows_appdata_app_dir(link) {
+            return Err(GreenCError::PreconditionBlocked {
+                operation: "create_junction(link)".to_string(),
+                reason: format!(
+                    "Bản Microsoft Store không tạo NTFS Junction trong AppData ('{}') do cơ chế ảo hoá AppData của MSIX.",
+                    link.display()
+                ),
+            });
+        }
 
         if !target.exists() {
             return Err(GreenCError::NotFound {

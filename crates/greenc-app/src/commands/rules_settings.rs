@@ -4,10 +4,12 @@
 use crate::guardian::measure_quota_rule_usage;
 use crate::state::{AppState, TaskProgressEvent};
 use chrono::Utc;
+#[cfg(all(windows, feature = "store"))]
+use greenc_core::config::STORE_STARTUP_TASK_ID;
 use greenc_core::config::{
     default_vault_dir, sandbox_demo_dir, APP_NAME, AUTHOR, DEFAULT_MIN_FILE_AGE_SECONDS,
-    DEFAULT_RETENTION_DAYS, DEFAULT_WATERMARK_RATIO, MIN_VAULT_RESERVE_BYTES, WEBSITE_LABEL,
-    WEBSITE_URL,
+    DEFAULT_RETENTION_DAYS, DEFAULT_WATERMARK_RATIO, IS_STORE_BUILD, MICROSOFT_STORE_UPDATES_URL,
+    MIN_VAULT_RESERVE_BYTES, WEBSITE_LABEL, WEBSITE_URL,
 };
 use greenc_core::models::{CleanCandidate, QuotaRule};
 use greenc_core::task::TaskControl;
@@ -54,6 +56,9 @@ pub struct AppSettingsDto {
     pub decimal_sep: String,
     pub theme_mode: String,
     pub autostart_enabled: bool,
+    pub autostart_status: String,
+    pub is_store_build: bool,
+    pub store_updates_url: Option<String>,
     pub low_disk_shield_gb: u32,
     pub pause_on_battery_fullscreen: bool,
     pub translations: HashMap<String, String>,
@@ -153,9 +158,27 @@ fn snapshot_settings_dto(state: &AppState) -> std::result::Result<AppSettingsDto
         .map_err(|e| e.to_string())?
         .as_str()
         .to_string();
-    let autostart_enabled = settings
+    let db_autostart_enabled = settings
         .get_autostart_enabled()
         .map_err(|e| e.to_string())?;
+    let (autostart_enabled, autostart_status) = {
+        #[cfg(all(windows, feature = "store"))]
+        {
+            match NativePowerSessionApi.autostart_state(STORE_STARTUP_TASK_ID) {
+                Ok(st) => (st.is_enabled(), st.as_str().to_string()),
+                Err(_) => (db_autostart_enabled, "unavailable".to_string()),
+            }
+        }
+        #[cfg(not(all(windows, feature = "store")))]
+        {
+            let status = if db_autostart_enabled {
+                "enabled"
+            } else {
+                "disabled"
+            };
+            (db_autostart_enabled, status.to_string())
+        }
+    };
     let low_disk_shield_gb = settings
         .get_low_disk_shield_gb()
         .map_err(|e| e.to_string())?;
@@ -178,6 +201,9 @@ fn snapshot_settings_dto(state: &AppState) -> std::result::Result<AppSettingsDto
         language,
         theme_mode,
         autostart_enabled,
+        autostart_status,
+        is_store_build: IS_STORE_BUILD,
+        store_updates_url: IS_STORE_BUILD.then(|| MICROSOFT_STORE_UPDATES_URL.to_string()),
         low_disk_shield_gb,
         pause_on_battery_fullscreen,
         translations,
@@ -256,34 +282,48 @@ pub async fn update_settings(
     }
 
     if let Some(enabled) = patch.autostart_enabled {
-        let mut os_err: Option<String> = match std::env::current_exe() {
-            Ok(exe_path) => {
-                let power_api = NativePowerSessionApi;
-                power_api
-                    .set_autostart(APP_NAME, &exe_path, enabled)
-                    .err()
-                    .map(|e| e.to_string())
-            }
-            Err(err) => Some(format!("Không thể xác định đường dẫn thực thi: {err}")),
-        };
-        // Fallback to tauri-plugin-autostart if native registration failed.
-        if os_err.is_some() {
-            use tauri_plugin_autostart::ManagerExt;
-            let manager = app.autolaunch();
-            let fallback_res = if enabled {
-                manager.enable()
-            } else {
-                manager.disable()
+        #[cfg(all(windows, feature = "store"))]
+        {
+            // Store (MSIX) builds use `desktop:StartupTask` exclusively; never fall back to
+            // `tauri-plugin-autostart` (which writes `HKCU\...\Run`).
+            let power_api = NativePowerSessionApi;
+            power_api
+                .set_autostart(STORE_STARTUP_TASK_ID, std::path::Path::new(""), enabled)
+                .map_err(|e| format!("Không thể cập nhật khởi động cùng hệ điều hành: {e}"))?;
+        }
+
+        #[cfg(not(all(windows, feature = "store")))]
+        {
+            let mut os_err: Option<String> = match std::env::current_exe() {
+                Ok(exe_path) => {
+                    let power_api = NativePowerSessionApi;
+                    power_api
+                        .set_autostart(APP_NAME, &exe_path, enabled)
+                        .err()
+                        .map(|e| e.to_string())
+                }
+                Err(err) => Some(format!("Không thể xác định đường dẫn thực thi: {err}")),
             };
-            if fallback_res.is_ok() {
-                os_err = None;
+            // Fallback to tauri-plugin-autostart if native registration failed.
+            if os_err.is_some() {
+                use tauri_plugin_autostart::ManagerExt;
+                let manager = app.autolaunch();
+                let fallback_res = if enabled {
+                    manager.enable()
+                } else {
+                    manager.disable()
+                };
+                if fallback_res.is_ok() {
+                    os_err = None;
+                }
+            }
+            if let Some(err_msg) = os_err {
+                return Err(format!(
+                    "Không thể cập nhật khởi động cùng hệ điều hành: {err_msg}"
+                ));
             }
         }
-        if let Some(err_msg) = os_err {
-            return Err(format!(
-                "Không thể cập nhật khởi động cùng hệ điều hành: {err_msg}"
-            ));
-        }
+
         settings
             .set_autostart_enabled(enabled)
             .map_err(|e| e.to_string())?;

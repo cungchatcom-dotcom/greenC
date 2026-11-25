@@ -5,6 +5,9 @@ edition.workspace = true
 authors.workspace = true
 license-file.workspace = true
 
+[features]
+store = ["greenc-core/store"]
+
 [dependencies]
 greenc-core.workspace = true
 greenc-i18n.workspace = true

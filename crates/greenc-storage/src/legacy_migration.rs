@@ -8,11 +8,7 @@ use std::path::{Path, PathBuf};
 use tracing::info;
 
 pub fn resolve_default_db_path() -> PathBuf {
-    let local_app_data = std::env::var("LOCALAPPDATA")
-        .unwrap_or_else(|_| r"C:\Users\Default\AppData\Local".to_string());
-    PathBuf::from(local_app_data)
-        .join("GreenC")
-        .join("greenc.db")
+    greenc_core::config::default_db_path()
 }
 
 /// Set to `1` to disable importing legacy databases. Test harnesses must set it: the candidate
@@ -21,18 +17,27 @@ pub fn resolve_default_db_path() -> PathBuf {
 pub const SKIP_LEGACY_MIGRATION_ENV: &str = "GREENC_SKIP_LEGACY_MIGRATION";
 
 pub fn get_legacy_db_candidates() -> Vec<PathBuf> {
-    if std::env::var(SKIP_LEGACY_MIGRATION_ENV).is_ok_and(|v| v == "1") {
-        return Vec::new();
+    // Store (MSIX) builds keep an isolated per-package database and must NEVER auto-migrate or
+    // touch data belonging to an unpackaged EXE installation.
+    #[cfg(feature = "store")]
+    {
+        Vec::new()
     }
-    let local_app_data = std::env::var("LOCALAPPDATA")
-        .unwrap_or_else(|_| r"C:\Users\Default\AppData\Local".to_string());
-    vec![
-        PathBuf::from(&local_app_data)
-            .join("Green C")
-            .join("greenc.db"),
-        PathBuf::from(r"C:\DiskGuard\data\diskguard.db"),
-        PathBuf::from(r"C:\GreenC\data\diskguard.db"),
-    ]
+    #[cfg(not(feature = "store"))]
+    {
+        if std::env::var(SKIP_LEGACY_MIGRATION_ENV).is_ok_and(|v| v == "1") {
+            return Vec::new();
+        }
+        let local_app_data = std::env::var("LOCALAPPDATA")
+            .unwrap_or_else(|_| r"C:\Users\Default\AppData\Local".to_string());
+        vec![
+            PathBuf::from(&local_app_data)
+                .join("Green C")
+                .join("greenc.db"),
+            PathBuf::from(r"C:\DiskGuard\data\diskguard.db"),
+            PathBuf::from(r"C:\GreenC\data\diskguard.db"),
+        ]
+    }
 }
 
 pub fn auto_migrate_legacy_db(target_db_path: &Path) -> Result<bool> {

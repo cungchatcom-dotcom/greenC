@@ -6,6 +6,7 @@ use clap::Parser;
 use greenc_cli::{execute_cli, Cli, EXIT_CANCELLED};
 use greenc_core::config::default_db_path;
 use greenc_core::task::TaskControl;
+#[cfg(not(feature = "store"))]
 use greenc_storage::legacy_migration::auto_migrate_legacy_db;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -26,6 +27,7 @@ async fn main() -> ExitCode {
     }
 
     let db_path = default_db_path();
+    #[cfg(not(feature = "store"))]
     let _ = auto_migrate_legacy_db(&db_path);
     if let Ok(db) = greenc_storage::db::GreenCDb::open(&db_path) {
         let _ = greenc_storage::vault_repair::repair_vault_paths_default(&db);

@@ -8,8 +8,18 @@ pub const AUTHOR: &str = "Cùng Chat";
 pub const WEBSITE_URL: &str = "https://cungchat.com";
 pub const WEBSITE_LABEL: &str = "cungchat.com";
 
+/// True when compiled with the `store` feature (Microsoft Store / MSIX edition).
+pub const IS_STORE_BUILD: bool = cfg!(feature = "store");
+/// TaskId declared in `packaging/msix/AppxManifest.xml.in` (`desktop:StartupTask`).
+pub const STORE_STARTUP_TASK_ID: &str = "GreenCStartupTask";
+/// Microsoft Store Downloads & Updates URI used by Store builds instead of GitHub Releases.
+pub const MICROSOFT_STORE_UPDATES_URL: &str = "ms-windows-store://downloadsandupdates";
+
 // Folder Names
 pub const DATA_FOLDER_NAME: &str = "GreenC";
+/// Separate AppData folder name for the Microsoft Store (MSIX) edition so it never collides with
+/// or mutates an existing unpackaged EXE install's `%LOCALAPPDATA%\GreenC` data on Windows 10 1903+.
+pub const STORE_DATA_FOLDER_NAME: &str = "GreenC-Store";
 pub const LEGACY_DATA_FOLDER_NAME: &str = "Green C";
 pub const SINGLE_INSTANCE_MUTEX_NAME: &str = "GreenCAppMutex";
 
@@ -70,52 +80,123 @@ pub const DEFAULT_PROTECTED_PATTERNS: &[&str] = &[
 ];
 
 /// Resolves standard GreenC application home directory per operating system:
-/// - Windows: `%LOCALAPPDATA%\GreenC`
-/// - macOS: `~/Library/Application Support/GreenC`
-/// - Linux/Unix: `$XDG_DATA_HOME/greenc` or `~/.local/share/greenc`
+/// - Windows (standard): `%LOCALAPPDATA%\GreenC`
+/// - Windows (`store` feature / MSIX): `%LOCALAPPDATA%\GreenC-Store` (virtualized per-package,
+///   isolated from any unpackaged EXE installation)
+/// - macOS: `~/Library/Application Support/GreenC` (or `GreenC-Store` when `store` enabled)
+/// - Linux/Unix: `$XDG_DATA_HOME/greenc` or `~/.local/share/greenc` (`greenc-store` when `store` enabled)
 pub fn app_home() -> PathBuf {
+    #[cfg(feature = "store")]
+    let (win_folder, unix_folder) = (STORE_DATA_FOLDER_NAME, "greenc-store");
+    #[cfg(not(feature = "store"))]
+    let (win_folder, unix_folder) = (DATA_FOLDER_NAME, "greenc");
+
     #[cfg(windows)]
     {
         if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
-            PathBuf::from(local_app_data).join(DATA_FOLDER_NAME)
+            PathBuf::from(local_app_data).join(win_folder)
         } else if let Ok(user_profile) = std::env::var("USERPROFILE") {
             PathBuf::from(user_profile)
                 .join("AppData")
                 .join("Local")
-                .join(DATA_FOLDER_NAME)
+                .join(win_folder)
         } else {
-            PathBuf::from(r"C:\GreenC")
+            PathBuf::from(r"C:\").join(win_folder)
         }
     }
 
     #[cfg(target_os = "macos")]
     {
+        let _ = unix_folder;
         if let Ok(home) = std::env::var("HOME") {
             PathBuf::from(home)
                 .join("Library")
                 .join("Application Support")
-                .join(DATA_FOLDER_NAME)
+                .join(win_folder)
         } else {
-            PathBuf::from("/tmp/GreenC")
+            PathBuf::from("/tmp").join(win_folder)
         }
     }
 
     #[cfg(all(unix, not(target_os = "macos")))]
     {
+        let _ = win_folder;
         if let Ok(xdg_data) = std::env::var("XDG_DATA_HOME") {
             if !xdg_data.trim().is_empty() {
-                return PathBuf::from(xdg_data).join("greenc");
+                return PathBuf::from(xdg_data).join(unix_folder);
             }
         }
         if let Ok(home) = std::env::var("HOME") {
             PathBuf::from(home)
                 .join(".local")
                 .join("share")
-                .join("greenc")
+                .join(unix_folder)
         } else {
-            PathBuf::from("/tmp/greenc")
+            PathBuf::from("/tmp").join(unix_folder)
         }
     }
+}
+
+/// Returns `true` if `path` resides under Windows `%APPDATA%` or `%LOCALAPPDATA%` (excluding
+/// `%TEMP%` / `\AppData\Local\Temp`, where test sandboxes and transient temp files live).
+///
+/// Used by `store` (MSIX) builds to prevent operations whose new filesystem entries would be
+/// silently redirected into the MSIX package's virtualized `LocalCache` (such as NTFS junctions
+/// or same-drive atomic staging).
+pub fn is_windows_appdata_app_dir(path: &Path) -> bool {
+    let norm = normalize_windows_like_path(path);
+
+    // Explicitly exclude AppData\Local\Temp and %TEMP%/%TMP%
+    if norm.contains("/appdata/local/temp/") || norm.ends_with("/appdata/local/temp") {
+        return false;
+    }
+    for env_key in ["TEMP", "TMP"] {
+        if let Ok(val) = std::env::var(env_key) {
+            let env_norm = normalize_windows_like_path(Path::new(&val));
+            if !env_norm.is_empty()
+                && (norm == env_norm || norm.starts_with(&format!("{env_norm}/")))
+            {
+                return false;
+            }
+        }
+    }
+
+    for env_key in ["LOCALAPPDATA", "APPDATA"] {
+        if let Ok(val) = std::env::var(env_key) {
+            let env_norm = normalize_windows_like_path(Path::new(&val));
+            if !env_norm.is_empty()
+                && (norm == env_norm || norm.starts_with(&format!("{env_norm}/")))
+            {
+                return true;
+            }
+        }
+    }
+
+    norm.contains("/appdata/local/")
+        || norm.ends_with("/appdata/local")
+        || norm.contains("/appdata/roaming/")
+        || norm.ends_with("/appdata/roaming")
+        || norm.contains("/appdata/locallow/")
+        || norm.ends_with("/appdata/locallow")
+}
+
+/// Returns `true` if `path` targets a Windows Store / MSIX protected location such as
+/// `WindowsApps` (`C:\Program Files\WindowsApps`, `D:\WindowsApps`,
+/// `%LOCALAPPDATA%\Microsoft\WindowsApps`) or `%LOCALAPPDATA%\Packages`.
+pub fn is_windows_apps_or_packages_path(path: &Path) -> bool {
+    let norm = normalize_windows_like_path(path);
+    norm.split('/').any(|seg| seg == "windowsapps")
+        || norm.contains("/appdata/local/packages/")
+        || norm.ends_with("/appdata/local/packages")
+}
+
+fn normalize_windows_like_path(path: &Path) -> String {
+    let raw = path.to_string_lossy();
+    let stripped = raw.strip_prefix(r"\\?\").unwrap_or(&raw);
+    stripped
+        .replace('\\', "/")
+        .trim_end_matches('/')
+        .to_ascii_lowercase()
 }
 
 /// Resolves legacy Python Green C home (`%LOCALAPPDATA%\Green C` on Windows; falls back to `app_home()` on Unix).

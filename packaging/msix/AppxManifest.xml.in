@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap desktop rescap">
+
+  <Identity
+    Name="@IDENTITY_NAME@"
+    Publisher="@IDENTITY_PUBLISHER@"
+    Version="@PACKAGE_VERSION@"
+    ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>GreenC</DisplayName>
+    <PublisherDisplayName>@PUBLISHER_DISPLAY_NAME@</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily
+      Name="Windows.Desktop"
+      MinVersion="10.0.18362.0"
+      MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-US" />
+    <Resource Language="vi-VN" />
+  </Resources>
+
+  <Applications>
+    <Application
+      Id="GreenC"
+      Executable="GreenC.exe"
+      EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="GreenC"
+        Description="Safe local disk space guardian for Windows: inspect drive usage, clean temporary clutter with a 7-day Canary Safety Vault, and keep drive C: healthy."
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile
+          ShortName="GreenC"
+          Square71x71Logo="Assets\Square71x71Logo.png"
+          Wide310x150Logo="Assets\Wide310x150Logo.png"
+          Square310x310Logo="Assets\Square310x310Logo.png" />
+      </uap:VisualElements>
+
+      <Extensions>
+        <!-- Per-user opt-in autostart managed via Windows.ApplicationModel.StartupTask (never HKCU Run) -->
+        <desktop:Extension
+          Category="windows.startupTask"
+          Executable="GreenC.exe"
+          EntryPoint="Windows.FullTrustApplication">
+          <desktop:StartupTask
+            TaskId="GreenCStartupTask"
+            Enabled="false"
+            DisplayName="GreenC" />
+        </desktop:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <!-- Required for packaged Win32/Tauri desktop application running at Medium IL.
+         Do NOT add unvirtualizedResources or other restricted capabilities. -->
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+</Package>

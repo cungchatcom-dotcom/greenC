@@ -324,53 +324,65 @@ pub async fn relocate_known_folder(
     target_drive: String,
     state: State<'_, AppState>,
 ) -> std::result::Result<RelocationResultDto, String> {
-    let task_id = format!("relocate-kf-{}", chrono::Utc::now().timestamp_millis());
-    let task_ctrl = Arc::new(TaskControl::new());
-    state.register_task(task_id.clone(), task_ctrl.clone());
+    #[cfg(feature = "store")]
+    {
+        let _ = (folder_id, target_drive, state);
+        return Err(
+            "Bản Microsoft Store tạm tắt chuyển thư mục hệ thống (Known Folders) do cơ chế ảo hoá HKCU của MSIX. Hãy đổi trong File Explorer → Properties → Location hoặc dùng bản cài EXE."
+                .to_string(),
+        );
+    }
 
-    let state_inner = state.inner().clone();
-    let result = tokio::task::spawn_blocking(move || {
-        let drive_char = target_drive
-            .chars()
-            .next()
-            .ok_or_else(|| "Chưa chọn ổ đĩa hợp lệ".to_string())?;
+    #[cfg(not(feature = "store"))]
+    {
+        let task_id = format!("relocate-kf-{}", chrono::Utc::now().timestamp_millis());
+        let task_ctrl = Arc::new(TaskControl::new());
+        state.register_task(task_id.clone(), task_ctrl.clone());
 
-        let shell_api = NativeShellFolderApi;
-        let vol_api = NativeWin32VolumeApi;
+        let state_inner = state.inner().clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let drive_char = target_drive
+                .chars()
+                .next()
+                .ok_or_else(|| "Chưa chọn ổ đĩa hợp lệ".to_string())?;
 
-        let rec = KnownFolderService::relocate_known_folder(
-            &folder_id,
-            drive_char,
-            None,
-            &state_inner.db,
-            &shell_api,
-            &vol_api,
-            &task_ctrl,
-            |_, _| {},
-        )
-        .map_err(|e| format!("Lỗi chuyển thư mục hệ thống: {e}"))?;
+            let shell_api = NativeShellFolderApi;
+            let vol_api = NativeWin32VolumeApi;
 
-        Ok(RelocationResultDto {
-            id: rec.id,
-            candidate_id: rec.app_id,
-            app_name: rec.app_name,
-            strategy: rec.strategy.as_str().to_string(),
-            source_path: rec.source_path.to_string_lossy().to_string(),
-            target_path: rec.target_path.to_string_lossy().to_string(),
-            size_bytes: rec.size_bytes,
-            status: rec.status.as_str().to_string(),
-            health_status: rec.health_status.as_str().to_string(),
-            detail: rec.detail,
-            created_at: rec.created_at.to_rfc3339(),
-            success: true,
-            error_message: None,
+            let rec = KnownFolderService::relocate_known_folder(
+                &folder_id,
+                drive_char,
+                None,
+                &state_inner.db,
+                &shell_api,
+                &vol_api,
+                &task_ctrl,
+                |_, _| {},
+            )
+            .map_err(|e| format!("Lỗi chuyển thư mục hệ thống: {e}"))?;
+
+            Ok(RelocationResultDto {
+                id: rec.id,
+                candidate_id: rec.app_id,
+                app_name: rec.app_name,
+                strategy: rec.strategy.as_str().to_string(),
+                source_path: rec.source_path.to_string_lossy().to_string(),
+                target_path: rec.target_path.to_string_lossy().to_string(),
+                size_bytes: rec.size_bytes,
+                status: rec.status.as_str().to_string(),
+                health_status: rec.health_status.as_str().to_string(),
+                detail: rec.detail,
+                created_at: rec.created_at.to_rfc3339(),
+                success: true,
+                error_message: None,
+            })
         })
-    })
-    .await
-    .map_err(|e| format!("Task execution join error: {e}"))?;
+        .await
+        .map_err(|e| format!("Task execution join error: {e}"))?;
 
-    state.unregister_task(&task_id);
-    result
+        state.unregister_task(&task_id);
+        result
+    }
 }
 
 /// Checks and recovers any interrupted moves from previous crash or power loss.

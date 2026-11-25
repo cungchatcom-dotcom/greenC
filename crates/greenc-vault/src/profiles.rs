@@ -167,6 +167,9 @@ impl PresetProfiles {
                     "Microsoft".to_string(),
                     "Windows".to_string(),
                     "Packages".to_string(),
+                    "WindowsApps".to_string(),
+                    "GreenC".to_string(),
+                    "GreenC-Store".to_string(),
                 ],
             },
         ]

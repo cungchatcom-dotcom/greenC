@@ -53,16 +53,26 @@ After the first PR is merged:
 The `publish-winget` job then opens a winget-pkgs PR on every `v*` tag.
 When the installer becomes signed, the hash changes; nothing else needs to change.
 
-## Microsoft Store (after signing)
+## Microsoft Store
 
-The Store accepts our Inno Setup `.exe` directly (Win32 EXE/MSI submission). No MSIX repackaging is needed.
-The Store does **not** re-sign EXE installers, though. They must be signed by a CA in the Microsoft Trusted Root Program, so this step waits for SignPath.
+There are two supported Microsoft Store paths:
 
-When signing is live:
+### Path A — MSIX package (recommended now, no external code-signing certificate needed)
 
-1. Register an individual developer account at https://storedeveloper.microsoft.com (free for individuals) and reserve the name **GreenC**.
-2. New product → *EXE or MSI app*. Package URL: the versioned GitHub release URL of the signed installer.
-3. Silent install switches: `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-`
-4. Architecture x64, per-user install (no admin), Windows 10 1903+.
-5. Listing: reuse the README text and `docs/screenshots/`. Privacy policy URL is required: host one on greenc.cungchat.com (the app processes data locally only).
-6. For each release, update the package URL to the new versioned installer. The EXE path allows the app to keep its own updater.
+Microsoft Store signs and distributes MSIX packages directly, so this path does **not** wait for SignPath Foundation.
+
+- Build uses Cargo feature `--features store` (`greenc-app` and `greenc-cli`):
+  - Disables the GitHub Releases updater completely (updates come from Microsoft Store only).
+  - Uses `desktop:StartupTask` (`Windows.ApplicationModel.StartupTask`) instead of `HKCU\...\Run`.
+  - Isolates app data under `%LOCALAPPDATA%\GreenC-Store` (MSIX virtualized) without touching or migrating any standalone EXE installation.
+  - Uses `runFullTrust` only (no `unvirtualizedResources`), blocks NTFS junctions inside virtualized AppData and Known Folder HKCU redirection in Store builds, and stages atomic cache operations outside AppData (`%USERPROFILE%\.greenc-store-staging`).
+- Manifest template & packaging scripts live in `packaging/msix/` (`AppxManifest.xml.in`, `generate-assets.ps1`, `build-msix.ps1`).
+- CI job `build-msix` runs on `workflow_dispatch` (and on `v*` tags once `STORE_IDENTITY_NAME` is configured as a repository variable) and uploads `.msix` + `.msixupload` artifacts without auto-submitting.
+- Full step-by-step registration, Partner Center setup, listing copy, privacy policy, and `runFullTrust` certification notes:
+  - [`docs/microsoft-store.md`](microsoft-store.md)
+  - [`docs/store-listing/vi.md`](store-listing/vi.md) & [`docs/store-listing/en.md`](store-listing/en.md)
+  - [`docs/privacy.md`](privacy.md)
+
+### Path B — Win32 EXE/MSI submission (optional after SignPath signing is live)
+
+Once SignPath code signing is approved, the Store also accepts the signed Inno Setup `.exe` directly (per-user silent switches `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-`, x64, Windows 10 1903+), which keeps the built-in GitHub updater and unvirtualized AppData/HKCU behavior. Until signing is live, use **Path A (MSIX)**.

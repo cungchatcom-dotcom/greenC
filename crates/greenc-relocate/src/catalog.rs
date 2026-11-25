@@ -25,6 +25,9 @@ pub const ADVANCED_SKIP_LIST: &[&str] = &[
     "application data",
     "cryptneturlcache",
     "connecteddevicesplatform",
+    "windowsapps",
+    "greenc",
+    "greenc-store",
 ];
 
 #[derive(Debug, Clone)]

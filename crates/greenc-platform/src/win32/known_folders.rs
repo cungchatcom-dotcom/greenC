@@ -1,14 +1,19 @@
 //! Windows Shell Known Folders implementation (SHGetKnownFolderPath, SHSetKnownFolderPath, OneDrive guard).
 
+#[cfg(not(feature = "store"))]
 use crate::handle::{ensure_not_protected_system_path, path_to_wide};
 use crate::traits::ShellFolderApi;
 use greenc_core::error::{GreenCError, Result};
 use std::env;
 use std::path::{Path, PathBuf};
-use windows::core::{GUID, PCWSTR, PWSTR};
+#[cfg(not(feature = "store"))]
+use windows::core::PCWSTR;
+use windows::core::{GUID, PWSTR};
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::System::Com::CoTaskMemFree;
-use windows::Win32::UI::Shell::{SHGetKnownFolderPath, SHSetKnownFolderPath, KNOWN_FOLDER_FLAG};
+#[cfg(not(feature = "store"))]
+use windows::Win32::UI::Shell::SHSetKnownFolderPath;
+use windows::Win32::UI::Shell::{SHGetKnownFolderPath, KNOWN_FOLDER_FLAG};
 
 pub const FOLDERID_DOWNLOADS: &str = "374DE290-123F-4565-9164-39C4925E467B";
 pub const FOLDERID_DOCUMENTS: &str = "FDD39AD0-238F-46AF-ADB4-6C85480369C7";
@@ -76,30 +81,42 @@ impl ShellFolderApi for NativeShellFolderApi {
     }
 
     fn set_known_folder(&self, folder_guid: &str, new_path: &Path) -> Result<()> {
-        ensure_not_protected_system_path(new_path, "SHSetKnownFolderPath")?;
-        let guid = parse_guid(folder_guid)?;
-        let wide_path = path_to_wide(new_path);
-        // SAFETY: `guid` is valid and `wide_path` is a NUL-terminated UTF-16 path alive across the call.
-        let hr = unsafe {
-            SHSetKnownFolderPath(
-                &guid,
-                0,
-                HANDLE(std::ptr::null_mut()),
-                PCWSTR(wide_path.as_ptr()),
-            )
-        };
+        #[cfg(feature = "store")]
+        {
+            let _ = (folder_guid, new_path);
+            return Err(GreenCError::PreconditionBlocked {
+                operation: "SHSetKnownFolderPath".to_string(),
+                reason: "Bản Microsoft Store tạm tắt đổi đường dẫn Known Folder do cơ chế ảo hoá HKCU của MSIX; hãy đổi trong File Explorer → Properties → Location hoặc dùng bản cài EXE.".to_string(),
+            });
+        }
 
-        hr.map_err(|e| GreenCError::Win32 {
-            code: e.code().0 as u32,
-            message: format!(
-                "SHSetKnownFolderPath failed to redirect {} to {}: {}",
-                folder_guid,
-                new_path.display(),
-                e
-            ),
-        })?;
+        #[cfg(not(feature = "store"))]
+        {
+            ensure_not_protected_system_path(new_path, "SHSetKnownFolderPath")?;
+            let guid = parse_guid(folder_guid)?;
+            let wide_path = path_to_wide(new_path);
+            // SAFETY: `guid` is valid and `wide_path` is a NUL-terminated UTF-16 path alive across the call.
+            let hr = unsafe {
+                SHSetKnownFolderPath(
+                    &guid,
+                    0,
+                    HANDLE(std::ptr::null_mut()),
+                    PCWSTR(wide_path.as_ptr()),
+                )
+            };
 
-        Ok(())
+            hr.map_err(|e| GreenCError::Win32 {
+                code: e.code().0 as u32,
+                message: format!(
+                    "SHSetKnownFolderPath failed to redirect {} to {}: {}",
+                    folder_guid,
+                    new_path.display(),
+                    e
+                ),
+            })?;
+
+            Ok(())
+        }
     }
 
     fn is_onedrive_path(&self, path: &Path) -> bool {

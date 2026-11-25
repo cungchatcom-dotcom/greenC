@@ -5,6 +5,29 @@ use std::os::windows::ffi::OsStrExt;
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
 use windows::Win32::System::Threading::{CreateMutexW, ReleaseMutex};
+use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONINFORMATION, MB_OK};
+
+/// Displays a native informational dialog when another instance of GreenC (including a
+/// side-by-side EXE or Microsoft Store installation) already holds `GreenCAppMutex`.
+pub fn notify_already_running(message: &str) {
+    let text_w: Vec<u16> = std::ffi::OsStr::new(message)
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    let title_w: Vec<u16> = std::ffi::OsStr::new("GreenC")
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    // SAFETY: Both `text_w` and `title_w` are valid NUL-terminated UTF-16 strings alive across the call.
+    unsafe {
+        let _ = MessageBoxW(
+            None,
+            PCWSTR(text_w.as_ptr()),
+            PCWSTR(title_w.as_ptr()),
+            MB_OK | MB_ICONINFORMATION,
+        );
+    }
+}
 
 #[derive(Debug)]
 pub struct GreenCAppMutex {

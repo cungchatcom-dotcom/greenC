@@ -28,6 +28,13 @@ tracing.workspace = true
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
+store = [
+    "greenc-core/store",
+    "greenc-platform/store",
+    "greenc-storage/store",
+    "greenc-vault/store",
+    "greenc-relocate/store",
+]
 
 [dev-dependencies]
 tempfile.workspace = true

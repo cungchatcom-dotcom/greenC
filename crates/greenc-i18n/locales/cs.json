@@ -586,5 +586,10 @@
   "Đã lưu cài đặt — Khởi động cùng hệ điều hành đang bật.": "Settings saved — Start with OS is enabled.",
   "Đã lưu cài đặt.": "Settings saved.",
   "Đang tải danh sách quy tắc...": "Loading quota rules...",
-  "Làm mới danh sách ổ đĩa": "Refresh drive list"
+  "Làm mới danh sách ổ đĩa": "Refresh drive list",
+  "Cập nhật qua Microsoft Store": "Updates managed via Microsoft Store",
+  "Đang bị tắt trong Windows Settings / Task Manager. Hãy bật lại trong Settings → Apps → Startup.": "Disabled in Windows Settings / Task Manager. Re-enable it in Settings → Apps → Startup.",
+  "Bị chặn bởi chính sách quản trị hệ thống.": "Blocked by system administrator policy.",
+  "Đang được bật bắt buộc bởi chính sách quản trị hệ thống.": "Forced enabled by system administrator policy.",
+  "Bản Microsoft Store không hỗ trợ chuyển thư mục hệ thống tự động. Hãy đổi trong File Explorer → Properties → Location.": "Automatic Known Folder relocation is disabled in the Microsoft Store edition. Change it in File Explorer → Properties → Location."
 }

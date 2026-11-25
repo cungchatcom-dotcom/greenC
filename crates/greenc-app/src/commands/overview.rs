@@ -1,10 +1,16 @@
 //! Overview and bootstrap Tauri v2 IPC command implementations (Task T024).
 
 use crate::state::{AppState, TaskProgressEvent};
-use greenc_core::config::{APP_NAME, DEFAULT_RETENTION_DAYS};
+#[cfg(all(windows, feature = "store"))]
+use greenc_core::config::STORE_STARTUP_TASK_ID;
+use greenc_core::config::{
+    APP_NAME, DEFAULT_RETENTION_DAYS, IS_STORE_BUILD, MICROSOFT_STORE_UPDATES_URL,
+};
 use greenc_core::error::Result;
 use greenc_core::models::DriveInfo;
 use greenc_core::task::TaskControl;
+#[cfg(all(windows, feature = "store"))]
+use greenc_platform::power_session::{NativePowerSessionApi, PowerSessionApi};
 use greenc_platform::volume::{list_drives_native, recommend_drive};
 use greenc_scanner::forecast::{predict_fullness, BurnRateForecast};
 use greenc_scanner::space_lens::SpaceNode;
@@ -29,6 +35,9 @@ pub struct BootstrapStateDto {
     pub current_data_root: Option<String>,
     pub retention_days: u32,
     pub autostart_enabled: bool,
+    pub autostart_status: String,
+    pub is_store_build: bool,
+    pub store_updates_url: Option<String>,
     pub low_disk_shield_gb: u32,
     pub pause_on_battery_fullscreen: bool,
     pub translations: std::collections::HashMap<String, String>,
@@ -105,9 +114,27 @@ pub async fn get_bootstrap_state(
         .map_err(|e| e.to_string())?
         .map(|p| p.to_string_lossy().to_string());
     let retention_days = settings.get_retention_days().map_err(|e| e.to_string())?;
-    let autostart_enabled = settings
+    let db_autostart_enabled = settings
         .get_autostart_enabled()
         .map_err(|e| e.to_string())?;
+    let (autostart_enabled, autostart_status) = {
+        #[cfg(all(windows, feature = "store"))]
+        {
+            match NativePowerSessionApi.autostart_state(STORE_STARTUP_TASK_ID) {
+                Ok(st) => (st.is_enabled(), st.as_str().to_string()),
+                Err(_) => (db_autostart_enabled, "unavailable".to_string()),
+            }
+        }
+        #[cfg(not(all(windows, feature = "store")))]
+        {
+            let status = if db_autostart_enabled {
+                "enabled"
+            } else {
+                "disabled"
+            };
+            (db_autostart_enabled, status.to_string())
+        }
+    };
     let low_disk_shield_gb = settings
         .get_low_disk_shield_gb()
         .map_err(|e| e.to_string())?;
@@ -129,6 +156,9 @@ pub async fn get_bootstrap_state(
         current_data_root,
         retention_days,
         autostart_enabled,
+        autostart_status,
+        is_store_build: IS_STORE_BUILD,
+        store_updates_url: IS_STORE_BUILD.then(|| MICROSOFT_STORE_UPDATES_URL.to_string()),
         low_disk_shield_gb,
         pause_on_battery_fullscreen,
         translations,

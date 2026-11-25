@@ -116,23 +116,29 @@
   }
 
   onMount(() => {
-    refreshBootstrap();
+    let updateTimer: number | undefined;
+    void refreshBootstrap().then(() => {
+      // Silently auto-check GitHub releases 4s after startup ONLY for standard builds.
+      // Microsoft Store builds update exclusively through Microsoft Store.
+      if (bootstrap?.is_store_build) return;
+      updateTimer = window.setTimeout(async () => {
+        try {
+          const res = await checkForUpdates();
+          if (res.has_update && !res.managed_by_store) {
+            updateInfo = res;
+          }
+        } catch {
+          // Offline or rate-limited — stay silent on auto-check
+        }
+      }, 4000);
+    });
     const unlistenPromise = listenWatchdogAlert((alert) => {
       activeAlert = alert;
     });
-    // Silently auto-check for new releases 4s after startup
-    const updateTimer = window.setTimeout(async () => {
-      try {
-        const res = await checkForUpdates();
-        if (res.has_update) {
-          updateInfo = res;
-        }
-      } catch {
-        // Offline or rate-limited — stay silent on auto-check
-      }
-    }, 4000);
     return () => {
-      window.clearTimeout(updateTimer);
+      if (updateTimer !== undefined) {
+        window.clearTimeout(updateTimer);
+      }
       unlistenPromise.then((unlisten) => unlisten());
     };
   });
@@ -239,7 +245,7 @@
       </div>
     </header>
 
-    {#if updateInfo?.has_update && !updateDismissed}
+    {#if !bootstrap?.is_store_build && updateInfo?.has_update && !updateInfo?.managed_by_store && !updateDismissed}
       <div
         class="mx-6 mt-4 rounded-lg border border-accent/35 bg-accent/10 px-4 py-2.5 text-xs flex items-center justify-between gap-3"
       >

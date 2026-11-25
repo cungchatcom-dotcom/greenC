@@ -28,6 +28,9 @@ export interface BootstrapState {
   current_data_root: string | null;
   retention_days: number;
   autostart_enabled?: boolean;
+  autostart_status?: string;
+  is_store_build?: boolean;
+  store_updates_url?: string | null;
   low_disk_shield_gb?: number;
   pause_on_battery_fullscreen?: boolean;
   translations?: Record<string, string>;
@@ -584,6 +587,9 @@ export interface AppSettingsDto {
   decimal_sep: string;
   theme_mode: 'system' | 'light' | 'dark' | string;
   autostart_enabled: boolean;
+  autostart_status?: string;
+  is_store_build?: boolean;
+  store_updates_url?: string | null;
   low_disk_shield_gb: number;
   pause_on_battery_fullscreen: boolean;
   translations: Record<string, string>;
@@ -765,6 +771,8 @@ export interface UpdateCheckDto {
   asset_name: string | null;
   release_notes: string;
   published_at: string | null;
+  managed_by_store?: boolean;
+  message?: string | null;
 }
 
 export async function checkForUpdates(): Promise<UpdateCheckDto> {

@@ -415,8 +415,22 @@ impl CandidateScanner {
             }
         }
 
-        // Validate free space against destination drive
+        // Validate MSIX AppData junction restrictions and free space against destination drive
         for cand in &mut results {
+            if cand.is_eligible
+                && cfg!(feature = "store")
+                && matches!(
+                    cand.strategy,
+                    RelocationStrategyKind::Junction | RelocationStrategyKind::ToolConfig
+                )
+                && greenc_core::config::is_windows_appdata_app_dir(&cand.source_path)
+            {
+                cand.is_eligible = false;
+                cand.ineligible_reason = Some(
+                    "Bản Microsoft Store không tạo liên kết (NTFS Junction) trong AppData do cơ chế ảo hoá AppData của MSIX."
+                        .to_string(),
+                );
+            }
             if cand.is_eligible {
                 if let Err(e) = CandidateQualificationEngine::check_free_space_reserve(
                     target_drive,

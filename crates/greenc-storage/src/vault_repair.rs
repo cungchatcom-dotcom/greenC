@@ -29,15 +29,19 @@ pub fn default_vault_search_dirs(db: &GreenCDb) -> Vec<PathBuf> {
         dirs.push(root.join("Vault"));
     }
     dirs.push(greenc_core::config::default_vault_dir());
-    if let Ok(local) = std::env::var("LOCALAPPDATA") {
-        dirs.push(PathBuf::from(&local).join("Green C").join("Vault"));
-    }
-    for legacy in [
-        r"C:\Green C\Vault",
-        r"C:\GreenC\Vault",
-        r"C:\DiskGuard\vault",
-    ] {
-        dirs.push(PathBuf::from(legacy));
+    // Store (MSIX) builds never search or claim Vault archives belonging to legacy/EXE installs.
+    #[cfg(not(feature = "store"))]
+    {
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            dirs.push(PathBuf::from(&local).join("Green C").join("Vault"));
+        }
+        for legacy in [
+            r"C:\Green C\Vault",
+            r"C:\GreenC\Vault",
+            r"C:\DiskGuard\vault",
+        ] {
+            dirs.push(PathBuf::from(legacy));
+        }
     }
     let mut seen = std::collections::HashSet::new();
     dirs.retain(|d| seen.insert(d.to_string_lossy().to_lowercase()));

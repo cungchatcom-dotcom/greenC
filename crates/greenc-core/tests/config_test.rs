@@ -67,3 +67,43 @@ fn test_retention_bounds_and_paths() {
     let db_path = default_db_path();
     assert!(db_path.to_string_lossy().ends_with("greenc.db"));
 }
+
+#[test]
+fn test_store_appdata_and_windowsapps_guards() {
+    assert!(is_windows_appdata_app_dir(Path::new(
+        r"C:\Users\Alice\AppData\Roaming\Telegram Desktop"
+    )));
+    assert!(is_windows_appdata_app_dir(Path::new(
+        r"C:\Users\Alice\AppData\Local\GreenC\Vault"
+    )));
+    assert!(!is_windows_appdata_app_dir(Path::new(
+        r"C:\Users\Alice\AppData\Local\Temp\test_sandbox"
+    )));
+    assert!(!is_windows_appdata_app_dir(Path::new(r"D:\GreenC\Vault")));
+    assert!(!is_windows_appdata_app_dir(Path::new(
+        r"C:\Users\Alice\.cargo\registry\cache"
+    )));
+
+    assert!(is_windows_apps_or_packages_path(Path::new(
+        r"C:\Program Files\WindowsApps\Publisher.GreenC_2.1.2.0_x64__abc"
+    )));
+    assert!(is_windows_apps_or_packages_path(Path::new(
+        r"C:\Users\Alice\AppData\Local\Microsoft\WindowsApps\python.exe"
+    )));
+    assert!(is_windows_apps_or_packages_path(Path::new(
+        r"C:\Users\Alice\AppData\Local\Packages\Publisher.GreenC_abc\LocalCache"
+    )));
+    assert!(is_windows_apps_or_packages_path(Path::new(
+        r"D:\WindowsApps\SomeStoreGame"
+    )));
+    assert!(!is_windows_apps_or_packages_path(Path::new(
+        r"D:\GreenC\Apps\Telegram"
+    )));
+
+    let home = app_home().to_string_lossy().to_ascii_lowercase();
+    if cfg!(feature = "store") {
+        assert!(home.contains("greenc-store"));
+    } else {
+        assert!(!home.contains("greenc-store"));
+    }
+}

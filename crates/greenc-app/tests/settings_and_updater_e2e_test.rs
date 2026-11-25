@@ -54,7 +54,7 @@ fn native_drive_enumeration_is_fast_and_finds_host_volumes() {
     );
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, not(feature = "store")))]
 #[test]
 fn windows_hkcu_autostart_registry_roundtrip() {
     use greenc_platform::power_session::{
@@ -77,10 +77,41 @@ fn windows_hkcu_autostart_registry_roundtrip() {
     assert!(!is_autostart_enabled_native(TEST_KEY).unwrap());
 }
 
+#[cfg(all(windows, feature = "store"))]
+#[test]
+fn store_build_refuses_hkcu_run_registry_autostart() {
+    use greenc_platform::power_session::set_autostart_registry_native;
+
+    let fake_exe = std::path::Path::new(r"C:\Program Files\GreenC\GreenC.exe");
+    let res = set_autostart_registry_native("GreenC_Store_Probe", fake_exe, true);
+    assert!(
+        matches!(
+            res,
+            Err(greenc_core::error::GreenCError::PreconditionBlocked { .. })
+        ),
+        "Store builds must never touch HKCU Run registry keys"
+    );
+}
+
 #[test]
 fn updater_semver_detects_v212_over_v211() {
     assert!(is_newer_version("2.1.1", "v2.1.2"));
     assert!(is_newer_version("2.1.1", "2.2.0"));
     assert!(!is_newer_version("2.1.2", "v2.1.2"));
     assert!(!is_newer_version("2.1.2", "v2.1.1"));
+}
+
+#[test]
+fn store_edition_flag_and_legacy_isolation_match_feature() {
+    assert_eq!(
+        greenc_app::commands::updater::is_store_edition(),
+        cfg!(feature = "store")
+    );
+    let legacy = greenc_storage::legacy_migration::get_legacy_db_candidates();
+    if cfg!(feature = "store") {
+        assert!(
+            legacy.is_empty(),
+            "Store builds must never auto-migrate legacy/EXE databases"
+        );
+    }
 }

@@ -899,7 +899,21 @@ fn resolve_home_staging_path(home_override: Option<&Path>) -> Option<(PathBuf, P
         Some((home.clone(), home.join(".local/share/greenc/staging")))
     }
 
-    #[cfg(windows)]
+    #[cfg(all(windows, feature = "store"))]
+    {
+        // On MSIX (Microsoft Store), directories created inside %LOCALAPPDATA% are virtualized into
+        // the package's LocalCache, so atomic same-drive `rename` from a real cache directory into
+        // AppData cannot be relied upon. Place staging in a user-owned folder OUTSIDE AppData.
+        let user_profile = std::env::var_os("USERPROFILE")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)?;
+        Some((
+            user_profile.clone(),
+            user_profile.join(".greenc-store-staging"),
+        ))
+    }
+
+    #[cfg(all(windows, not(feature = "store")))]
     {
         let app = greenc_core::config::app_home();
         let base = std::env::var_os("LOCALAPPDATA")
@@ -979,8 +993,14 @@ pub fn resolve_staging_dir_checked(
         }
     }
 
-    // 2. `vault_dir/.greenc-staging` (ONLY if Vault itself is trusted, user-owned, not world-writable)
-    if is_same_volume(vault_dir, unit_root) {
+    // 2. `vault_dir/.greenc-staging` (ONLY if Vault itself is trusted, user-owned, not world-writable,
+    //    and in Store/MSIX builds not inside virtualized AppData)
+    if cfg!(feature = "store") && greenc_core::config::is_windows_appdata_app_dir(vault_dir) {
+        reject_reasons.push(
+            "Bản Store không đặt khu chờ trong AppData ảo hoá; chuyển sang khu chờ ngoài AppData"
+                .to_string(),
+        );
+    } else if is_same_volume(vault_dir, unit_root) {
         let vault_trust = if std::fs::symlink_metadata(vault_dir).is_ok() {
             is_trusted_user_dir(vault_dir, expected_uid)
         } else if let Some(anc) = nearest_existing_ancestor(vault_dir) {

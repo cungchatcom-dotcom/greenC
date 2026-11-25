@@ -5,10 +5,16 @@ permissions:
 
 on:
   push:
-    branches: [main, 'fix/**']
+    branches: [main, 'fix/**', 'feat/**']
     tags: ['v*']
   pull_request:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      msix_version:
+        description: 'Optional MSIX version override (a.b.c or a.b.c.0; defaults to Cargo.toml)'
+        required: false
+        default: ''
 
 jobs:
   quality-gate:
@@ -91,6 +97,103 @@ jobs:
             grep -E "^test .*FAILED" test.log | head -9 | while IFS= read -r l; do echo "::warning::$l"; done
             exit 1
           fi
+
+      - name: Run Clippy Lints (Windows Store Feature)
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        env:
+          CARGO_TERM_COLOR: never
+        run: |
+          set -o pipefail
+          if ! cargo clippy \
+            -p greenc-core -p greenc-platform -p greenc-storage \
+            -p greenc-vault -p greenc-relocate -p greenc-cli -p greenc-app \
+            --all-targets --features store --keep-going --message-format short -- -D warnings 2>&1 | tee clippy-store.log; then
+            grep -E "(error|warning)(\[|:)" clippy-store.log | grep -v "could not compile" | head -9 | while IFS= read -r l; do echo "::error::$l"; done
+            exit 1
+          fi
+
+      - name: Run Tests (Windows Store Feature)
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        env:
+          CARGO_TERM_COLOR: never
+        run: |
+          set -o pipefail
+          if ! cargo test \
+            -p greenc-core -p greenc-platform -p greenc-storage \
+            -p greenc-vault -p greenc-relocate -p greenc-cli -p greenc-app \
+            --features store --no-fail-fast 2>&1 | tee test-store.log; then
+            grep -A2 -E "panicked at|^error(\[|:)" test-store.log | grep -vE "^--|RUST_BACKTRACE" | head -9 | while IFS= read -r l; do echo "::error::$l"; done
+            grep -E "^test .*FAILED" test-store.log | head -9 | while IFS= read -r l; do echo "::warning::$l"; done
+            exit 1
+          fi
+
+  build-msix:
+    name: Build Microsoft Store MSIX Package (x64)
+    needs: quality-gate
+    if: github.event_name == 'workflow_dispatch' || (startsWith(github.ref, 'refs/tags/v') && vars.STORE_IDENTITY_NAME != '')
+    runs-on: windows-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Cache Cargo Dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Install Frontend Dependencies
+        run: pnpm --dir ui install --no-frozen-lockfile
+
+      - name: Build Frontend Assets
+        run: pnpm --dir ui run build
+
+      - name: Build Store Binaries (--features store)
+        run: cargo build --release -p greenc-app -p greenc-cli --features store
+
+      - name: Package MSIX & MSIXUpload
+        shell: pwsh
+        env:
+          STORE_IDENTITY_NAME: ${{ vars.STORE_IDENTITY_NAME }}
+          STORE_IDENTITY_PUBLISHER: ${{ vars.STORE_IDENTITY_PUBLISHER }}
+          STORE_PUBLISHER_DISPLAY_NAME: ${{ vars.STORE_PUBLISHER_DISPLAY_NAME }}
+        run: |
+          $ver = "${{ inputs.msix_version }}"
+          if ([string]::IsNullOrWhiteSpace($ver) -and "${{ github.ref }}".StartsWith("refs/tags/v")) {
+            $ver = "${{ github.ref_name }}".TrimStart('v')
+          }
+          $params = @{
+            CreateMsixUpload = $true
+            RunWack          = $true
+          }
+          if (-not [string]::IsNullOrWhiteSpace($ver)) {
+            $params.Version = $ver
+          }
+          & packaging/msix/build-msix.ps1 @params
+
+      - name: Upload MSIX Store Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: GreenC-MSIX-Store
+          path: |
+            dist/msix/*.msix
+            dist/msix/*.msixupload
+            dist/msix/wack-report.xml
+          if-no-files-found: error
 
   release-windows:
     name: Build Windows Installer Release
