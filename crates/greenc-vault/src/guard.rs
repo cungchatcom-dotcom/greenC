@@ -507,6 +507,13 @@ fn device_id(_meta: &std::fs::Metadata) -> Option<u64> {
     None
 }
 
+/// `true` only when both device ids are known and differ. Unix metadata always carries a device id,
+/// so the check stays strict there; Windows metadata has none (volume serial and file index are
+/// verified separately through `query_file_identity`), and must not be treated as a mismatch.
+fn crosses_device(meta: &std::fs::Metadata, expected: Option<u64>) -> bool {
+    matches!((device_id(meta), expected), (Some(actual), Some(want)) if actual != want)
+}
+
 #[cfg(unix)]
 fn enforce_dir_mode_0700(dir: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -695,7 +702,7 @@ fn safe_remove_path_no_follow(root: &Path, expected_dev: Option<u64>) -> Result<
             reason: format!("Refused to remove symlink '{}'", root.display()),
         });
     }
-    if expected_dev.is_some() && device_id(&meta) != expected_dev {
+    if crosses_device(&meta, expected_dev) {
         return Err(GreenCError::PreconditionBlocked {
             operation: "direct_delete".to_string(),
             reason: format!("Refused cross-device deletion at '{}'", root.display()),
@@ -733,7 +740,7 @@ fn safe_remove_path_no_follow(root: &Path, expected_dev: Option<u64>) -> Result<
                 // Never follow symlinked directories or targets.
                 continue;
             }
-            if expected_dev.is_some() && device_id(&em) != expected_dev {
+            if crosses_device(&em, expected_dev) {
                 continue;
             }
             if em.is_dir() {
@@ -1150,7 +1157,7 @@ fn collect_staged_tree_files(
             if em.file_type().is_symlink() {
                 continue;
             }
-            if expected_dev.is_some() && device_id(&em) != expected_dev {
+            if crosses_device(&em, expected_dev) {
                 continue;
             }
             if em.is_dir() {
@@ -1737,7 +1744,7 @@ pub fn recover_staging_dir_with_options(
             );
             continue;
         }
-        if staging_dev.is_some() && device_id(&smeta) != staging_dev {
+        if crosses_device(&smeta, staging_dev) {
             record_rejection(
                 &mut report,
                 format!(
