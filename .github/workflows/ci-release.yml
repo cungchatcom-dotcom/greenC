@@ -87,7 +87,7 @@ jobs:
         run: |
           set -o pipefail
           if ! cargo test --workspace --no-fail-fast 2>&1 | tee test.log; then
-            grep -A2 -E "panicked at|^error(\[|:)" test.log | grep -vE "^--|RUST_BACKTRACE" | head -9 | while IFS= read -r l; do echo "::error::$l"; done
+            grep -A3 -E "panicked at|^error(\[|:)" test.log | grep -vE "^--|RUST_BACKTRACE" | head -9 | cut -c1-900 | while IFS= read -r l; do echo "::error::$l"; done
             grep -E "^test .*FAILED" test.log | head -9 | while IFS= read -r l; do echo "::warning::$l"; done
             exit 1
           fi

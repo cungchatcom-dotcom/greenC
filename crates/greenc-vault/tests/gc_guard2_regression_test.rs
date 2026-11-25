@@ -256,7 +256,7 @@ fn item1_vault_mode_moves_gradle_transform_atomically_never_leaves_partial_or_em
         meta_bin.exists(),
         classes_jar.exists()
     );
-    assert!(out.vault_zip.is_some());
+    assert!(out.vault_zip.is_some(), "{:?}", out.reasons);
 
     // Staging dir MUST live outside `.gradle/caches` and have 0700 permissions on Unix, with no leftover staged dirs.
     let staging_dir = vault_dir.join(".greenc-staging");
@@ -421,7 +421,7 @@ fn item1_staging_crash_recovery_restores_or_reports_conflict_and_cleans_committe
         &BusyToolsStatus::known([DevTool::Gradle].into_iter().collect()),
         &rec_opts,
     );
-    assert_eq!(busy_rec.completed_deletions, 1);
+    assert_eq!(busy_rec.completed_deletions, 1, "{busy_rec:?}");
     assert_eq!(busy_rec.deferred_busy, 2);
     assert!(!staged_c.exists());
     assert!(staged_a.exists());
@@ -836,7 +836,7 @@ fn item3_partial_progress_and_busy_deferral_do_not_escalate_cooldown() {
     .unwrap();
     assert!(!rp1.target_reached);
     assert_eq!(rp1.cooldown_until, Some(tp1 + ChronoDuration::minutes(30)));
-    assert_eq!(rp1.consecutive_ineffective, 0);
+    assert_eq!(rp1.consecutive_ineffective, 0, "{:?}", rp1.reasons);
 
     write_aged(&c2, &vec![2u8; 2 * 1024 * 1024], 10, now);
     let vol_p2 = DirAccountingVolumeApi::new(home.clone(), total, free_before);
