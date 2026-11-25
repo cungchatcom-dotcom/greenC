@@ -199,19 +199,18 @@ fn test_strict_copy_preserves_mtime_unicode_long_paths_and_large_u64() {
     #[cfg(not(windows))]
     assert_eq!(extended, std::path::Path::new(&win_long));
 
-    // Verify > 4 GiB u64 file size accounting using a sparse file (no physical disk waste)
+    // Verify > 4 GiB u64 file size accounting using a sparse file (no physical disk waste).
+    // Note: `verify_zalo_copy_integrity` now performs full SHA-256 on every file (Item 7),
+    // so we verify u64 (> u32::MAX) byte accounting via `TreeFingerprint::capture` directly to avoid
+    // hashing 8 GiB in unoptimized debug builds.
     let sparse_src = tmp.path().join("sparse_src");
-    let sparse_dst = tmp.path().join("sparse_dst");
     fs::create_dir_all(&sparse_src).unwrap();
-    fs::create_dir_all(&sparse_dst).unwrap();
     let huge_len: u64 = (4u64 * 1024 * 1024 * 1024) + 4096; // > 4 GiB
     let f1 = fs::File::create(sparse_src.join("big.bin")).unwrap();
     f1.set_len(huge_len).unwrap();
-    let f2 = fs::File::create(sparse_dst.join("big.bin")).unwrap();
-    f2.set_len(huge_len).unwrap();
-    let sparse_ver = verify_zalo_copy_integrity(&sparse_src, &sparse_dst).unwrap();
-    assert_eq!(sparse_ver.total_bytes, huge_len);
-    assert_eq!(sparse_ver.total_files, 1);
+    let fp = greenc_relocate::zalo_move::TreeFingerprint::capture(&sparse_src).unwrap();
+    assert_eq!(fp.total_bytes, huge_len);
+    assert_eq!(fp.total_files, 1);
 
     let _ = CopyTreeOptions::strict();
 }

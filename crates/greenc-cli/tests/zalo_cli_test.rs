@@ -196,9 +196,11 @@ fn cli_zalo_status_lists_retained_original_conflict_and_moving_copies() {
     let moving = dir.path().join("Zalo Data.greenc-moving.test-3");
 
     std::fs::create_dir_all(target.join("message")).unwrap();
-    std::fs::write(target.join("message/zalo.db"), b"TARGET-CHAT").unwrap();
     std::fs::create_dir_all(orig.join("message")).unwrap();
-    std::fs::write(orig.join("message/zalo.db"), b"ORIGINAL-CHAT-PAYLOAD").unwrap();
+    // Create a genuine SQLite database so Item 2's SQLite openability & size gate passes
+    let _seed_db = GreenCDb::open(orig.join("message/zalo.db")).unwrap();
+    drop(_seed_db);
+    std::fs::copy(orig.join("message/zalo.db"), target.join("message/zalo.db")).unwrap();
     std::fs::create_dir_all(conflict.join("message")).unwrap();
     std::fs::write(conflict.join("message/new.db"), b"CONFLICT-CHAT").unwrap();
     std::fs::create_dir_all(moving.join("message")).unwrap();
@@ -222,6 +224,8 @@ fn cli_zalo_status_lists_retained_original_conflict_and_moving_copies() {
             process_names: vec!["Zalo.exe".to_string()],
             created_at: now,
             detail: None,
+            moving_path: None,
+            target_user_repaired: false,
         })
         .unwrap();
 
@@ -234,9 +238,13 @@ fn cli_zalo_status_lists_retained_original_conflict_and_moving_copies() {
             retained_path: orig.clone(),
             size_bytes: 21,
             file_count: 1,
+            message_file_count: 1,
             health_verified: true,
             created_at: now,
             purge_after: now + ChronoDuration::hours(24),
+            purge_after_valid: true,
+            observed_healthy_secs: 0,
+            last_observed_at: Some(now),
             status: ZaloRetainedStatus::Retained,
             resolved_at: None,
             detail: Some("Giữ tạm 24 giờ".to_string()),
@@ -315,9 +323,13 @@ fn cli_zalo_status_lists_retained_original_conflict_and_moving_copies() {
             retained_path: orig2.clone(),
             size_bytes: 21,
             file_count: 1,
+            message_file_count: 1,
             health_verified: true,
             created_at: now,
             purge_after: now + ChronoDuration::hours(24),
+            purge_after_valid: true,
+            observed_healthy_secs: 0,
+            last_observed_at: Some(now),
             status: ZaloRetainedStatus::Retained,
             resolved_at: None,
             detail: None,

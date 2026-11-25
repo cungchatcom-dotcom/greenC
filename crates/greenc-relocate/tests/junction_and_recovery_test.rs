@@ -287,6 +287,8 @@ fn test_crash_recovery_direction_a_valid_junction() {
         process_names: vec!["slack.exe".to_string()],
         created_at: chrono::Utc::now(),
         detail: None,
+        moving_path: None,
+        target_user_repaired: false,
     };
     db.save_relocation(&record).unwrap();
 
@@ -338,6 +340,8 @@ fn test_crash_recovery_direction_b_missing_junction_rollback() {
         process_names: vec!["capcut.exe".to_string()],
         created_at: chrono::Utc::now(),
         detail: None,
+        moving_path: None,
+        target_user_repaired: false,
     };
     db.save_relocation(&record).unwrap();
 
@@ -479,6 +483,8 @@ fn test_live_junction_health_detection() {
             process_names: vec![],
             created_at: chrono::Utc::now(),
             detail: None,
+            moving_path: None,
+            target_user_repaired: false,
         },
         RelocationRecord {
             id: Some(2),
@@ -493,6 +499,8 @@ fn test_live_junction_health_detection() {
             process_names: vec![],
             created_at: chrono::Utc::now(),
             detail: None,
+            moving_path: None,
+            target_user_repaired: false,
         },
         RelocationRecord {
             id: Some(3),
@@ -507,6 +515,8 @@ fn test_live_junction_health_detection() {
             process_names: vec![],
             created_at: chrono::Utc::now(),
             detail: None,
+            moving_path: None,
+            target_user_repaired: false,
         },
     ];
 
@@ -572,6 +582,8 @@ fn test_undo_relocation_fails_early_when_insufficient_space() {
         process_names: vec![],
         created_at: chrono::Utc::now(),
         detail: None,
+        moving_path: None,
+        target_user_repaired: false,
     };
     let record_id = db.save_relocation(&record).unwrap();
 
@@ -829,6 +841,8 @@ fn test_crash_recovery_case_b_non_empty_source_and_moving_keeps_all_copies() {
         process_names: vec!["Zalo.exe".to_string()],
         created_at: chrono::Utc::now(),
         detail: None,
+        moving_path: None,
+        target_user_repaired: false,
     })
     .unwrap();
 
@@ -878,6 +892,8 @@ fn test_crash_recovery_case_b_missing_moving_dir_keeps_non_empty_target() {
         process_names: vec![],
         created_at: chrono::Utc::now(),
         detail: None,
+        moving_path: None,
+        target_user_repaired: false,
     })
     .unwrap();
 
@@ -918,6 +934,8 @@ fn test_crash_recovery_case_a_zalo_retains_moving_as_original_in_db() {
         process_names: vec!["Zalo.exe".to_string()],
         created_at: chrono::Utc::now(),
         detail: None,
+        moving_path: None,
+        target_user_repaired: false,
     })
     .unwrap();
 

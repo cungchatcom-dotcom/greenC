@@ -37,6 +37,62 @@ pub struct AppShutdownSession {
     rm_guard: Option<crate::win32::restart_mgr::RmSessionGuard>,
 }
 
+/// Snapshot of a candidate running process for targeted Windows Restart Manager registration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RmProcessCandidate {
+    pub pid: u32,
+    pub exe_path: PathBuf,
+    pub start_time_low: u32,
+    pub start_time_high: u32,
+}
+
+fn exe_basename_lower(path: &Path) -> Option<String> {
+    let raw = path.to_string_lossy();
+    raw.rsplit(['\\', '/'])
+        .find(|seg| !seg.is_empty())
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+}
+
+/// Filters running process candidates so Restart Manager (`RmShutdown`) ONLY targets processes
+/// whose executable filename matches `allowed_process_names` (case-insensitive).
+///
+/// Restart Manager MUST register explicit `RM_UNIQUE_PROCESS` entries returned by this filter
+/// (`rgsFileNames = None`) rather than registering data directory files, so unrelated apps
+/// (Explorer, editors, backup tools, antivirus, GreenC itself) are NEVER shut down.
+pub fn select_rm_target_processes(
+    candidates: &[RmProcessCandidate],
+    allowed_process_names: &[&str],
+) -> Vec<RmProcessCandidate> {
+    let targets: HashSet<String> = allowed_process_names
+        .iter()
+        .map(|n| n.trim().to_ascii_lowercase())
+        .filter(|n| !n.is_empty())
+        .collect();
+    if targets.is_empty() {
+        return Vec::new();
+    }
+
+    let mut seen: HashSet<(u32, u32, u32)> = HashSet::new();
+    let mut selected = Vec::new();
+    for cand in candidates {
+        if cand.pid == 0 {
+            continue;
+        }
+        let Some(base) = exe_basename_lower(&cand.exe_path) else {
+            continue;
+        };
+        if !targets.contains(&base) {
+            continue;
+        }
+        let key = (cand.pid, cand.start_time_low, cand.start_time_high);
+        if seen.insert(key) {
+            selected.push(cand.clone());
+        }
+    }
+    selected
+}
+
 impl AppShutdownSession {
     pub fn no_op() -> Self {
         Self::default()
@@ -49,6 +105,31 @@ impl AppShutdownSession {
             #[cfg(windows)]
             rm_guard: None,
         }
+    }
+}
+
+/// Polls `all_exited` until it returns `true` or `timeout` elapses.
+/// Used after `RmShutdown` (even when `RmShutdown` returns a non-zero error code) so GreenC
+/// waits for target processes to finish exiting before concluding shutdown failed (Item 11).
+pub fn wait_for_processes_to_exit<F>(
+    timeout: Duration,
+    poll_interval: Duration,
+    mut all_exited: F,
+) -> bool
+where
+    F: FnMut() -> bool,
+{
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if all_exited() {
+            return true;
+        }
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            return false;
+        }
+        let remaining = deadline.saturating_duration_since(now);
+        std::thread::sleep(poll_interval.min(remaining));
     }
 }
 
@@ -94,18 +175,20 @@ pub struct NativeAppLifecycleApi;
 #[cfg(windows)]
 mod win_impl {
     use super::*;
-    use crate::handle::{path_to_wide, OwnedHandle};
+    use crate::handle::OwnedHandle;
     use crate::win32::restart_mgr::RmSessionGuard;
     use std::time::Instant;
-    use windows::core::{PCWSTR, PWSTR};
-    use windows::Win32::Foundation::{BOOL, HWND, LPARAM};
+    use windows::core::PWSTR;
+    use windows::Win32::Foundation::{BOOL, FILETIME, HWND, LPARAM};
     use windows::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
         TH32CS_SNAPPROCESS,
     };
-    use windows::Win32::System::RestartManager::{RmRegisterResources, RmRestart, RmShutdown};
+    use windows::Win32::System::RestartManager::{
+        RmRegisterResources, RmRestart, RmShutdown, RM_UNIQUE_PROCESS,
+    };
     use windows::Win32::System::Threading::{
-        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+        GetProcessTimes, OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
         PROCESS_QUERY_LIMITED_INFORMATION,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
@@ -136,6 +219,105 @@ mod win_impl {
         } else {
             Some(PathBuf::from(trimmed))
         }
+    }
+
+    fn query_process_candidate(pid: u32) -> Option<RmProcessCandidate> {
+        if pid == 0 {
+            return None;
+        }
+        // SAFETY: `OpenProcess` with read-only `PROCESS_QUERY_LIMITED_INFORMATION` returns a
+        // handle immediately wrapped in `OwnedHandle` so `CloseHandle` always runs.
+        let raw = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.ok()?;
+        let guard = OwnedHandle::new(raw)?;
+
+        let mut buf = vec![0u16; 1024];
+        let mut len = buf.len() as u32;
+        // SAFETY: `buf` is writable UTF-16 storage of length `len`.
+        unsafe {
+            QueryFullProcessImageNameW(
+                guard.raw(),
+                PROCESS_NAME_WIN32,
+                PWSTR(buf.as_mut_ptr()),
+                &mut len,
+            )
+        }
+        .ok()?;
+        let s = String::from_utf16_lossy(&buf[..len as usize]);
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+
+        let mut creation_time = FILETIME::default();
+        let mut exit_time = FILETIME::default();
+        let mut kernel_time = FILETIME::default();
+        let mut user_time = FILETIME::default();
+        // SAFETY: `guard.raw()` is open with `PROCESS_QUERY_LIMITED_INFORMATION` and all output
+        // `FILETIME` pointers refer to valid stack variables.
+        unsafe {
+            GetProcessTimes(
+                guard.raw(),
+                &mut creation_time,
+                &mut exit_time,
+                &mut kernel_time,
+                &mut user_time,
+            )
+        }
+        .ok()?;
+
+        Some(RmProcessCandidate {
+            pid,
+            exe_path: PathBuf::from(trimmed),
+            start_time_low: creation_time.dwLowDateTime,
+            start_time_high: creation_time.dwHighDateTime,
+        })
+    }
+
+    fn find_running_process_candidates_native(exe_names: &[&str]) -> Vec<RmProcessCandidate> {
+        let targets: HashSet<String> = exe_names
+            .iter()
+            .map(|n| n.trim().to_ascii_lowercase())
+            .filter(|n| !n.is_empty())
+            .collect();
+        if targets.is_empty() {
+            return Vec::new();
+        }
+
+        let mut raw_candidates = Vec::new();
+        // SAFETY: Snapshot handle wrapped immediately in `OwnedHandle`; `dwSize` initialized.
+        unsafe {
+            let Ok(raw_snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
+                return raw_candidates;
+            };
+            let Some(snap) = OwnedHandle::new(raw_snap) else {
+                return raw_candidates;
+            };
+            let mut entry = PROCESSENTRY32W {
+                dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+                ..Default::default()
+            };
+            if Process32FirstW(snap.raw(), &mut entry).is_ok() {
+                loop {
+                    let end = entry
+                        .szExeFile
+                        .iter()
+                        .position(|&c| c == 0)
+                        .unwrap_or(entry.szExeFile.len());
+                    let name = String::from_utf16_lossy(&entry.szExeFile[..end])
+                        .trim()
+                        .to_ascii_lowercase();
+                    if targets.contains(&name) {
+                        if let Some(cand) = query_process_candidate(entry.th32ProcessID) {
+                            raw_candidates.push(cand);
+                        }
+                    }
+                    if Process32NextW(snap.raw(), &mut entry).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+        select_rm_target_processes(&raw_candidates, exe_names)
     }
 
     pub fn find_running_exe_paths_native(exe_names: &[&str]) -> Vec<PathBuf> {
@@ -233,146 +415,123 @@ mod win_impl {
         ctx.found
     }
 
-    fn collect_rm_resource_files(
-        resource_paths: &[PathBuf],
-        running_exes: &[PathBuf],
-    ) -> Vec<PathBuf> {
-        let mut files = Vec::new();
-        for exe in running_exes {
-            if exe.is_file() && !files.contains(exe) {
-                files.push(exe.clone());
-            }
-        }
-        for root in resource_paths {
-            if files.len() >= 128 {
-                break;
-            }
-            if root.is_file() {
-                if !files.contains(root) {
-                    files.push(root.clone());
-                }
-            } else if root.is_dir() {
-                // Register immediate files and `message/**` (up to 1 subdir deep) so Restart
-                // Manager identifies all Zalo processes holding handles to account DB files.
-                let mut scan_dirs = vec![root.clone()];
-                let msg_dir = root.join("message");
-                if msg_dir.is_dir() {
-                    scan_dirs.push(msg_dir.clone());
-                    if let Ok(rd) = std::fs::read_dir(&msg_dir) {
-                        for entry in rd.flatten() {
-                            let p = entry.path();
-                            if p.is_dir() {
-                                scan_dirs.push(p);
-                            }
-                        }
-                    }
-                }
-                for sub in scan_dirs {
-                    if files.len() >= 128 {
-                        break;
-                    }
-                    if let Ok(rd) = std::fs::read_dir(&sub) {
-                        for entry in rd.flatten() {
-                            if files.len() >= 128 {
-                                break;
-                            }
-                            let p = entry.path();
-                            if p.is_file() && !files.contains(&p) {
-                                files.push(p);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        files
-    }
-
     pub fn graceful_shutdown_native(
         resource_paths: &[PathBuf],
         process_names: &[&str],
         timeout: Duration,
     ) -> Result<AppShutdownSession> {
-        let captured_exes = find_running_exe_paths_native(process_names);
-        if captured_exes.is_empty() {
+        // Item 10: Register ONLY explicit `RM_UNIQUE_PROCESS` handles for running processes
+        // matching `process_names` (e.g. Zalo.exe / ZaloCall.exe / ZaloCap.exe) — NEVER pass
+        // `resource_paths` as `rgsFileNames` to `RmRegisterResources`, so `RmShutdown` can NEVER
+        // close unrelated applications (Explorer, editors, backup tools, antivirus, GreenC).
+        let target_procs = find_running_process_candidates_native(process_names);
+        if target_procs.is_empty() {
             return Ok(AppShutdownSession::no_op());
         }
 
-        let rm_files = collect_rm_resource_files(resource_paths, &captured_exes);
-        let session = RmSessionGuard::start()?;
-        let wide_bufs: Vec<Vec<u16>> = rm_files.iter().map(|p| path_to_wide(p)).collect();
-        let ptrs: Vec<PCWSTR> = wide_bufs.iter().map(|b| PCWSTR(b.as_ptr())).collect();
-
-        if !ptrs.is_empty() {
-            // SAFETY: Every `PCWSTR` points into `wide_bufs` alive for `RmRegisterResources`.
-            let reg_err = unsafe { RmRegisterResources(session.raw(), Some(&ptrs), None, None) };
-            if reg_err.0 != 0 {
-                return Err(GreenCError::FileLocked {
-                    path: resource_paths.first().cloned().unwrap_or_default(),
-                    reason: ZALO_MANUAL_QUIT_MESSAGE.to_string(),
-                });
+        let mut captured_exes: Vec<PathBuf> = Vec::new();
+        let mut rm_apps: Vec<RM_UNIQUE_PROCESS> = Vec::with_capacity(target_procs.len());
+        for cand in &target_procs {
+            if !captured_exes.contains(&cand.exe_path) {
+                captured_exes.push(cand.exe_path.clone());
             }
+            rm_apps.push(RM_UNIQUE_PROCESS {
+                dwProcessId: cand.pid,
+                ProcessStartTime: FILETIME {
+                    dwLowDateTime: cand.start_time_low,
+                    dwHighDateTime: cand.start_time_high,
+                },
+            });
         }
 
-        // SAFETY: `lActionFlags = 0` requests graceful shutdown ONLY (NEVER `RmForceShutdown`).
-        let shut_err = unsafe { RmShutdown(session.raw(), 0, None) };
-        if shut_err.0 != 0 {
+        let session = RmSessionGuard::start()?;
+        // SAFETY: `rm_apps` contains ONLY verified `(PID, ProcessStartTime)` tuples matching
+        // `process_names`. `rgsFileNames` and `rgsServiceNames` are strictly `None`.
+        let reg_err = unsafe { RmRegisterResources(session.raw(), None, Some(&rm_apps), None) };
+        if reg_err.0 != 0 {
             return Err(GreenCError::FileLocked {
                 path: resource_paths.first().cloned().unwrap_or_default(),
                 reason: ZALO_MANUAL_QUIT_MESSAGE.to_string(),
             });
         }
 
-        let deadline = Instant::now() + timeout;
-        loop {
-            if find_running_exe_paths_native(process_names).is_empty() {
-                return Ok(AppShutdownSession {
-                    captured_exes,
-                    used_restart_manager: true,
-                    rm_guard: Some(session),
-                });
-            }
-            if Instant::now() >= deadline {
-                return Err(GreenCError::FileLocked {
-                    path: resource_paths.first().cloned().unwrap_or_default(),
-                    reason: ZALO_MANUAL_QUIT_MESSAGE.to_string(),
-                });
-            }
-            std::thread::sleep(Duration::from_millis(250));
+        // SAFETY: `lActionFlags = 0` requests graceful shutdown ONLY (NEVER `RmForceShutdown`).
+        // Item 11: Even if `RmShutdown` returns a non-zero status code, wait up to
+        // `timeout` for the target processes to exit before concluding shutdown failed!
+        let shut_err = unsafe { RmShutdown(session.raw(), 0, None) };
+        let rm_succeeded = shut_err.0 == 0;
+
+        if super::wait_for_processes_to_exit(timeout, Duration::from_millis(250), || {
+            find_running_exe_paths_native(process_names).is_empty()
+        }) {
+            return Ok(AppShutdownSession {
+                captured_exes,
+                used_restart_manager: rm_succeeded,
+                rm_guard: if rm_succeeded { Some(session) } else { None },
+            });
         }
+
+        Err(GreenCError::FileLocked {
+            path: resource_paths.first().cloned().unwrap_or_default(),
+            reason: ZALO_MANUAL_QUIT_MESSAGE.to_string(),
+        })
     }
 
     pub fn restart_app_native(session: &mut AppShutdownSession) -> Result<bool> {
-        let mut restarted = false;
+        let exe_names_owned: Vec<String> = session
+            .captured_exes
+            .iter()
+            .filter_map(|p| p.file_name().and_then(|n| n.to_str()).map(str::to_string))
+            .collect();
+        let exe_names: Vec<&str> = exe_names_owned.iter().map(String::as_str).collect();
+
         if let Some(ref rm_guard) = session.rm_guard {
             // SAFETY: `rm_guard.raw()` is a live Restart Manager session that performed `RmShutdown`.
-            let err = unsafe { RmRestart(rm_guard.raw(), 0, None) };
-            if err.0 == 0 {
-                restarted = true;
-            }
+            let _ = unsafe { RmRestart(rm_guard.raw(), 0, None) };
         }
         // Drop RM session cleanly after attempting RmRestart.
         session.rm_guard = None;
 
-        if !restarted {
-            // Fallback: relaunch the exact primary `Zalo.exe` captured before shutdown.
-            if let Some(primary_exe) = session
-                .captured_exes
-                .iter()
-                .find(|p| {
-                    p.file_name()
-                        .and_then(|n| n.to_str())
-                        .is_some_and(|n| n.eq_ignore_ascii_case("zalo.exe"))
-                })
-                .or_else(|| session.captured_exes.first())
-            {
-                if primary_exe.is_file() {
-                    let _ = std::process::Command::new(primary_exe).spawn()?;
-                    restarted = true;
+        // `RmRestart` returning 0 is NOT sufficient: apps that did not register with
+        // `RegisterApplicationRestart` will NOT be relaunched by Restart Manager!
+        // Poll briefly for a real running process before deciding whether to spawn the saved exe.
+        let wait_for_running = |names: &[&str], max_wait: Duration| -> bool {
+            if names.is_empty() {
+                return false;
+            }
+            let deadline = Instant::now() + max_wait;
+            loop {
+                if !find_running_exe_paths_native(names).is_empty() {
+                    return true;
                 }
+                if Instant::now() >= deadline {
+                    return false;
+                }
+                std::thread::sleep(Duration::from_millis(250));
+            }
+        };
+
+        if wait_for_running(&exe_names, Duration::from_secs(3)) {
+            return Ok(true);
+        }
+
+        // Fallback: explicitly launch the exact primary executable saved before shutdown.
+        if let Some(primary_exe) = session
+            .captured_exes
+            .iter()
+            .find(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.eq_ignore_ascii_case("zalo.exe"))
+            })
+            .or_else(|| session.captured_exes.first())
+        {
+            if primary_exe.is_file() {
+                let _ = std::process::Command::new(primary_exe).spawn()?;
+                return Ok(wait_for_running(&exe_names, Duration::from_secs(3)));
             }
         }
-        Ok(restarted)
+        Ok(false)
     }
 }
 
@@ -449,6 +608,7 @@ pub struct MockAppLifecycleApi {
     pub visible_window_exes: Arc<Mutex<HashSet<String>>>,
     pub shutdown_behavior: Arc<Mutex<MockShutdownBehavior>>,
     pub shutdown_calls: Arc<Mutex<usize>>,
+    pub shutdown_targeted_exes: Arc<Mutex<Vec<PathBuf>>>,
     pub restart_calls: Arc<Mutex<usize>>,
     pub restarted_exes: Arc<Mutex<Vec<PathBuf>>>,
     on_restart: Arc<Mutex<Option<RestartCallback>>>,
@@ -539,6 +699,10 @@ impl AppLifecycleApi for MockAppLifecycleApi {
         if running.is_empty() {
             return Ok(AppShutdownSession::no_op());
         }
+        self.shutdown_targeted_exes
+            .lock()
+            .unwrap()
+            .extend(running.iter().cloned());
         let behavior = self.shutdown_behavior.lock().unwrap().clone();
         match behavior {
             MockShutdownBehavior::Succeed => {

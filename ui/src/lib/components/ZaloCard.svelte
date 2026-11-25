@@ -6,8 +6,9 @@
     getZaloStatus,
     cleanZaloNow,
     moveZaloData,
-    purgeZaloRetainedOriginal,
     restoreZaloRetainedOriginal,
+    restoreZaloSafetyCopy,
+    deleteZaloSafetyCopy,
     undoRelocation,
     getBootstrapState,
     listenTaskProgress,
@@ -46,7 +47,7 @@
   let isCleaning = $state(false);
   let isMoving = $state(false);
   let isUndoing = $state(false);
-  let busyOriginalId = $state<number | null>(null);
+  let busyCopyPath = $state<string | null>(null);
 
   $effect(() => {
     if (preferredDrive && !isMoving) {
@@ -61,7 +62,7 @@
   let currentTaskId = $state<string | null>(null);
   let moveProgress = $state<TaskProgressEvent | null>(null);
   let cleanResult = $state<ZaloCleanupResultDto | null>(null);
-  let feedback = $state<{ kind: 'ok' | 'err'; text: string; offerGuide?: boolean } | null>(null);
+  let feedback = $state<{ kind: 'ok' | 'warn' | 'err'; text: string; offerGuide?: boolean } | null>(null);
 
   const moveSteps = [
     { key: 'preparing', label: 'Chuẩn bị' },
@@ -212,11 +213,19 @@
 
     try {
       const res = await moveZaloData(selectedDrive, reopenAfterMove);
+      const fullyVerified =
+        res.already_on_other_drive ||
+        (res.health_verified && (!reopenAfterMove || res.reopened_zalo));
       feedback = {
-        kind: 'ok',
+        kind: fullyVerified ? 'ok' : 'warn',
         text: res.already_on_other_drive
           ? t('Đã ở ổ {drive}, không cần chuyển.', { drive: res.target_drive })
-          : t('Đã chuyển dữ liệu Zalo sang ổ {drive}: thành công.', { drive: selectedDrive }),
+          : fullyVerified
+            ? t('Đã chuyển dữ liệu Zalo sang ổ {drive}: thành công.', { drive: selectedDrive })
+            : t(
+                'Đã chuyển dữ liệu Zalo sang ổ {drive}: nhưng chưa xác minh được Zalo mở lại và ghi dữ liệu ổn định. Bản gốc trên ổ C: được giữ lại cho đến khi bạn tự kiểm tra.',
+                { drive: selectedDrive }
+              ),
       };
       await refresh();
       onChanged?.();
@@ -235,7 +244,15 @@
 
   async function handleUndoMove() {
     if (!status?.active_relocation_id || isUndoing) return;
-    if (!confirm(t('Đưa dữ liệu chat Zalo trở về vị trí ban đầu?'))) return;
+    if (
+      !confirm(
+        t(
+          'GreenC sẽ đóng Zalo, sao chép dữ liệu chat trở về vị trí ban đầu trên ổ C:, rồi mở lại Zalo. Bản sao trên ổ đích vẫn được giữ tạm để đảm bảo an toàn. Tiếp tục?'
+        )
+      )
+    ) {
+      return;
+    }
     isUndoing = true;
     feedback = null;
     try {
@@ -277,55 +294,109 @@
         return t('Thư mục xung đột');
       case 'moving':
         return t('Đang chuyển dở');
+      case 'restoring':
+        return t('Đang khôi phục dở');
+      case 'purging':
+        return t('Đang xoá dở');
+      case 'target':
+        return t('Bản trên ổ đích');
       default:
         return kind;
     }
   }
 
   async function handlePurgeOriginal(copy: ZaloSafetyCopyDto) {
-    if (copy.id == null || busyOriginalId !== null) return;
+    if (busyCopyPath !== null) return;
     const ok = confirm(
-      t(
-        'Xoá vĩnh viễn bản gốc đang giữ tạm ({size}) để giải phóng ổ C:? Chỉ nên xoá khi bạn đã mở Zalo và thấy đầy đủ tin nhắn.',
-        { size: formatSize(copy.size_bytes) }
-      )
+      copy.kind === 'original'
+        ? t(
+            'Xoá vĩnh viễn bản gốc đang giữ tạm ({size}) để giải phóng ổ C:? Chỉ nên xoá khi bạn đã mở Zalo và thấy đầy đủ tin nhắn.',
+            { size: formatSize(copy.size_bytes) }
+          )
+        : t(
+            'Xoá vĩnh viễn bản sao này ({size})? GreenC sẽ đối chiếu thư mục Zalo đang hoạt động có đủ dữ liệu tin nhắn trước khi xoá.',
+            { size: formatSize(copy.size_bytes) }
+          )
     );
     if (!ok) return;
-    busyOriginalId = copy.id;
+    busyCopyPath = copy.path;
     feedback = null;
     try {
-      const msg = await purgeZaloRetainedOriginal(copy.id);
+      const msg = await deleteZaloSafetyCopy(copy.copy_id);
       feedback = { kind: 'ok', text: msg };
       await refresh();
       onChanged?.();
     } catch (err) {
       feedback = { kind: 'err', text: String(err) };
     } finally {
-      busyOriginalId = null;
+      busyCopyPath = null;
     }
   }
 
   async function handleRestoreOriginal(copy: ZaloSafetyCopyDto) {
-    if (copy.id == null || busyOriginalId !== null) return;
+    if (busyCopyPath !== null) return;
+    if (!canRestoreSafetyCopy(copy)) return;
     const ok = confirm(
       t(
-        'Khôi phục bản gốc ({size}) về vị trí cũ trên ổ C:? Dữ liệu mới ở ổ đích (nếu có) vẫn được giữ lại thành bản riêng để không mất tin nhắn.',
+        'GreenC sẽ đóng Zalo, khôi phục bản sao này ({size}) về vị trí cũ trên ổ C:, rồi mở lại Zalo. Dữ liệu hiện tại ở ổ đích hoặc vị trí cũ (nếu có) vẫn được giữ lại thành bản riêng để không mất tin nhắn. Tiếp tục?',
         { size: formatSize(copy.size_bytes) }
       )
     );
     if (!ok) return;
-    busyOriginalId = copy.id;
+
+    let allowOffline = false;
+    if (status?.active_relocation_health === 'target_offline') {
+      const offlineOk = confirm(
+        t(
+          'Cảnh báo: ổ đích ({target}) đang ngoại tuyến và có thể còn tin nhắn mới hơn bản sao này. Bạn vẫn muốn khôi phục bản cũ và giữ trạng thái Cần kiểm tra cho ổ đích?',
+          { target: status.active_relocation_target ?? copy.target_path ?? '' }
+        )
+      );
+      if (!offlineOk) return;
+      allowOffline = true;
+    }
+
+    busyCopyPath = copy.path;
     feedback = null;
     try {
-      const msg = await restoreZaloRetainedOriginal(copy.id);
+      const msg =
+        copy.id !== null
+          ? await restoreZaloRetainedOriginal(copy.id, allowOffline)
+          : await restoreZaloSafetyCopy(copy.copy_id, allowOffline);
       feedback = { kind: 'ok', text: msg };
       await refresh();
       onChanged?.();
     } catch (err) {
       feedback = { kind: 'err', text: String(err) };
     } finally {
-      busyOriginalId = null;
+      busyCopyPath = null;
     }
+  }
+
+  function isActiveRelocationHealthy(s: ZaloStatusDto): boolean {
+    if (s.source_replaced_by_real_dir) return false;
+    const recOk = !s.active_relocation_status || s.active_relocation_status === 'done';
+    const healthOk = !s.active_relocation_health || s.active_relocation_health === 'healthy';
+    return recOk && healthOk;
+  }
+
+  function canRestoreSafetyCopy(copy: ZaloSafetyCopyDto): boolean {
+    if (!copy.exists_on_disk) return false;
+    if (copy.restorable === false) return false;
+    if (
+      copy.kind === 'purging' ||
+      copy.kind === 'restoring' ||
+      copy.status === 'purging' ||
+      copy.status === 'purged'
+    ) {
+      return false;
+    }
+    return (
+      copy.kind === 'original' ||
+      copy.kind === 'conflict' ||
+      copy.kind === 'moving' ||
+      copy.kind === 'target'
+    );
   }
 
   onMount(() => {
@@ -383,9 +454,31 @@
             {t('Đã ở ổ {drive}, không cần chuyển.', { drive: status.data_drive ?? '' })}
           </div>
         {:else if status.active_relocation_target}
-          <div class="text-[11px] text-emerald-600 dark:text-emerald-400 font-medium truncate" title={status.active_relocation_target}>
-            {t('Đã chuyển sang {target}', { target: status.active_relocation_target })}
-          </div>
+          {#if status.source_replaced_by_real_dir}
+            <div class="text-[11px] text-rose-600 dark:text-rose-400 font-medium" title={status.active_relocation_target}>
+              {t('Zalo đã cài lại và tạo thư mục thật tại vị trí cũ; dữ liệu cũ vẫn ở {target}', { target: status.active_relocation_target })}
+            </div>
+          {:else if status.active_relocation_status === 'needs_review'}
+            <div class="text-[11px] text-amber-600 dark:text-amber-400 font-medium truncate" title={status.active_relocation_target}>
+              {t('Cần kiểm tra lại ({target})', { target: status.active_relocation_target })}
+            </div>
+          {:else if status.active_relocation_status === 'moving'}
+            <div class="text-[11px] text-amber-600 dark:text-amber-400 font-medium truncate" title={status.active_relocation_target}>
+              {t('Đang chuyển dở ({target})', { target: status.active_relocation_target })}
+            </div>
+          {:else if status.active_relocation_health === 'target_offline'}
+            <div class="text-[11px] text-amber-600 dark:text-amber-400 font-medium truncate" title={status.active_relocation_target}>
+              {t('Mất kết nối ổ đích ({target})', { target: status.active_relocation_target })}
+            </div>
+          {:else if status.active_relocation_health && status.active_relocation_health !== 'healthy'}
+            <div class="text-[11px] text-rose-600 dark:text-rose-400 font-medium truncate" title={status.active_relocation_target}>
+              {t('Liên kết hỏng ({target})', { target: status.active_relocation_target })}
+            </div>
+          {:else}
+            <div class="text-[11px] text-emerald-600 dark:text-emerald-400 font-medium truncate" title={status.active_relocation_target}>
+              {t('Đã chuyển sang {target}', { target: status.active_relocation_target })}
+            </div>
+          {/if}
         {:else if status.data_drive}
           <div class="text-[11px] text-secondary">
             {t('Tin nhắn và ảnh trên ổ {drive}', { drive: status.data_drive })}
@@ -442,7 +535,7 @@
         {isCleaning ? t('Đang dọn...') : t('Dọn ngay')}
       </button>
 
-      {#if status.active_relocation_id}
+      {#if status.active_relocation_id && isActiveRelocationHealthy(status)}
         <button
           type="button"
           onclick={handleUndoMove}
@@ -452,7 +545,7 @@
           <Undo2 class="h-3.5 w-3.5" />
           {isUndoing ? t('Đang hoàn tác...') : t('Hoàn tác')}
         </button>
-      {:else if status.data_dir && status.data_on_system_drive}
+      {:else if !status.active_relocation_id && status.data_dir && status.data_on_system_drive}
         <button
           type="button"
           onclick={handleClickMove}
@@ -481,7 +574,7 @@
             {/if}
           </div>
           <span class="text-[11px] text-amber-700/90 dark:text-amber-300/90">
-            {t('Chỉ tự xoá sau 24 giờ khi liên kết ổn định, hoặc khi bạn bấm Xoá bản gốc.')}
+            {t('Chỉ tự dọn sau tối thiểu 24 giờ hoạt động ổn định thực tế (khi Zalo đã mở lại, xác minh khoẻ và đủ tệp dữ liệu), hoặc khi bạn bấm Xoá bản gốc.')}
           </span>
         </div>
 
@@ -504,31 +597,45 @@
                 {#if copy.purge_after && copy.kind === 'original'}
                   <div class="text-[11px] text-secondary">
                     {copy.health_verified
-                      ? t('Dự kiến tự dọn sau: {time}', { time: formatCopyDate(copy.purge_after) })
-                      : t('Cần bạn xác nhận thủ công trước khi xoá')}
+                      ? t('Tự dọn sớm nhất sau {time} khi đủ 24 giờ quan sát ổn định', { time: formatCopyDate(copy.purge_after) })
+                      : t('Chưa qua xác minh tự động — giữ lại cho đến khi bạn tự xác nhận xoá')}
                   </div>
                 {/if}
               </div>
 
-              {#if copy.id !== null && copy.kind === 'original' && copy.exists_on_disk}
+              {#if copy.exists_on_disk && (copy.kind === 'purging' || copy.status === 'purging')}
                 <div class="flex items-center gap-1.5 shrink-0">
                   <button
                     type="button"
-                    onclick={() => handleRestoreOriginal(copy)}
-                    disabled={busyOriginalId !== null || isMoving}
-                    class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md border border-border bg-subtle hover:bg-card text-xs font-medium text-primary disabled:opacity-50"
-                  >
-                    <Undo2 class="h-3.5 w-3.5" />
-                    {busyOriginalId === copy.id ? t('Đang xử lý...') : t('Khôi phục')}
-                  </button>
-                  <button
-                    type="button"
                     onclick={() => handlePurgeOriginal(copy)}
-                    disabled={busyOriginalId !== null || isMoving}
+                    disabled={busyCopyPath !== null || isMoving}
                     class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold disabled:opacity-50"
                   >
                     <Trash2 class="h-3.5 w-3.5" />
-                    {t('Xoá bản gốc')}
+                    {t('Xoá nốt')}
+                  </button>
+                </div>
+              {:else if copy.exists_on_disk}
+                <div class="flex items-center gap-1.5 shrink-0">
+                  {#if canRestoreSafetyCopy(copy)}
+                    <button
+                      type="button"
+                      onclick={() => handleRestoreOriginal(copy)}
+                      disabled={busyCopyPath !== null || isMoving}
+                      class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md border border-border bg-subtle hover:bg-card text-xs font-medium text-primary disabled:opacity-50"
+                    >
+                      <Undo2 class="h-3.5 w-3.5" />
+                      {busyCopyPath === copy.path ? t('Đang xử lý...') : t('Khôi phục')}
+                    </button>
+                  {/if}
+                  <button
+                    type="button"
+                    onclick={() => handlePurgeOriginal(copy)}
+                    disabled={busyCopyPath !== null || isMoving}
+                    class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold disabled:opacity-50"
+                  >
+                    <Trash2 class="h-3.5 w-3.5" />
+                    {copy.kind === 'original' ? t('Xoá bản gốc') : t('Xoá bản sao')}
                   </button>
                 </div>
               {/if}
@@ -543,7 +650,9 @@
         class={`rounded-lg border px-3.5 py-2.5 text-xs flex items-center justify-between gap-3 flex-wrap ${
           feedback.kind === 'ok'
             ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
-            : 'border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-300'
+            : feedback.kind === 'warn'
+              ? 'border-amber-500/35 bg-amber-500/10 text-amber-800 dark:text-amber-300'
+              : 'border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-300'
         }`}
       >
         <div class="flex items-center gap-2 min-w-0">
@@ -607,7 +716,7 @@
 
       <p class="text-sm text-primary leading-relaxed">
         {t(
-          'GreenC sẽ đóng Zalo, chuyển {size} dữ liệu chat sang {drive}:, rồi mở lại Zalo. Bản gốc sẽ được giữ tạm 24 giờ trên ổ C: để đảm bảo an toàn, tin nhắn và ảnh giữ nguyên, có thể hoàn tác.',
+          'GreenC sẽ đóng Zalo, chuyển {size} dữ liệu chat sang {drive}:, rồi mở lại Zalo. Bản gốc trên ổ C: được giữ tạm tối thiểu 24 giờ hoạt động ổn định thực tế (chỉ tự dọn khi đã xác minh khoẻ và đủ 24 giờ quan sát; nếu không sẽ giữ đến khi bạn tự xoá). Tin nhắn và ảnh giữ nguyên, có thể hoàn tác.',
           {
             size: formatSize(status.chat_data_bytes),
             drive: selectedDrive,
@@ -624,7 +733,7 @@
           }`}
         >
           <div>
-            {t('Ổ nguồn {drive}: còn trống {free} (giữ tạm bản gốc {retained} trong 24 giờ)', {
+            {t('Ổ nguồn {drive}: còn trống {free} (giữ tạm bản gốc {retained} tối thiểu 24 giờ ổn định)', {
               drive: status.space_estimate.source_drive,
               free: formatSize(status.space_estimate.source_free_bytes),
               retained: formatSize(status.space_estimate.source_retained_bytes),

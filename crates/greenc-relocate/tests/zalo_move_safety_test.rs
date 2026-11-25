@@ -1,4 +1,4 @@
-//! Comprehensive safety & fault-injection simulation tests for GC-ZALO2:
+//! Comprehensive safety & fault-injection simulation tests for :
 //! - Original retained during 20s watch, renamed to `.greenc-original.<uuid>`, tracked in DB for 24h
 //! - Auto-purge only after health watch passed AND 24h elapsed; manual purge & restore
 //! - Safe rollback: never ignores graceful_shutdown errors, never deletes locked/new dirs,
@@ -105,10 +105,27 @@ fn make_drives(free_c: u64, free_d: u64) -> MockVolumeApi {
     ])
 }
 
+fn write_valid_sqlite_db(path: &Path) {
+    let conn = rusqlite::Connection::open(path).unwrap();
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY, body TEXT NOT NULL);",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO messages (body) VALUES ('CHAT-HISTORY-V1');",
+        [],
+    )
+    .unwrap();
+}
+
 #[test]
 fn test_original_kept_during_watch_persisted_24h_and_purged_only_when_eligible() {
     let tmp = TempDir::new().unwrap();
     let (disc, zalo_data, exe_path) = build_env(tmp.path());
+    fs::remove_file(zalo_data.join("message/zalo.db")).unwrap();
+    write_valid_sqlite_db(&zalo_data.join("message/zalo.db"));
+    let expected_db_bytes = fs::read(zalo_data.join("message/zalo.db")).unwrap();
     let db_path = tmp.path().join("zalo.db");
     let db = GreenCDb::open(&db_path).unwrap();
     let vol = make_drives(50 * 1024 * 1024 * 1024, 100 * 1024 * 1024 * 1024);
@@ -122,6 +139,7 @@ fn test_original_kept_during_watch_persisted_24h_and_purged_only_when_eligible()
     let saw_moving_during_watch = Arc::new(AtomicBool::new(false));
     let saw_flag = Arc::clone(&saw_moving_during_watch);
     let parent_for_hook = zalo_data.parent().unwrap().to_path_buf();
+    let zd_for_hook = zalo_data.clone();
     lifecycle.set_on_restart_hook(move || {
         // Right when Zalo reopens (start of health watch), `.greenc-moving.*` MUST still exist!
         let found = fs::read_dir(&parent_for_hook).unwrap().flatten().any(|e| {
@@ -130,6 +148,8 @@ fn test_original_kept_during_watch_persisted_24h_and_purged_only_when_eligible()
                 .starts_with("Zalo Data.greenc-moving.")
         });
         saw_flag.store(found, Ordering::SeqCst);
+        // Simulate real Zalo writing WAL file through the junction so health_verified becomes true
+        let _ = fs::write(zd_for_hook.join("message/zalo.db-wal"), b"ZALO-LIVE-WAL");
     });
 
     let target = tmp.path().join("D_Drive/GreenC/Relocated/zalo");
@@ -195,16 +215,29 @@ fn test_original_kept_during_watch_persisted_24h_and_purged_only_when_eligible()
     assert!(purged_early.is_empty());
     assert!(retained_path.exists());
 
-    // At 25h -> auto-purges because health_verified && elapsed >= 24h && junction healthy
+    // A sudden clock jump to +25h in a single call MUST NOT auto-purge immediately (Item 5)!
     let late = list[0].created_at + ChronoDuration::hours(25);
-    let purged_late = ZaloRelocator::purge_expired_originals(&db2, &reparse, late).unwrap();
+    let purged_jump = ZaloRelocator::purge_expired_originals(&db2, &reparse, late).unwrap();
+    assert!(purged_jump.is_empty());
+    assert!(retained_path.exists());
+
+    // Once >= 24h of real bounded healthy observations accumulate, auto-purge succeeds!
+    let mut t = late;
+    let mut purged_late = Vec::new();
+    for _ in 0..290 {
+        t += ChronoDuration::minutes(5);
+        purged_late = ZaloRelocator::purge_expired_originals(&db2, &reparse, t).unwrap();
+        if !purged_late.is_empty() {
+            break;
+        }
+    }
     assert_eq!(purged_late.len(), 1);
     assert_eq!(purged_late[0].status, ZaloRetainedStatus::Purged);
     assert!(!retained_path.exists());
     // Target still intact!
     assert_eq!(
         fs::read(target.join("message/zalo.db")).unwrap(),
-        b"CHAT-HISTORY-V1"
+        expected_db_bytes
     );
 }
 
@@ -295,7 +328,12 @@ fn test_rollback_preserves_recreated_source_as_conflict_and_uses_target_as_lates
     let target = tmp.path().join("D_Drive/zalo_latest");
     let broken_link = zalo_data.clone();
     let target_for_hook = target.clone();
+    let fired = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let fired_cb = std::sync::Arc::clone(&fired);
     lifecycle.set_on_restart_hook(move || {
+        if fired_cb.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
         // 1. Zalo writes new messages into target through the junction first
         fs::write(
             target_for_hook.join("message/new_from_target.db"),
@@ -376,7 +414,12 @@ fn test_rollback_when_target_offline_restores_moving_original_and_keeps_conflict
     let target = tmp.path().join("D_Drive/zalo_disconnect");
     let target_hook = target.clone();
     let src_hook = zalo_data.clone();
+    let fired = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let fired_cb = std::sync::Arc::clone(&fired);
     lifecycle.set_on_restart_hook(move || {
+        if fired_cb.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
         // Simulate target drive disconnecting + Zalo recreating a local dir!
         let _ = fs::remove_dir_all(&target_hook);
         remove_dir_link(&src_hook);
@@ -774,6 +817,9 @@ fn test_manual_purge_and_restore_retained_original_preserves_post_move_messages(
 fn test_manual_purge_refuses_when_junction_broken_and_succeeds_when_healthy() {
     let tmp = TempDir::new().unwrap();
     let (disc, zalo_data, exe_path) = build_env(tmp.path());
+    fs::remove_file(zalo_data.join("message/zalo.db")).unwrap();
+    write_valid_sqlite_db(&zalo_data.join("message/zalo.db"));
+    let expected_db_bytes = fs::read(zalo_data.join("message/zalo.db")).unwrap();
     let db = GreenCDb::open(tmp.path().join("zalo.db")).unwrap();
     let vol = make_drives(50 * 1024 * 1024 * 1024, 100 * 1024 * 1024 * 1024);
     let reparse = NativeReparsePointApi;
@@ -820,7 +866,7 @@ fn test_manual_purge_refuses_when_junction_broken_and_succeeds_when_healthy() {
     assert!(!orig_path.exists());
     assert_eq!(
         fs::read(target.join("message/zalo.db")).unwrap(),
-        b"CHAT-HISTORY-V1"
+        expected_db_bytes
     );
 }
 

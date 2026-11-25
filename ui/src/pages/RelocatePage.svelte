@@ -170,7 +170,21 @@
 
   async function handleUndo(rec: RelocationResultDto) {
     if (!rec.id) return;
-    if (!confirm(t('Hoàn tác {name}', { name: rec.app_name }) + '?')) return;
+    if (rec.candidate_id === 'zalo' && rec.health_status === 'link_broken') {
+      alert(
+        t(
+          'Liên kết Zalo đã hỏng hoặc bị thay bằng thư mục thật (có thể do Zalo đã cài lại). GreenC từ chối hoàn tác tự động để tránh ghi đè tin nhắn hiện tại — hãy kiểm tra bản sao ở thẻ Zalo PC.'
+        )
+      );
+      return;
+    }
+    const msg =
+      rec.candidate_id === 'zalo'
+        ? t(
+            'GreenC sẽ đóng Zalo, sao chép dữ liệu chat trở về vị trí ban đầu trên ổ C:, rồi mở lại Zalo. Bản sao trên ổ đích vẫn được giữ tạm để đảm bảo an toàn. Tiếp tục?'
+          )
+        : t('Hoàn tác {name}', { name: rec.app_name }) + '?';
+    if (!confirm(msg)) return;
 
     try {
       await undoRelocation(rec.id);
@@ -286,23 +300,72 @@
     </div>
   </div>
 
-  <!-- Interrupted Recovery Alert Banner -->
+  <!-- Interrupted Recovery Alert Banner (accurate per recovery status: NeedsReview / Case A / Case B) -->
   {#if interruptedRecoveries.length > 0}
-    <div class="rounded-xl border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/50 p-4 shadow-sm flex items-center justify-between">
-      <div class="flex items-center gap-3">
-        <AlertTriangle class="h-5 w-5 text-amber-600 dark:text-amber-400 shrink-0" />
-        <div>
-          <h4 class="text-sm font-semibold text-amber-900 dark:text-amber-200">
-            {t('Bị gián đoạn, đã khôi phục về vị trí cũ')}
+    {@const hasNeedsReview = interruptedRecoveries.some((r) => r.status === 'needs_review')}
+    {@const allCaseA = interruptedRecoveries.every((r) => r.status === 'done')}
+    <div
+      class={`rounded-xl border p-4 shadow-sm flex items-start justify-between gap-4 ${
+        hasNeedsReview
+          ? 'border-rose-400 dark:border-rose-700 bg-rose-50 dark:bg-rose-950/50'
+          : allCaseA
+            ? 'border-emerald-300 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-950/40'
+            : 'border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/50'
+      }`}
+    >
+      <div class="flex items-start gap-3 min-w-0">
+        {#if allCaseA}
+          <CheckCircle2 class="h-5 w-5 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
+        {:else if hasNeedsReview}
+          <AlertTriangle class="h-5 w-5 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
+        {:else}
+          <AlertTriangle class="h-5 w-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+        {/if}
+        <div class="space-y-1.5 min-w-0">
+          <h4
+            class={`text-sm font-semibold ${
+              hasNeedsReview
+                ? 'text-rose-900 dark:text-rose-200'
+                : allCaseA
+                  ? 'text-emerald-900 dark:text-emerald-200'
+                  : 'text-amber-900 dark:text-amber-200'
+            }`}
+          >
+            {#if hasNeedsReview}
+              {t('Cần kiểm tra sau gián đoạn di chuyển')}
+            {:else if allCaseA}
+              {t('Khôi phục sau gián đoạn: Liên kết vẫn hợp lệ')}
+            {:else}
+              {t('Bị gián đoạn, đã khôi phục về vị trí cũ')}
+            {/if}
           </h4>
-          <p class="text-xs text-amber-800 dark:text-amber-300 mt-0.5">
-            {t('Phát hiện {count} tác vụ di chuyển chưa hoàn tất do tắt máy đột ngột. GreenC đã tự động hoàn trả an toàn.', { count: interruptedRecoveries.length })}
-          </p>
+          <ul class="space-y-1 text-xs">
+            {#each interruptedRecoveries as rec}
+              <li
+                class={rec.status === 'needs_review'
+                  ? 'text-rose-800 dark:text-rose-300'
+                  : rec.status === 'done'
+                    ? 'text-emerald-800 dark:text-emerald-300'
+                    : 'text-amber-800 dark:text-amber-300'}
+              >
+                <span class="font-semibold">{rec.app_name}:</span>
+                {#if rec.detail}
+                  {rec.detail}
+                {:else if rec.status === 'needs_review'}
+                  {t('Cần người dùng kiểm tra thủ công; GreenC đã giữ nguyên tất cả bản dữ liệu.')}
+                {:else if rec.status === 'done'}
+                  {t('Liên kết thư mục vẫn hợp lệ và trỏ đúng ổ đích (bản gốc nếu còn được giữ tạm an toàn).')}
+                {:else}
+                  {t('Đã hoàn trả dữ liệu về vị trí cũ an toàn.')}
+                {/if}
+              </li>
+            {/each}
+          </ul>
         </div>
       </div>
       <button
         onclick={() => (interruptedRecoveries = [])}
-        class="text-xs font-medium px-3 py-1.5 rounded-md bg-amber-200/60 dark:bg-amber-900/60 text-amber-900 dark:text-amber-200 hover:bg-amber-300 transition-colors"
+        class="text-xs font-medium px-3 py-1.5 rounded-md bg-card/80 border border-border text-primary hover:bg-subtle transition-colors shrink-0"
       >
         {t('Đóng')}
       </button>
@@ -535,7 +598,28 @@
                 </td>
                 <td class="py-3 px-3 text-xs text-secondary">{rec.strategy}</td>
                 <td class="py-3 px-3">
-                  {#if rec.health_status === 'healthy'}
+                  {#if rec.status === 'undone'}
+                    <span class="inline-flex items-center gap-1 text-xs text-secondary font-medium">
+                      {t('Đã hoàn tác')}
+                    </span>
+                  {:else if rec.status === 'moving'}
+                    <span class="inline-flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400 font-medium">
+                      <AlertTriangle class="h-3.5 w-3.5" />
+                      {t('Đang chuyển dở')}
+                    </span>
+                  {:else if rec.status === 'failed'}
+                    <span class="inline-flex items-center gap-1 text-xs text-rose-600 dark:text-rose-400 font-medium">
+                      <AlertTriangle class="h-3.5 w-3.5" />
+                      {t('Thất bại')}
+                    </span>
+                  {:else if rec.status === 'needs_review'}
+                    <span class="inline-flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400 font-medium" title={rec.detail ?? undefined}>
+                      <AlertTriangle class="h-3.5 w-3.5" />
+                      {rec.health_status === 'target_offline'
+                        ? t('Cần kiểm tra (mất kết nối đích)')
+                        : t('Cần kiểm tra')}
+                    </span>
+                  {:else if rec.status === 'done' && rec.health_status === 'healthy'}
                     <span class="inline-flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400 font-medium">
                       <CheckCircle2 class="h-3.5 w-3.5" />
                       {t('Hoạt động bình thường')}
@@ -553,7 +637,7 @@
                   {/if}
                 </td>
                 <td class="py-3 px-3 text-right flex items-center justify-end gap-2">
-                  {#if rec.health_status !== 'healthy' && rec.strategy === 'junction'}
+                  {#if (rec.status === 'done' || rec.status === 'needs_review') && (rec.health_status !== 'healthy' || rec.status === 'needs_review') && (rec.strategy === 'junction' || rec.strategy === 'tool_config')}
                     <button
                       onclick={() => handleRepair(rec)}
                       class="px-2 py-1 text-xs font-medium rounded-md border border-border hover:bg-subtle text-accent transition-colors"
@@ -565,7 +649,7 @@
                   {/if}
                   <button
                     onclick={() => handleUndo(rec)}
-                    disabled={rec.strategy === 'guided' || rec.status === 'undone'}
+                    disabled={rec.strategy === 'guided' || rec.status !== 'done'}
                     class="px-2.5 py-1 text-xs font-medium rounded-md border border-border hover:bg-subtle text-secondary hover:text-primary transition-colors disabled:opacity-40"
                     title={rec.strategy === 'guided' ? t('Đổi lại vị trí lưu trong Cài đặt của ứng dụng') : t('Hoàn tác')}
                   >

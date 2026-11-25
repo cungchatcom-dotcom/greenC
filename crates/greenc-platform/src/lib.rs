@@ -8,6 +8,7 @@ mod unix;
 #[cfg(windows)]
 mod win32;
 
+pub mod acl_policy;
 pub mod app_lifecycle;
 pub mod breakaway;
 pub mod dev_tools;
@@ -29,9 +30,9 @@ pub use unix_parsers::{
 };
 
 pub use app_lifecycle::{
-    AppLifecycleApi, AppShutdownSession, MockAppLifecycleApi, MockShutdownBehavior,
-    NativeAppLifecycleApi, DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT, ZALO_ACTIVE_CALL_MESSAGE,
-    ZALO_MANUAL_QUIT_MESSAGE,
+    select_rm_target_processes, AppLifecycleApi, AppShutdownSession, MockAppLifecycleApi,
+    MockShutdownBehavior, NativeAppLifecycleApi, RmProcessCandidate,
+    DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT, ZALO_ACTIVE_CALL_MESSAGE, ZALO_MANUAL_QUIT_MESSAGE,
 };
 pub use dev_tools::{
     detect_busy_dev_tools, detect_busy_dev_tools_native, parse_ps_output, BusyToolsStatus, DevTool,
@@ -42,8 +43,8 @@ pub use dev_tools::{
 pub use handle::{current_user_uid, is_owned_by_uid};
 pub use handle::{
     ensure_not_protected_system_path, is_file_locked, is_owned_by_current_user,
-    is_trusted_user_dir, query_file_identity, read_to_string_noatime, validate_private_staging_dir,
-    Win32FileIdentity,
+    is_trusted_user_dir, query_file_identity, read_to_string_noatime, restrict_dir_to_current_user,
+    validate_private_staging_dir, Win32FileIdentity,
 };
 #[cfg(windows)]
 pub use handle::{path_to_wide, OwnedHandle};
@@ -55,7 +56,7 @@ pub use known_folders::{
     FOLDERID_VIDEOS,
 };
 
-pub use mutex::{notify_already_running, BusyMarker, GreenCAppMutex};
+pub use mutex::{notify_already_running, BusyMarker, GreenCAppMutex, RelocationLock};
 
 #[cfg(windows)]
 pub use power_session::OwnedRegKey;

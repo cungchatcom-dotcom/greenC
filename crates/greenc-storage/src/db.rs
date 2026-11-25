@@ -73,6 +73,24 @@ impl GreenCDb {
         f(&mut conn)
     }
 
+    /// Executes `f` with `PRAGMA synchronous = FULL` so WAL commits are `fsync`ed to disk
+    /// before any critical filesystem rename (move, undo, restore, purge), then restores
+    /// `PRAGMA synchronous = NORMAL` before returning.
+    pub fn with_durable_sync<F, R>(&self, f: F) -> Result<R>
+    where
+        F: FnOnce(&Connection) -> Result<R>,
+    {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| GreenCError::Database(format!("Mutex poisoned: {}", e)))?;
+        conn.execute_batch("PRAGMA synchronous = FULL;")
+            .map_err(|e| GreenCError::Sqlite(e.to_string()))?;
+        let res = f(&conn);
+        let _ = conn.execute_batch("PRAGMA synchronous = NORMAL;");
+        res
+    }
+
     // ==========================================
     // Settings CRUD
     // ==========================================
@@ -832,55 +850,75 @@ impl GreenCDb {
     // ==========================================
 
     pub fn save_relocation(&self, rec: &RelocationRecord) -> Result<i64> {
+        self.with_conn(|conn| Self::save_relocation_on_conn(conn, rec))
+    }
+
+    /// Durable variant of [`save_relocation`] using `PRAGMA synchronous = FULL` so intermediate
+    /// state transitions survive sudden power loss right before a filesystem rename.
+    pub fn save_relocation_durable(&self, rec: &RelocationRecord) -> Result<i64> {
+        self.with_durable_sync(|conn| Self::save_relocation_on_conn(conn, rec))
+    }
+
+    fn save_relocation_on_conn(conn: &Connection, rec: &RelocationRecord) -> Result<i64> {
         let procs_str = rec.process_names.join(",");
-        self.with_conn(|conn| {
-            if let Some(id) = rec.id {
-                conn.execute(
-                    "UPDATE relocations SET
-                        app_id = ?1, app_name = ?2, strategy = ?3,
-                        source_path = ?4, target_path = ?5, size_bytes = ?6,
-                        status = ?7, health_status = ?8, process_names = ?9, detail = ?10
-                     WHERE id = ?11;",
-                    params![
-                        rec.app_id,
-                        rec.app_name,
-                        rec.strategy.as_str(),
-                        rec.source_path.to_string_lossy().to_string(),
-                        rec.target_path.to_string_lossy().to_string(),
-                        rec.size_bytes as i64,
-                        rec.status.as_str(),
-                        rec.health_status.as_str(),
-                        procs_str,
-                        rec.detail.clone().unwrap_or_default(),
-                        id
-                    ],
-                )
-                .map_err(|e| GreenCError::Sqlite(e.to_string()))?;
-                Ok(id)
-            } else {
-                conn.execute(
-                    "INSERT INTO relocations (
-                        app_id, app_name, strategy, source_path, target_path,
-                        size_bytes, status, health_status, process_names, created_at, detail
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11);",
-                    params![
-                        rec.app_id,
-                        rec.app_name,
-                        rec.strategy.as_str(),
-                        rec.source_path.to_string_lossy().to_string(),
-                        rec.target_path.to_string_lossy().to_string(),
-                        rec.size_bytes as i64,
-                        rec.status.as_str(),
-                        rec.health_status.as_str(),
-                        procs_str,
-                        rec.created_at.to_rfc3339(),
-                        rec.detail.clone().unwrap_or_default()
-                    ],
-                )
-                .map_err(|e| GreenCError::Sqlite(e.to_string()))?;
-                Ok(conn.last_insert_rowid())
-            }
-        })
+        let moving_str = rec
+            .moving_path
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let repaired_int: i64 = if rec.target_user_repaired { 1 } else { 0 };
+        if let Some(id) = rec.id {
+            conn.execute(
+                "UPDATE relocations SET
+                    app_id = ?1, app_name = ?2, strategy = ?3,
+                    source_path = ?4, target_path = ?5, size_bytes = ?6,
+                    status = ?7, health_status = ?8, process_names = ?9, detail = ?10,
+                    moving_path = ?11, target_user_repaired = ?12
+                 WHERE id = ?13;",
+                params![
+                    rec.app_id,
+                    rec.app_name,
+                    rec.strategy.as_str(),
+                    rec.source_path.to_string_lossy().to_string(),
+                    rec.target_path.to_string_lossy().to_string(),
+                    rec.size_bytes as i64,
+                    rec.status.as_str(),
+                    rec.health_status.as_str(),
+                    procs_str,
+                    rec.detail.clone().unwrap_or_default(),
+                    moving_str,
+                    repaired_int,
+                    id
+                ],
+            )
+            .map_err(|e| GreenCError::Sqlite(e.to_string()))?;
+            Ok(id)
+        } else {
+            conn.execute(
+                "INSERT INTO relocations (
+                    app_id, app_name, strategy, source_path, target_path,
+                    size_bytes, status, health_status, process_names, created_at, detail,
+                    moving_path, target_user_repaired
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13);",
+                params![
+                    rec.app_id,
+                    rec.app_name,
+                    rec.strategy.as_str(),
+                    rec.source_path.to_string_lossy().to_string(),
+                    rec.target_path.to_string_lossy().to_string(),
+                    rec.size_bytes as i64,
+                    rec.status.as_str(),
+                    rec.health_status.as_str(),
+                    procs_str,
+                    rec.created_at.to_rfc3339(),
+                    rec.detail.clone().unwrap_or_default(),
+                    moving_str,
+                    repaired_int
+                ],
+            )
+            .map_err(|e| GreenCError::Sqlite(e.to_string()))?;
+            Ok(conn.last_insert_rowid())
+        }
     }
 
     pub fn list_relocations(&self, status: Option<&str>) -> Result<Vec<RelocationRecord>> {
@@ -888,13 +926,15 @@ impl GreenCDb {
             let (sql, param) = match status {
                 Some(st) => (
                     "SELECT id, app_id, app_name, strategy, source_path, target_path,
-                            size_bytes, status, health_status, process_names, created_at, detail
+                            size_bytes, status, health_status, process_names, created_at, detail,
+                            moving_path, target_user_repaired
                      FROM relocations WHERE status = ?1 ORDER BY id DESC;",
                     Some(st),
                 ),
                 None => (
                     "SELECT id, app_id, app_name, strategy, source_path, target_path,
-                            size_bytes, status, health_status, process_names, created_at, detail
+                            size_bytes, status, health_status, process_names, created_at, detail,
+                            moving_path, target_user_repaired
                      FROM relocations ORDER BY id DESC;",
                     None,
                 ),
@@ -912,6 +952,8 @@ impl GreenCDb {
                 let procs_str: String = r.get(9)?;
                 let created_str: String = r.get(10)?;
                 let detail_str: String = r.get(11)?;
+                let moving_str: String = r.get(12)?;
+                let target_user_repaired: bool = r.get::<_, i64>(13).unwrap_or(0) != 0;
 
                 Ok(RelocationRecord {
                     id: Some(r.get(0)?),
@@ -936,6 +978,12 @@ impl GreenCDb {
                     } else {
                         Some(detail_str)
                     },
+                    moving_path: if moving_str.is_empty() {
+                        None
+                    } else {
+                        Some(PathBuf::from(moving_str))
+                    },
+                    target_user_repaired,
                 })
             };
 
@@ -970,80 +1018,117 @@ impl GreenCDb {
     // ==========================================
 
     pub fn save_zalo_retained_original(&self, rec: &ZaloRetainedOriginal) -> Result<i64> {
+        self.with_conn(|conn| Self::save_zalo_retained_original_on_conn(conn, rec))
+    }
+
+    /// Durable variant of [`save_zalo_retained_original`] using `PRAGMA synchronous = FULL`.
+    pub fn save_zalo_retained_original_durable(&self, rec: &ZaloRetainedOriginal) -> Result<i64> {
+        self.with_durable_sync(|conn| Self::save_zalo_retained_original_on_conn(conn, rec))
+    }
+
+    fn parse_purge_after_fail_closed(purge_s: &str) -> (DateTime<Utc>, bool) {
+        match DateTime::parse_from_rfc3339(purge_s) {
+            Ok(d) => (d.with_timezone(&Utc), true),
+            Err(_) => {
+                // Fail-closed: an unreadable `purge_after` timestamp MUST NEVER be treated as
+                // already expired! Use a far-future sentinel (year 2100) + `purge_after_valid = false`.
+                let far_future =
+                    DateTime::from_timestamp(4_102_444_800, 0).unwrap_or(DateTime::<Utc>::MAX_UTC);
+                (far_future, false)
+            }
+        }
+    }
+
+    fn save_zalo_retained_original_on_conn(
+        conn: &Connection,
+        rec: &ZaloRetainedOriginal,
+    ) -> Result<i64> {
         let src_s = rec.source_path.to_string_lossy().to_string();
         let tgt_s = rec.target_path.to_string_lossy().to_string();
         let ret_s = rec.retained_path.to_string_lossy().to_string();
         let resolved_s = rec.resolved_at.map(|d| d.to_rfc3339()).unwrap_or_default();
+        let last_obs_s = rec
+            .last_observed_at
+            .map(|d| d.to_rfc3339())
+            .unwrap_or_default();
         let detail_s = rec.detail.clone().unwrap_or_default();
 
-        self.with_conn(|conn| {
-            if let Some(id) = rec.id {
-                conn.execute(
-                    "UPDATE zalo_retained_originals SET
-                        relocation_id = ?1, source_path = ?2, target_path = ?3,
-                        retained_path = ?4, size_bytes = ?5, file_count = ?6,
-                        health_verified = ?7, purge_after = ?8, status = ?9,
-                        resolved_at = ?10, detail = ?11
-                     WHERE id = ?12;",
-                    params![
-                        rec.relocation_id,
-                        src_s,
-                        tgt_s,
-                        ret_s,
-                        rec.size_bytes as i64,
-                        rec.file_count as i64,
-                        if rec.health_verified { 1 } else { 0 },
-                        rec.purge_after.to_rfc3339(),
-                        rec.status.as_str(),
-                        resolved_s,
-                        detail_s,
-                        id
-                    ],
-                )
-                .map_err(|e| GreenCError::Sqlite(e.to_string()))?;
-                Ok(id)
-            } else {
-                conn.execute(
-                    "INSERT INTO zalo_retained_originals (
-                        relocation_id, source_path, target_path, retained_path,
-                        size_bytes, file_count, health_verified, created_at,
-                        purge_after, status, resolved_at, detail
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
-                     ON CONFLICT(retained_path) DO UPDATE SET
-                        relocation_id = excluded.relocation_id,
-                        source_path = excluded.source_path,
-                        target_path = excluded.target_path,
-                        size_bytes = excluded.size_bytes,
-                        file_count = excluded.file_count,
-                        health_verified = excluded.health_verified,
-                        purge_after = excluded.purge_after,
-                        status = excluded.status,
-                        resolved_at = excluded.resolved_at,
-                        detail = excluded.detail;",
-                    params![
-                        rec.relocation_id,
-                        src_s,
-                        tgt_s,
-                        ret_s,
-                        rec.size_bytes as i64,
-                        rec.file_count as i64,
-                        if rec.health_verified { 1 } else { 0 },
-                        rec.created_at.to_rfc3339(),
-                        rec.purge_after.to_rfc3339(),
-                        rec.status.as_str(),
-                        resolved_s,
-                        detail_s
-                    ],
-                )
-                .map_err(|e| GreenCError::Sqlite(e.to_string()))?;
-                conn.query_row(
-                    "SELECT id FROM zalo_retained_originals WHERE retained_path = ?1;",
-                    params![ret_s],
-                    |r| r.get::<_, i64>(0),
-                )
-                .map_err(|e| GreenCError::Sqlite(e.to_string()))
-            }
-        })
+        if let Some(id) = rec.id {
+            conn.execute(
+                "UPDATE zalo_retained_originals SET
+                    relocation_id = ?1, source_path = ?2, target_path = ?3,
+                    retained_path = ?4, size_bytes = ?5, file_count = ?6,
+                    message_file_count = ?7, health_verified = ?8, purge_after = ?9,
+                    observed_healthy_secs = ?10, last_observed_at = ?11,
+                    status = ?12, resolved_at = ?13, detail = ?14
+                 WHERE id = ?15;",
+                params![
+                    rec.relocation_id,
+                    src_s,
+                    tgt_s,
+                    ret_s,
+                    rec.size_bytes as i64,
+                    rec.file_count as i64,
+                    rec.message_file_count as i64,
+                    if rec.health_verified { 1 } else { 0 },
+                    rec.purge_after.to_rfc3339(),
+                    rec.observed_healthy_secs as i64,
+                    last_obs_s,
+                    rec.status.as_str(),
+                    resolved_s,
+                    detail_s,
+                    id
+                ],
+            )
+            .map_err(|e| GreenCError::Sqlite(e.to_string()))?;
+            Ok(id)
+        } else {
+            conn.execute(
+                "INSERT INTO zalo_retained_originals (
+                    relocation_id, source_path, target_path, retained_path,
+                    size_bytes, file_count, message_file_count, health_verified, created_at,
+                    purge_after, observed_healthy_secs, last_observed_at, status, resolved_at, detail
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+                 ON CONFLICT(retained_path) DO UPDATE SET
+                    relocation_id = excluded.relocation_id,
+                    source_path = excluded.source_path,
+                    target_path = excluded.target_path,
+                    size_bytes = excluded.size_bytes,
+                    file_count = excluded.file_count,
+                    message_file_count = excluded.message_file_count,
+                    health_verified = excluded.health_verified,
+                    purge_after = excluded.purge_after,
+                    observed_healthy_secs = excluded.observed_healthy_secs,
+                    last_observed_at = excluded.last_observed_at,
+                    status = excluded.status,
+                    resolved_at = excluded.resolved_at,
+                    detail = excluded.detail;",
+                params![
+                    rec.relocation_id,
+                    src_s,
+                    tgt_s,
+                    ret_s,
+                    rec.size_bytes as i64,
+                    rec.file_count as i64,
+                    rec.message_file_count as i64,
+                    if rec.health_verified { 1 } else { 0 },
+                    rec.created_at.to_rfc3339(),
+                    rec.purge_after.to_rfc3339(),
+                    rec.observed_healthy_secs as i64,
+                    last_obs_s,
+                    rec.status.as_str(),
+                    resolved_s,
+                    detail_s
+                ],
+            )
+            .map_err(|e| GreenCError::Sqlite(e.to_string()))?;
+            conn.query_row(
+                "SELECT id FROM zalo_retained_originals WHERE retained_path = ?1;",
+                params![ret_s],
+                |r| r.get::<_, i64>(0),
+            )
+            .map_err(|e| GreenCError::Sqlite(e.to_string()))
+        }
     }
 
     pub fn list_zalo_retained_originals(
@@ -1054,15 +1139,17 @@ impl GreenCDb {
             let (sql, param) = match status {
                 Some(st) => (
                     "SELECT id, relocation_id, source_path, target_path, retained_path,
-                            size_bytes, file_count, health_verified, created_at,
-                            purge_after, status, resolved_at, detail
+                            size_bytes, file_count, message_file_count, health_verified,
+                            created_at, purge_after, observed_healthy_secs, last_observed_at,
+                            status, resolved_at, detail
                      FROM zalo_retained_originals WHERE status = ?1 ORDER BY id DESC;",
                     Some(st),
                 ),
                 None => (
                     "SELECT id, relocation_id, source_path, target_path, retained_path,
-                            size_bytes, file_count, health_verified, created_at,
-                            purge_after, status, resolved_at, detail
+                            size_bytes, file_count, message_file_count, health_verified,
+                            created_at, purge_after, observed_healthy_secs, last_observed_at,
+                            status, resolved_at, detail
                      FROM zalo_retained_originals ORDER BY id DESC;",
                     None,
                 ),
@@ -1074,11 +1161,14 @@ impl GreenCDb {
                 let src_s: String = r.get(2)?;
                 let tgt_s: String = r.get(3)?;
                 let ret_s: String = r.get(4)?;
-                let created_s: String = r.get(8)?;
-                let purge_s: String = r.get(9)?;
-                let status_s: String = r.get(10)?;
-                let resolved_s: String = r.get(11)?;
-                let detail_s: String = r.get(12)?;
+                let created_s: String = r.get(9)?;
+                let purge_s: String = r.get(10)?;
+                let last_obs_s: String = r.get(12)?;
+                let status_s: String = r.get(13)?;
+                let resolved_s: String = r.get(14)?;
+                let detail_s: String = r.get(15)?;
+                let (purge_after, purge_after_valid) =
+                    Self::parse_purge_after_fail_closed(&purge_s);
                 Ok(ZaloRetainedOriginal {
                     id: Some(r.get(0)?),
                     relocation_id: r.get(1)?,
@@ -1087,13 +1177,21 @@ impl GreenCDb {
                     retained_path: PathBuf::from(ret_s),
                     size_bytes: r.get::<_, i64>(5)?.max(0) as u64,
                     file_count: r.get::<_, i64>(6)?.max(0) as u64,
-                    health_verified: r.get::<_, i64>(7)? == 1,
+                    message_file_count: r.get::<_, i64>(7)?.max(0) as u64,
+                    health_verified: r.get::<_, i64>(8)? == 1,
                     created_at: DateTime::parse_from_rfc3339(&created_s)
                         .map(|d| d.with_timezone(&Utc))
                         .unwrap_or_else(|_| Utc::now()),
-                    purge_after: DateTime::parse_from_rfc3339(&purge_s)
-                        .map(|d| d.with_timezone(&Utc))
-                        .unwrap_or_else(|_| Utc::now()),
+                    purge_after,
+                    purge_after_valid,
+                    observed_healthy_secs: r.get::<_, i64>(11)?.max(0) as u64,
+                    last_observed_at: if last_obs_s.is_empty() {
+                        None
+                    } else {
+                        DateTime::parse_from_rfc3339(&last_obs_s)
+                            .ok()
+                            .map(|d| d.with_timezone(&Utc))
+                    },
                     status: ZaloRetainedStatus::from_str_loose(&status_s),
                     resolved_at: if resolved_s.is_empty() {
                         None
@@ -1129,19 +1227,23 @@ impl GreenCDb {
         self.with_conn(|conn| {
             conn.query_row(
                 "SELECT id, relocation_id, source_path, target_path, retained_path,
-                        size_bytes, file_count, health_verified, created_at,
-                        purge_after, status, resolved_at, detail
+                        size_bytes, file_count, message_file_count, health_verified,
+                        created_at, purge_after, observed_healthy_secs, last_observed_at,
+                        status, resolved_at, detail
                  FROM zalo_retained_originals WHERE id = ?1;",
                 params![id],
                 |r| {
                     let src_s: String = r.get(2)?;
                     let tgt_s: String = r.get(3)?;
                     let ret_s: String = r.get(4)?;
-                    let created_s: String = r.get(8)?;
-                    let purge_s: String = r.get(9)?;
-                    let status_s: String = r.get(10)?;
-                    let resolved_s: String = r.get(11)?;
-                    let detail_s: String = r.get(12)?;
+                    let created_s: String = r.get(9)?;
+                    let purge_s: String = r.get(10)?;
+                    let last_obs_s: String = r.get(12)?;
+                    let status_s: String = r.get(13)?;
+                    let resolved_s: String = r.get(14)?;
+                    let detail_s: String = r.get(15)?;
+                    let (purge_after, purge_after_valid) =
+                        Self::parse_purge_after_fail_closed(&purge_s);
                     Ok(ZaloRetainedOriginal {
                         id: Some(r.get(0)?),
                         relocation_id: r.get(1)?,
@@ -1150,13 +1252,21 @@ impl GreenCDb {
                         retained_path: PathBuf::from(ret_s),
                         size_bytes: r.get::<_, i64>(5)?.max(0) as u64,
                         file_count: r.get::<_, i64>(6)?.max(0) as u64,
-                        health_verified: r.get::<_, i64>(7)? == 1,
+                        message_file_count: r.get::<_, i64>(7)?.max(0) as u64,
+                        health_verified: r.get::<_, i64>(8)? == 1,
                         created_at: DateTime::parse_from_rfc3339(&created_s)
                             .map(|d| d.with_timezone(&Utc))
                             .unwrap_or_else(|_| Utc::now()),
-                        purge_after: DateTime::parse_from_rfc3339(&purge_s)
-                            .map(|d| d.with_timezone(&Utc))
-                            .unwrap_or_else(|_| Utc::now()),
+                        purge_after,
+                        purge_after_valid,
+                        observed_healthy_secs: r.get::<_, i64>(11)?.max(0) as u64,
+                        last_observed_at: if last_obs_s.is_empty() {
+                            None
+                        } else {
+                            DateTime::parse_from_rfc3339(&last_obs_s)
+                                .ok()
+                                .map(|d| d.with_timezone(&Utc))
+                        },
                         status: ZaloRetainedStatus::from_str_loose(&status_s),
                         resolved_at: if resolved_s.is_empty() {
                             None
@@ -1178,6 +1288,28 @@ impl GreenCDb {
         })
     }
 
+    pub fn update_zalo_retained_observation(
+        &self,
+        id: i64,
+        observed_healthy_secs: u64,
+        last_observed_at: DateTime<Utc>,
+    ) -> Result<()> {
+        self.with_conn(|conn| {
+            conn.execute(
+                "UPDATE zalo_retained_originals
+                 SET observed_healthy_secs = ?1, last_observed_at = ?2
+                 WHERE id = ?3;",
+                params![
+                    observed_healthy_secs as i64,
+                    last_observed_at.to_rfc3339(),
+                    id
+                ],
+            )
+            .map_err(|e| GreenCError::Sqlite(e.to_string()))?;
+            Ok(())
+        })
+    }
+
     pub fn update_zalo_retained_original_status(
         &self,
         id: i64,
@@ -1186,6 +1318,26 @@ impl GreenCDb {
     ) -> Result<()> {
         let now = Utc::now().to_rfc3339();
         self.with_conn(|conn| {
+            conn.execute(
+                "UPDATE zalo_retained_originals
+                 SET status = ?1, detail = ?2, resolved_at = ?3
+                 WHERE id = ?4;",
+                params![status, detail, now, id],
+            )
+            .map_err(|e| GreenCError::Sqlite(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    /// Durable variant of [`update_zalo_retained_original_status`] using `PRAGMA synchronous = FULL`.
+    pub fn update_zalo_retained_original_status_durable(
+        &self,
+        id: i64,
+        status: &str,
+        detail: &str,
+    ) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        self.with_durable_sync(|conn| {
             conn.execute(
                 "UPDATE zalo_retained_originals
                  SET status = ?1, detail = ?2, resolved_at = ?3
@@ -1821,6 +1973,8 @@ mod drive_quota_db_tests {
                 process_names: vec!["Zalo.exe".to_string()],
                 created_at: now,
                 detail: Some("Cần người dùng xử lý".to_string()),
+                moving_path: None,
+                target_user_repaired: false,
             })
             .unwrap();
 
@@ -1836,9 +1990,13 @@ mod drive_quota_db_tests {
             retained_path: PathBuf::from(r"C:\Zalo Data.greenc-original.uuid-1"),
             size_bytes: 4096,
             file_count: 12,
+            message_file_count: 2,
             health_verified: true,
             created_at: now,
             purge_after: now + chrono::Duration::hours(24),
+            purge_after_valid: true,
+            observed_healthy_secs: 0,
+            last_observed_at: Some(now),
             status: ZaloRetainedStatus::Retained,
             resolved_at: None,
             detail: Some("Giữ tạm 24 giờ".to_string()),

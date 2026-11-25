@@ -332,3 +332,134 @@ fn test_parse_zalo_version_numeric_ordering() {
     assert!(parse_zalo_version("Zalo-latest").is_none());
     assert!(parse_zalo_version("Other-1.2.3").is_none());
 }
+
+#[test]
+fn test_zalo_config_rejects_folder_without_message_structure() {
+    use greenc_scanner::zalo::has_valid_zalo_data_structure;
+
+    let tmp = TempDir::new().unwrap();
+    let roaming = tmp.path().join("Roaming/ZaloData");
+    fs::create_dir_all(&roaming).unwrap();
+    let cfg = roaming.join("config.json");
+    let local = tmp.path().join("Local");
+
+    // 1. Arbitrary folder with NO `message/` directory in `db_path.location`
+    let random_docs = tmp.path().join("C_Drive/MyDocuments");
+    fs::create_dir_all(&random_docs).unwrap();
+    fs::write(random_docs.join("tax.pdf"), b"SENSITIVE").unwrap();
+    assert!(!has_valid_zalo_data_structure(&random_docs));
+
+    fs::write(
+        &cfg,
+        format!(
+            r#"{{"db_path": {{"location": "{}"}}}}"#,
+            random_docs.to_string_lossy().replace('\\', "\\\\")
+        ),
+    )
+    .unwrap();
+    let disc = discover_zalo_installation(&ZaloDiscoveryOptions {
+        config_file: Some(cfg.clone()),
+        local_appdata: Some(local.clone()),
+        ..Default::default()
+    })
+    .unwrap();
+    assert!(
+        matches!(disc.config_status, ZaloConfigStatus::RejectedUnsafe { .. }),
+        "arbitrary folder without message/ MUST be rejected, got {:?}",
+        disc.config_status
+    );
+    assert!(disc.data_dir.is_none());
+
+    // 2. `db_path.location` ends with `/message`, parent exists on disk, but `message/` is missing
+    let fake_zalo = tmp.path().join("C_Drive/FakeZaloNoMessage");
+    fs::create_dir_all(&fake_zalo).unwrap();
+    assert!(!has_valid_zalo_data_structure(&fake_zalo));
+    fs::write(
+        &cfg,
+        format!(
+            r#"{{"db_path": {{"location": "{}"}}}}"#,
+            fake_zalo
+                .join("message")
+                .to_string_lossy()
+                .replace('\\', "\\\\")
+        ),
+    )
+    .unwrap();
+    let disc = discover_zalo_installation(&ZaloDiscoveryOptions {
+        config_file: Some(cfg.clone()),
+        local_appdata: Some(local.clone()),
+        ..Default::default()
+    })
+    .unwrap();
+    assert!(
+        matches!(disc.config_status, ZaloConfigStatus::RejectedUnsafe { .. }),
+        "existing dir missing message/ subdir MUST be rejected, got {:?}",
+        disc.config_status
+    );
+    assert!(disc.data_dir.is_none());
+
+    // 3. `message` exists but is a regular FILE, not a directory
+    let fake_file_msg = tmp.path().join("C_Drive/FakeZaloFileMessage");
+    fs::create_dir_all(&fake_file_msg).unwrap();
+    fs::write(fake_file_msg.join("message"), b"NOT-A-DIR").unwrap();
+    assert!(!has_valid_zalo_data_structure(&fake_file_msg));
+    fs::write(
+        &cfg,
+        format!(
+            r#"{{"db_path": {{"location": "{}"}}}}"#,
+            fake_file_msg
+                .join("message")
+                .to_string_lossy()
+                .replace('\\', "\\\\")
+        ),
+    )
+    .unwrap();
+    let disc = discover_zalo_installation(&ZaloDiscoveryOptions {
+        config_file: Some(cfg.clone()),
+        local_appdata: Some(local.clone()),
+        ..Default::default()
+    })
+    .unwrap();
+    assert!(
+        matches!(disc.config_status, ZaloConfigStatus::RejectedUnsafe { .. }),
+        "regular file named message MUST be rejected, got {:?}",
+        disc.config_status
+    );
+    assert!(disc.data_dir.is_none());
+
+    // 4. `resource.location.path` points to a root where `Zalo Data` exists without `message/`
+    let res_root = tmp.path().join("C_Drive/ResourceRoot");
+    fs::create_dir_all(res_root.join("Zalo Data")).unwrap();
+    fs::write(
+        &cfg,
+        format!(
+            r#"{{"resource": {{"location": {{"path": "{}"}}}}}}"#,
+            res_root.to_string_lossy().replace('\\', "\\\\")
+        ),
+    )
+    .unwrap();
+    let disc = discover_zalo_installation(&ZaloDiscoveryOptions {
+        config_file: Some(cfg.clone()),
+        local_appdata: Some(local.clone()),
+        ..Default::default()
+    })
+    .unwrap();
+    assert!(
+        matches!(disc.config_status, ZaloConfigStatus::RejectedUnsafe { .. }),
+        "resource.location.path Zalo Data without message/ MUST be rejected, got {:?}",
+        disc.config_status
+    );
+    assert!(disc.data_dir.is_none());
+
+    // 5. Once `message/` directory exists, `has_valid_zalo_data_structure` and discovery accept it!
+    fs::create_dir_all(res_root.join("Zalo Data/message")).unwrap();
+    assert!(has_valid_zalo_data_structure(&res_root.join("Zalo Data")));
+    let disc_ok = discover_zalo_installation(&ZaloDiscoveryOptions {
+        config_file: Some(cfg),
+        local_appdata: Some(local),
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!(disc_ok.config_status, ZaloConfigStatus::Found);
+    assert_eq!(disc_ok.data_dir, Some(res_root.join("Zalo Data")));
+}

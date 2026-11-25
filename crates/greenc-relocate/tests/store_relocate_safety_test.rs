@@ -167,6 +167,8 @@ fn store_undo_appdata_junction_uses_breakaway_and_preserves_target_on_refusal() 
             process_names: vec![],
             created_at: Utc::now(),
             detail: None,
+            moving_path: None,
+            target_user_repaired: false,
         })
         .unwrap();
 
@@ -272,6 +274,8 @@ fn store_blocks_known_folder_undo_and_appdata_junction_repair_without_deleting_a
             process_names: vec![],
             created_at: Utc::now(),
             detail: None,
+            moving_path: None,
+            target_user_repaired: false,
         })
         .unwrap();
 
@@ -299,7 +303,7 @@ fn store_blocks_known_folder_undo_and_appdata_junction_repair_without_deleting_a
         .join("Local")
         .join("Discord");
     let old_target = tmp.path().join("OldTarget");
-    let new_target = tmp.path().join("NewTarget");
+    let new_target = tmp.path().join("GreenC").join("Relocated").join("Discord");
     std::fs::create_dir_all(appdata_link.parent().unwrap()).unwrap();
     std::fs::create_dir_all(&old_target).unwrap();
     std::fs::create_dir_all(&new_target).unwrap();
@@ -319,6 +323,8 @@ fn store_blocks_known_folder_undo_and_appdata_junction_repair_without_deleting_a
             process_names: vec![],
             created_at: Utc::now(),
             detail: None,
+            moving_path: None,
+            target_user_repaired: false,
         })
         .unwrap();
 

@@ -369,7 +369,7 @@ export interface RelocationResultDto {
   source_path: string;
   target_path: string;
   size_bytes: number;
-  status: 'moving' | 'done' | 'failed' | 'undone' | string;
+  status: 'moving' | 'done' | 'failed' | 'undone' | 'needs_review' | string;
   health_status: 'healthy' | 'target_offline' | 'link_broken' | string;
   detail?: string | null;
   created_at: string;
@@ -796,9 +796,10 @@ export async function downloadAndInstallUpdate(
 // =========================================================================
 
 export interface ZaloSafetyCopyDto {
+  copy_id: string;
   id: number | null;
   relocation_id: number | null;
-  kind: 'original' | 'conflict' | 'moving' | string;
+  kind: 'original' | 'conflict' | 'moving' | 'restoring' | 'purging' | string;
   path: string;
   source_path: string | null;
   target_path: string | null;
@@ -809,6 +810,7 @@ export interface ZaloSafetyCopyDto {
   health_verified: boolean;
   status: string;
   exists_on_disk: boolean;
+  restorable: boolean;
   detail: string | null;
 }
 
@@ -840,6 +842,8 @@ export interface ZaloStatusDto {
   active_relocation_id: number | null;
   active_relocation_target: string | null;
   active_relocation_health: string | null;
+  active_relocation_status?: string | null;
+  source_replaced_by_real_dir?: boolean;
   chat_data_bytes: number;
   media_bytes: number;
   message_bytes: number;
@@ -928,9 +932,29 @@ export async function purgeZaloRetainedOriginal(retainedId: number): Promise<str
   });
 }
 
-export async function restoreZaloRetainedOriginal(retainedId: number): Promise<string> {
+export async function restoreZaloRetainedOriginal(
+  retainedId: number,
+  allowOfflineTarget: boolean = false
+): Promise<string> {
   return await invoke<string>('restore_zalo_retained_original', {
     retainedId,
+    allowOfflineTarget,
+  });
+}
+
+export async function restoreZaloSafetyCopy(
+  copyId: string,
+  allowOfflineTarget: boolean = false
+): Promise<string> {
+  return await invoke<string>('restore_zalo_safety_copy', {
+    copyId,
+    allowOfflineTarget,
+  });
+}
+
+export async function deleteZaloSafetyCopy(copyId: string): Promise<string> {
+  return await invoke<string>('delete_zalo_safety_copy', {
+    copyId,
   });
 }
 

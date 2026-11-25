@@ -101,6 +101,13 @@ pub async fn scan_relocation_candidates(
         let shell_api = NativeShellFolderApi;
         let lock_probe = NativeFileLockProbe;
         let proc_probe = NativeProcessServiceProbe;
+        let reparse_api = NativeReparsePointApi;
+
+        if let Ok(recs) = RecoveryService::recover_interrupted(&state_inner.db, &reparse_api) {
+            if !recs.is_empty() {
+                state_inner.push_startup_recoveries(recs);
+            }
+        }
 
         let candidates = CandidateScanner::discover_all(
             target_letter,
@@ -191,7 +198,13 @@ pub async fn relocate_directory(
                 .list_relocations(Some("done"))
                 .unwrap_or_default()
                 .into_iter()
-                .filter(|r| r.app_id == "zalo")
+                .filter(|r| {
+                    r.app_id == "zalo"
+                        && greenc_platform::traits::ReparsePointApi::is_reparse_point(
+                            &reparse_api,
+                            &r.source_path,
+                        )
+                })
                 .map(|r| r.source_path)
                 .collect();
             let disc = greenc_scanner::zalo::discover_zalo_installation(
@@ -480,15 +493,19 @@ pub async fn recover_interrupted_relocations(
     state: State<'_, AppState>,
 ) -> std::result::Result<Vec<RelocationResultDto>, String> {
     let state_inner = state.inner().clone();
-    // A `moving` record may belong to a move that is still running (the window can be closed and
-    // reopened meanwhile); recovering it would delete the copy being written.
-    if state_inner.has_foreground_tasks() {
-        return Ok(Vec::new());
-    }
     tokio::task::spawn_blocking(move || {
         let reparse = NativeReparsePointApi;
-        let recovered = RecoveryService::recover_interrupted(&state_inner.db, &reparse)
+        let mut recovered = state_inner.take_startup_recoveries();
+        let fresh = RecoveryService::recover_interrupted(&state_inner.db, &reparse)
             .map_err(|e| format!("Lỗi khôi phục sau sự cố: {e}"))?;
+        for rec in fresh {
+            if !recovered
+                .iter()
+                .any(|existing| existing.id == rec.id && rec.id.is_some())
+            {
+                recovered.push(rec);
+            }
+        }
 
         let dtos: Vec<RelocationResultDto> = recovered
             .into_iter()
@@ -578,54 +595,22 @@ pub async fn undo_relocation(
         let reparse = NativeReparsePointApi;
         let shell_api = NativeShellFolderApi;
         let proc_probe = NativeProcessServiceProbe;
+        let lock_probe = NativeFileLockProbe;
         let lifecycle = greenc_platform::app_lifecycle::NativeAppLifecycleApi;
 
-        let existing_zalo = state_inner.db.list_relocations(None).ok().and_then(|list| {
-            list.into_iter()
-                .find(|r| r.id == Some(record_id) && r.app_id == "zalo")
-        });
-
-        let mut shutdown_session = None;
-        if let Some(ref zrec) = existing_zalo {
-            if greenc_platform::app_lifecycle::AppLifecycleApi::has_visible_window(
-                &lifecycle,
-                &["ZaloCall.exe"],
-            ) {
-                return Err(format!(
-                    "Không thể hoàn tác: {}",
-                    greenc_platform::app_lifecycle::ZALO_ACTIVE_CALL_MESSAGE
-                ));
-            }
-            let session = greenc_platform::app_lifecycle::AppLifecycleApi::graceful_shutdown(
-                &lifecycle,
-                &[zrec.source_path.clone(), zrec.target_path.clone()],
-                greenc_scanner::zalo::ZALO_PROCESS_NAMES,
-                greenc_platform::app_lifecycle::DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT,
-            )
-            .map_err(|e| format!("Không thể hoàn tác: {e}"))?;
-            shutdown_session = Some(session);
-        }
-
-        let undo_res = TransactionalMover::undo_relocation(
+        let undone_rec = TransactionalMover::undo_relocation_with_deps(
             record_id,
             &state_inner.db,
             &vol_api,
             &reparse,
             &shell_api,
             &proc_probe,
+            &lock_probe,
+            Some(&lifecycle),
             &task_ctrl,
-        );
-
-        if let Some(mut session) = shutdown_session {
-            if !session.captured_exes.is_empty() {
-                let _ = greenc_platform::app_lifecycle::AppLifecycleApi::restart_app(
-                    &lifecycle,
-                    &mut session,
-                );
-            }
-        }
-
-        let undone_rec = undo_res.map_err(|e| format!("Không thể hoàn tác: {e}"))?;
+            None,
+        )
+        .map_err(|e| format!("Không thể hoàn tác: {e}"))?;
 
         Ok(RelocationResultDto {
             id: undone_rec.id,

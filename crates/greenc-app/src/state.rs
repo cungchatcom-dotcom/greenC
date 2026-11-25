@@ -1,4 +1,5 @@
 use greenc_core::error::Result;
+use greenc_core::models::RelocationRecord;
 use greenc_core::task::TaskControl;
 use greenc_i18n::catalog::Catalog;
 use greenc_storage::db::GreenCDb;
@@ -43,6 +44,7 @@ pub struct AppState {
     pub app_handle: Arc<RwLock<Option<AppHandle>>>,
     pub app_dir: PathBuf,
     busy_marker: Arc<Mutex<Option<greenc_platform::BusyMarker>>>,
+    pub pending_startup_recoveries: Arc<Mutex<Vec<RelocationRecord>>>,
 }
 
 impl std::fmt::Debug for AppState {
@@ -67,7 +69,32 @@ impl AppState {
             app_handle: Arc::new(RwLock::new(None)),
             app_dir,
             busy_marker: Arc::new(Mutex::new(None)),
+            pending_startup_recoveries: Arc::new(Mutex::new(Vec::new())),
         })
+    }
+
+    pub fn push_startup_recoveries(&self, items: Vec<RelocationRecord>) {
+        if items.is_empty() {
+            return;
+        }
+        if let Ok(mut guard) = self.pending_startup_recoveries.lock() {
+            for item in items {
+                if !guard
+                    .iter()
+                    .any(|existing| existing.id == item.id && item.id.is_some())
+                {
+                    guard.push(item);
+                }
+            }
+        }
+    }
+
+    pub fn take_startup_recoveries(&self) -> Vec<RelocationRecord> {
+        if let Ok(mut guard) = self.pending_startup_recoveries.lock() {
+            std::mem::take(&mut *guard)
+        } else {
+            Vec::new()
+        }
     }
 
     pub fn set_app_handle(&self, handle: AppHandle) {

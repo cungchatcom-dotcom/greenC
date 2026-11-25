@@ -8,7 +8,7 @@ use greenc_core::task::TaskControl;
 use greenc_platform::app_lifecycle::{AppLifecycleApi, NativeAppLifecycleApi};
 use greenc_platform::traits::{
     NativeFileLockProbe, NativeProcessServiceProbe, NativeReparsePointApi, NativeShellFolderApi,
-    NativeWin32VolumeApi, ProcessServiceProbe,
+    NativeWin32VolumeApi, ProcessServiceProbe, ReparsePointApi,
 };
 use greenc_platform::volume::{list_drives_native, recommend_drive_info};
 use greenc_relocate::recovery::RecoveryService;
@@ -33,6 +33,7 @@ use tauri::State;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ZaloSafetyCopyDto {
+    pub copy_id: String,
     pub id: Option<i64>,
     pub relocation_id: Option<i64>,
     pub kind: String,
@@ -46,12 +47,14 @@ pub struct ZaloSafetyCopyDto {
     pub health_verified: bool,
     pub status: String,
     pub exists_on_disk: bool,
+    pub restorable: bool,
     pub detail: Option<String>,
 }
 
 impl From<ZaloSafetyCopyInfo> for ZaloSafetyCopyDto {
     fn from(info: ZaloSafetyCopyInfo) -> Self {
         Self {
+            copy_id: info.copy_id,
             id: info.id,
             relocation_id: info.relocation_id,
             kind: info.kind,
@@ -65,6 +68,7 @@ impl From<ZaloSafetyCopyInfo> for ZaloSafetyCopyDto {
             health_verified: info.health_verified,
             status: info.status,
             exists_on_disk: info.exists_on_disk,
+            restorable: info.restorable,
             detail: info.detail,
         }
     }
@@ -82,6 +86,10 @@ pub struct ZaloStatusDto {
     pub active_relocation_id: Option<i64>,
     pub active_relocation_target: Option<String>,
     pub active_relocation_health: Option<String>,
+    pub active_relocation_status: Option<String>,
+    /// `true` when an active Zalo relocation exists in DB, but `source_path` is no longer a
+    /// junction/reparse point and was replaced by a real directory (e.g. Zalo reinstalled).
+    pub source_replaced_by_real_dir: bool,
     pub chat_data_bytes: u64,
     pub media_bytes: u64,
     pub message_bytes: u64,
@@ -144,18 +152,52 @@ pub struct ZaloMoveResultDto {
     pub message: String,
 }
 
-fn known_zalo_relocations(state: &AppState) -> (HashSet<PathBuf>, Option<(i64, PathBuf, String)>) {
+fn known_zalo_relocations(
+    state: &AppState,
+) -> (
+    HashSet<PathBuf>,
+    Option<(i64, PathBuf, String, String, bool)>,
+) {
     let mut known_sources = HashSet::new();
     let mut active = None;
-    if let Ok(records) = state.db.list_relocations(Some("done")) {
+    if let Ok(records) = state.db.list_relocations(None) {
         let reparse = NativeReparsePointApi;
         let healths = RecoveryService::check_junction_health(&records, &reparse);
         for (rec, health) in records.into_iter().zip(healths) {
-            if rec.app_id == "zalo" && rec.status == RelocationStatus::Done {
-                known_sources.insert(rec.source_path.clone());
+            if rec.app_id == "zalo"
+                && matches!(
+                    rec.status,
+                    RelocationStatus::Done
+                        | RelocationStatus::NeedsReview
+                        | RelocationStatus::Moving
+                )
+            {
+                // Item 6: Only mark `source_path` as a known relocation when it is
+                // ACTUALLY a reparse point on disk right now!
+                let source_is_reparse = reparse.is_reparse_point(&rec.source_path);
+                let replaced_by_real_dir = matches!(
+                    rec.status,
+                    RelocationStatus::Done | RelocationStatus::NeedsReview
+                ) && !source_is_reparse
+                    && std::fs::symlink_metadata(&rec.source_path)
+                        .is_ok_and(|m| m.is_dir() && !m.file_type().is_symlink());
+                if source_is_reparse
+                    && matches!(
+                        rec.status,
+                        RelocationStatus::Done | RelocationStatus::NeedsReview
+                    )
+                {
+                    known_sources.insert(rec.source_path.clone());
+                }
                 if active.is_none() {
                     if let Some(id) = rec.id {
-                        active = Some((id, rec.target_path, health.as_str().to_string()));
+                        active = Some((
+                            id,
+                            rec.target_path,
+                            health.as_str().to_string(),
+                            rec.status.as_str().to_string(),
+                            replaced_by_real_dir,
+                        ));
                     }
                 }
             }
@@ -184,6 +226,13 @@ pub async fn get_zalo_status(
 ) -> std::result::Result<ZaloStatusDto, String> {
     let state_inner = state.inner().clone();
     tokio::task::spawn_blocking(move || {
+        if let Ok(recs) =
+            RecoveryService::recover_interrupted(&state_inner.db, &NativeReparsePointApi)
+        {
+            if !recs.is_empty() {
+                state_inner.push_startup_recoveries(recs);
+            }
+        }
         let lifecycle = NativeAppLifecycleApi;
         let proc_probe = NativeProcessServiceProbe;
         let lock_probe = NativeFileLockProbe;
@@ -239,7 +288,9 @@ pub async fn get_zalo_status(
                 active_relocation_target: active_reloc
                     .as_ref()
                     .map(|a| a.1.to_string_lossy().to_string()),
-                active_relocation_health: active_reloc.map(|a| a.2),
+                active_relocation_health: active_reloc.as_ref().map(|a| a.2.clone()),
+                active_relocation_status: active_reloc.as_ref().map(|a| a.3.clone()),
+                source_replaced_by_real_dir: active_reloc.as_ref().is_some_and(|a| a.4),
                 chat_data_bytes: 0,
                 media_bytes: 0,
                 message_bytes: 0,
@@ -325,7 +376,9 @@ pub async fn get_zalo_status(
             active_relocation_target: active_reloc
                 .as_ref()
                 .map(|a| a.1.to_string_lossy().to_string()),
-            active_relocation_health: active_reloc.map(|a| a.2),
+            active_relocation_health: active_reloc.as_ref().map(|a| a.2.clone()),
+            active_relocation_status: active_reloc.as_ref().map(|a| a.3.clone()),
+            source_replaced_by_real_dir: active_reloc.as_ref().is_some_and(|a| a.4),
             chat_data_bytes: disc.chat_data_bytes,
             media_bytes: disc.media_bytes,
             message_bytes: disc.message_bytes,
@@ -615,19 +668,23 @@ pub async fn purge_zalo_retained_original(
 
 /// Explicitly restores a temporarily retained Zalo original copy back to its original path,
 /// keeping any post-move target data preserved as a conflict copy so no messages are lost.
+/// Refuses when target drive is offline unless `allow_offline_target == Some(true)`.
 #[tauri::command]
 pub async fn restore_zalo_retained_original(
     retained_id: i64,
+    allow_offline_target: Option<bool>,
     state: State<'_, AppState>,
 ) -> std::result::Result<String, String> {
     let state_inner = state.inner().clone();
+    let allow_offline = allow_offline_target.unwrap_or(false);
     tokio::task::spawn_blocking(move || {
         let reparse = NativeReparsePointApi;
         let lock_probe = NativeFileLockProbe;
         let proc_probe = NativeProcessServiceProbe;
         let lifecycle = NativeAppLifecycleApi;
-        let rec = ZaloRelocator::restore_retained_original(
+        let rec = ZaloRelocator::restore_retained_original_with_options(
             retained_id,
+            allow_offline,
             &state_inner.db,
             &reparse,
             &lock_probe,
@@ -642,4 +699,83 @@ pub async fn restore_zalo_retained_original(
     })
     .await
     .map_err(|e| format!("Lỗi tác vụ khôi phục bản gốc Zalo: {e}"))?
+}
+
+/// Restores a discovered Zalo safety copy (`original`, `conflict`, `moving`, or reconnected
+/// `target`) strictly by its opaque `copy_id` returned from `discover_zalo_safety_copies`.
+/// Accepts NO filesystem paths over IPC; source and copy paths are resolved solely from DB
+/// records / Zalo discovery. Refuses when linked target is offline unless confirmed.
+#[tauri::command]
+pub async fn restore_zalo_safety_copy(
+    copy_id: String,
+    allow_offline_target: Option<bool>,
+    state: State<'_, AppState>,
+) -> std::result::Result<String, String> {
+    let state_inner = state.inner().clone();
+    let allow_offline = allow_offline_target.unwrap_or(false);
+    tokio::task::spawn_blocking(move || {
+        let reparse = NativeReparsePointApi;
+        let lock_probe = NativeFileLockProbe;
+        let proc_probe = NativeProcessServiceProbe;
+        let lifecycle = NativeAppLifecycleApi;
+
+        let (_, running_exe_dirs) = detect_zalo_running(&lifecycle, &proc_probe);
+        let (known_relocated_sources, _) = known_zalo_relocations(&state_inner);
+        let discovered_data_dir = discover_zalo_installation(&ZaloDiscoveryOptions {
+            running_exe_dirs,
+            known_relocated_sources,
+            ..Default::default()
+        })
+        .and_then(|d| d.data_dir);
+
+        ZaloRelocator::restore_safety_copy_by_id_with_options(
+            &copy_id,
+            allow_offline,
+            discovered_data_dir.as_deref(),
+            &state_inner.db,
+            &reparse,
+            &lock_probe,
+            &proc_probe,
+            &lifecycle,
+            greenc_platform::app_lifecycle::DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT,
+        )
+        .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("Lỗi tác vụ khôi phục bản sao Zalo: {e}"))?
+}
+
+/// Permanently deletes ANY listed Zalo safety copy (`original`, `conflict`, `moving`, `restoring`,
+/// `target`, or `purging`) strictly by its opaque `copy_id` after explicit user confirmation,
+/// ONLY if the currently live Zalo data directory covers every message DB in that copy.
+#[tauri::command]
+pub async fn delete_zalo_safety_copy(
+    copy_id: String,
+    state: State<'_, AppState>,
+) -> std::result::Result<String, String> {
+    let state_inner = state.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        let reparse = NativeReparsePointApi;
+        let proc_probe = NativeProcessServiceProbe;
+        let lifecycle = NativeAppLifecycleApi;
+
+        let (_, running_exe_dirs) = detect_zalo_running(&lifecycle, &proc_probe);
+        let (known_relocated_sources, _) = known_zalo_relocations(&state_inner);
+        let discovered_data_dir = discover_zalo_installation(&ZaloDiscoveryOptions {
+            running_exe_dirs,
+            known_relocated_sources,
+            ..Default::default()
+        })
+        .and_then(|d| d.data_dir);
+
+        ZaloRelocator::delete_safety_copy_by_id(
+            &copy_id,
+            discovered_data_dir.as_deref(),
+            &state_inner.db,
+            &reparse,
+        )
+        .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("Lỗi tác vụ xoá bản sao Zalo: {e}"))?
 }

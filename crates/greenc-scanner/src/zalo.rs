@@ -229,6 +229,58 @@ fn normalize_cmp_path(path: &Path) -> String {
         .to_ascii_lowercase()
 }
 
+/// Returns `true` if `path` is a filesystem or drive root (e.g. `C:\`, `D:/`, `/`), which must
+/// never be accepted as a Zalo chat data directory.
+fn is_drive_or_fs_root(path: &Path) -> bool {
+    let raw = path.to_string_lossy();
+    let stripped = raw.strip_prefix(r"\\?\").unwrap_or(&raw).trim();
+    let cleaned = stripped.replace('\\', "/");
+    let trimmed = cleaned.trim_end_matches('/');
+    if trimmed.is_empty() {
+        return true;
+    }
+    let bytes = trimmed.as_bytes();
+    if bytes.len() == 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        return true;
+    }
+    path.parent().is_none()
+}
+
+/// If `raw` ends with a `message` path component (handling both `\` and `/` separators on every
+/// OS), returns `Some(parent_dir)`. Returns `None` if `raw` does not end with `message`.
+fn parent_if_ends_with_message(raw: &str) -> Option<PathBuf> {
+    let trimmed = raw.trim().trim_end_matches(['\\', '/']);
+    let sep_idx = trimmed.rfind(['\\', '/'])?;
+    let last = &trimmed[sep_idx + 1..];
+    if !last.eq_ignore_ascii_case("message") {
+        return None;
+    }
+    let parent = &trimmed[..sep_idx];
+    if parent.is_empty() {
+        Some(PathBuf::from("/"))
+    } else {
+        Some(PathBuf::from(parent))
+    }
+}
+
+/// Verifies that `data_dir` has authentic Zalo PC data directory structure:
+/// - Not a drive/filesystem root
+/// - Exists and is a directory (follows a known GreenC junction if relocated)
+/// - Contains a real `message/` subdirectory (NOT a file, NOT a symlink/reparse point)
+pub fn has_valid_zalo_data_structure(data_dir: &Path) -> bool {
+    if is_drive_or_fs_root(data_dir) {
+        return false;
+    }
+    if !data_dir.is_dir() {
+        return false;
+    }
+    let msg_dir = data_dir.join("message");
+    if is_symlink_or_reparse(&msg_dir) {
+        return false;
+    }
+    msg_dir.is_dir()
+}
+
 /// Validates a raw path string read from `config.json`:
 /// - Non-empty, no NUL/control chars
 /// - Rejects UNC (`\\server\share`, `//server/share`, `\\?\...`, `\\.\...`)
@@ -415,13 +467,27 @@ fn parse_zalo_config_safe(
                         None,
                     );
                 }
-                let is_msg = db_path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .is_some_and(|n| n.eq_ignore_ascii_case("message"));
-                if is_msg {
-                    db_path.parent().map(Path::to_path_buf)
+                if let Some(parent) = parent_if_ends_with_message(db_loc) {
+                    if is_drive_or_fs_root(&parent) {
+                        return (
+                            ZaloConfigStatus::RejectedUnsafe {
+                                reason: "db_path.location trỏ vào gốc ổ đĩa, từ chối".to_string(),
+                            },
+                            None,
+                        );
+                    }
+                    Some(parent)
                 } else {
+                    // Item 10: Accept a non-`.../message` folder ONLY when it has authentic Zalo
+                    // directory structure (`message/` subdirectory).
+                    if !has_valid_zalo_data_structure(&db_path) {
+                        return (
+                            ZaloConfigStatus::RejectedUnsafe {
+                                reason: "Thư mục trong db_path.location không có cấu trúc dữ liệu Zalo (thiếu thư mục message/)".to_string(),
+                            },
+                            None,
+                        );
+                    }
                     Some(db_path)
                 }
             }
@@ -445,6 +511,14 @@ fn parse_zalo_config_safe(
                 }
                 let zalo_data = root_path.join("Zalo Data");
                 if zalo_data.exists() {
+                    if !has_valid_zalo_data_structure(&zalo_data) {
+                        return (
+                            ZaloConfigStatus::RejectedUnsafe {
+                                reason: "Thư mục Zalo Data không có cấu trúc dữ liệu Zalo (thiếu thư mục message/)".to_string(),
+                            },
+                            None,
+                        );
+                    }
                     Some(zalo_data)
                 } else {
                     None
@@ -465,10 +539,22 @@ fn parse_zalo_config_safe(
         );
     };
 
+    if is_drive_or_fs_root(&data_dir) {
+        return (
+            ZaloConfigStatus::RejectedUnsafe {
+                reason: "Thư mục dữ liệu Zalo không được là gốc ổ đĩa".to_string(),
+            },
+            None,
+        );
+    }
+
     // Validate `data_dir` itself against unexpected symlinks/junctions.
+    // Item 6: Treat `data_dir` as an active known relocation ONLY when it is ACTUALLY
+    // a symlink/reparse point on disk (never when replaced by a real directory, e.g. after reinstall).
+    let data_is_reparse = is_symlink_or_reparse(&data_dir);
     let data_norm = normalize_cmp_path(&data_dir);
-    let is_known_reloc = known_relocated_norm.contains(&data_norm);
-    if is_symlink_or_reparse(&data_dir) && !is_known_reloc {
+    let is_known_reloc = data_is_reparse && known_relocated_norm.contains(&data_norm);
+    if data_is_reparse && !is_known_reloc {
         return (
             ZaloConfigStatus::RejectedUnsafe {
                 reason: "Thư mục Zalo Data là symlink/junction lạ".to_string(),
@@ -484,6 +570,17 @@ fn parse_zalo_config_safe(
         return (
             ZaloConfigStatus::RejectedUnsafe {
                 reason: "Thư mục message hoặc media trong Zalo Data là symlink/junction lạ"
+                    .to_string(),
+            },
+            None,
+        );
+    }
+
+    // Item 10: Whenever `data_dir` exists on disk, require authentic Zalo structure (`message/`).
+    if fs::metadata(&data_dir).is_ok() && !has_valid_zalo_data_structure(&data_dir) {
+        return (
+            ZaloConfigStatus::RejectedUnsafe {
+                reason: "Thư mục dữ liệu không có cấu trúc Zalo hợp lệ (thiếu thư mục message/)"
                     .to_string(),
             },
             None,

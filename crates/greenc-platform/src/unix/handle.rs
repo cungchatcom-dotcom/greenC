@@ -206,6 +206,46 @@ pub fn validate_private_staging_dir(
     Ok(())
 }
 
+/// Restricts a real directory (never following symlinks) to current-user-only access (`0700`).
+pub fn restrict_dir_to_current_user(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let meta = std::fs::symlink_metadata(path)?;
+    if meta.file_type().is_symlink() {
+        return Err(GreenCError::PreconditionBlocked {
+            operation: "restrict_dir_to_current_user".to_string(),
+            reason: format!("Từ chối đặt quyền trên symlink '{}'", path.display()),
+        });
+    }
+    if !meta.is_dir() {
+        return Err(GreenCError::PreconditionBlocked {
+            operation: "restrict_dir_to_current_user".to_string(),
+            reason: format!("Đường dẫn '{}' không phải thư mục thật", path.display()),
+        });
+    }
+    if !is_owned_by_current_user(path)? {
+        return Err(GreenCError::PreconditionBlocked {
+            operation: "restrict_dir_to_current_user".to_string(),
+            reason: format!(
+                "Thư mục '{}' không thuộc người dùng hiện tại",
+                path.display()
+            ),
+        });
+    }
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+    let verified = std::fs::symlink_metadata(path)?;
+    if (verified.mode() & 0o777) != 0o700 {
+        return Err(GreenCError::PreconditionBlocked {
+            operation: "restrict_dir_to_current_user".to_string(),
+            reason: format!(
+                "Không xác minh được quyền 0700 trên thư mục '{}'",
+                path.display()
+            ),
+        });
+    }
+    Ok(())
+}
+
 /// Reads a UTF-8 text file without updating its `atime` when the OS permits (`O_NOATIME` on Linux
 /// for files owned by the current UID), falling back to a regular read otherwise.
 pub fn read_to_string_noatime(path: &Path) -> std::io::Result<String> {

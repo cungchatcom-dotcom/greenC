@@ -321,7 +321,9 @@ impl RelocationStatus {
 #[serde(rename_all = "snake_case")]
 pub enum ZaloRetainedStatus {
     Retained,
+    Purging,
     Purged,
+    Restoring,
     Restored,
     Missing,
     NeedsReview,
@@ -331,7 +333,9 @@ impl ZaloRetainedStatus {
     pub const fn as_str(&self) -> &'static str {
         match self {
             Self::Retained => "retained",
+            Self::Purging => "purging",
             Self::Purged => "purged",
+            Self::Restoring => "restoring",
             Self::Restored => "restored",
             Self::Missing => "missing",
             Self::NeedsReview => "needs_review",
@@ -340,13 +344,19 @@ impl ZaloRetainedStatus {
 
     pub fn from_str_loose(s: &str) -> Self {
         match s.trim().to_ascii_lowercase().as_str() {
+            "purging" => Self::Purging,
             "purged" => Self::Purged,
+            "restoring" => Self::Restoring,
             "restored" => Self::Restored,
             "missing" => Self::Missing,
             "needs_review" => Self::NeedsReview,
             _ => Self::Retained,
         }
     }
+}
+
+const fn default_true() -> bool {
+    true
 }
 
 /// Persistent DB record tracking a temporarily retained original `Zalo Data.greenc-original.<uuid>`
@@ -360,9 +370,21 @@ pub struct ZaloRetainedOriginal {
     pub retained_path: PathBuf,
     pub size_bytes: u64,
     pub file_count: u64,
+    #[serde(default)]
+    pub message_file_count: u64,
     pub health_verified: bool,
     pub created_at: DateTime<Utc>,
     pub purge_after: DateTime<Utc>,
+    /// `false` if the stored `purge_after` string in SQLite could not be parsed; unreadable
+    /// `purge_after` values are NEVER treated as expired.
+    #[serde(default = "default_true")]
+    pub purge_after_valid: bool,
+    /// Accumulated real observed healthy seconds across bounded health checks (immune to sudden
+    /// wall-clock jumps forward).
+    #[serde(default)]
+    pub observed_healthy_secs: u64,
+    #[serde(default)]
+    pub last_observed_at: Option<DateTime<Utc>>,
     pub status: ZaloRetainedStatus,
     pub resolved_at: Option<DateTime<Utc>>,
     pub detail: Option<String>,
@@ -408,6 +430,14 @@ pub struct RelocationRecord {
     pub process_names: Vec<String>,
     pub created_at: DateTime<Utc>,
     pub detail: Option<String>,
+    /// Exact temporary `.greenc-moving.<uuid>` path created for this relocation record so crash
+    /// recovery always operates on the matching directory instead of guessing.
+    #[serde(default)]
+    pub moving_path: Option<PathBuf>,
+    /// `true` if `target_path` was manually specified/repaired by the user via `repair_junction_target`.
+    /// Undo MUST NEVER delete a user-specified target directory.
+    #[serde(default)]
+    pub target_user_repaired: bool,
 }
 
 // ==========================================

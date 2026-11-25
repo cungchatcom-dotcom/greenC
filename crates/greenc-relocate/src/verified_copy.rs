@@ -1,6 +1,6 @@
 //! Streaming tree copy with inline SHA-256 verification, `sync_all` durability,
 //! timestamp preservation, long-path (`> 260` chars) support, fail-closed error handling,
-//! and cooperative cancellation (Tasks T042, GC-ZALO2).
+//! and cooperative cancellation (Tasks T042, ).
 
 use greenc_core::error::{GreenCError, Result};
 use greenc_core::task::TaskControl;

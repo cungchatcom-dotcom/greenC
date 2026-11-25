@@ -4,6 +4,7 @@ use crate::candidate::{CandidateQualificationEngine, RelocationCandidate};
 use crate::verified_copy::{
     remove_dir_all_safe, to_extended_io_path, verified_copy_tree, verified_copy_tree_strict,
 };
+use crate::zalo_move::ZaloRelocator;
 use chrono::Utc;
 use greenc_core::config::is_windows_appdata_app_dir;
 use greenc_core::error::{GreenCError, Result};
@@ -11,6 +12,7 @@ use greenc_core::models::{
     RelocationHealthStatus, RelocationRecord, RelocationStatus, RelocationStrategyKind,
 };
 use greenc_core::task::TaskControl;
+use greenc_platform::app_lifecycle::AppLifecycleApi;
 use greenc_platform::breakaway::{
     current_package_full_name, format_breakaway_unavailable_guidance, BreakawayHelperClient,
     NativeBreakawayHelperClient, PrivateBreakawayJobDir, RestoreHelperRequest,
@@ -18,8 +20,10 @@ use greenc_platform::breakaway::{
 };
 use greenc_platform::handle::ensure_not_protected_system_path;
 use greenc_platform::traits::{
-    ProcessServiceProbe, ReparsePointApi, ShellFolderApi, Win32VolumeApi,
+    FileLockProbe, NativeFileLockProbe, ProcessServiceProbe, ReparsePointApi, ShellFolderApi,
+    Win32VolumeApi,
 };
+use greenc_platform::RelocationLock;
 use greenc_storage::db::GreenCDb;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -154,6 +158,7 @@ impl TransactionalMover {
             .unwrap_or_else(|| candidate.default_target_path.clone());
 
         Self::preflight(candidate)?;
+        let _reloc_lock = RelocationLock::acquire_for_db(db.path())?;
 
         // 1. Pre-qualification guards
         CandidateQualificationEngine::check_target_volume_eligible(target_drive, volume_api)?;
@@ -192,7 +197,19 @@ impl TransactionalMover {
 
         let copy_stats = verified_copy_tree(&source_path, &target_path, ctrl, on_progress)?;
 
-        // 3. Phase 2: Persist state as `Moving` before touching source filesystem
+        let uuid_suffix = uuid::Uuid::new_v4().to_string();
+        let source_name = source_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("folder");
+        let source_parent = source_path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("C:\\"));
+        let moving_dir_name = format!("{}.greenc-moving.{}", source_name, uuid_suffix);
+        let moving_path = source_parent.join(&moving_dir_name);
+
+        // 3. Phase 2: Persist state as `Moving` (including exact `moving_path`) before touching source filesystem
         let mut record = RelocationRecord {
             id: None,
             app_id: candidate.id.clone(),
@@ -206,22 +223,12 @@ impl TransactionalMover {
             process_names: candidate.locked_processes.clone(),
             created_at: Utc::now(),
             detail: None,
+            moving_path: Some(moving_path.clone()),
+            target_user_repaired: false,
         };
 
-        let rec_id = db.save_relocation(&record)?;
+        let rec_id = db.save_relocation_durable(&record)?;
         record.id = Some(rec_id);
-
-        let uuid_suffix = uuid::Uuid::new_v4().to_string();
-        let source_name = source_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("folder");
-        let source_parent = source_path
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| PathBuf::from("C:\\"));
-        let moving_dir_name = format!("{}.greenc-moving.{}", source_name, uuid_suffix);
-        let moving_path = source_parent.join(&moving_dir_name);
 
         // Atomic rename of source to .greenc-moving.<uuid>
         if let Err(rename_err) = fs::rename(&source_path, &moving_path) {
@@ -295,7 +302,7 @@ impl TransactionalMover {
     }
 
     /// 1-Click Undo: Copies data back to source volume, unlinks junction, restores directory,
-    /// and removes data from secondary disk.
+    /// and removes data from secondary disk (or routes Zalo through its dedicated safe undo path).
     pub fn undo_relocation(
         record_id: i64,
         db: &GreenCDb,
@@ -305,16 +312,18 @@ impl TransactionalMover {
         proc_probe: &dyn ProcessServiceProbe,
         ctrl: &TaskControl,
     ) -> Result<RelocationRecord> {
-        let client = NativeBreakawayHelperClient;
-        Self::undo_relocation_with_breakaway(
+        Self::undo_relocation_impl(
             record_id,
             db,
             volume_api,
             reparse_api,
             shell_api,
             proc_probe,
+            &NativeFileLockProbe,
+            None,
             ctrl,
-            &client,
+            None,
+            &NativeBreakawayHelperClient,
         )
     }
 
@@ -330,6 +339,67 @@ impl TransactionalMover {
         ctrl: &TaskControl,
         breakaway_client: &dyn BreakawayHelperClient,
     ) -> Result<RelocationRecord> {
+        Self::undo_relocation_impl(
+            record_id,
+            db,
+            volume_api,
+            reparse_api,
+            shell_api,
+            proc_probe,
+            &NativeFileLockProbe,
+            None,
+            ctrl,
+            None,
+            breakaway_client,
+        )
+    }
+
+    /// 1-Click Undo with explicit lock probe, optional lifecycle API (for graceful Zalo close/reopen),
+    /// and optional fault-injection hook invoked immediately before swapping the junction.
+    #[allow(clippy::too_many_arguments)]
+    pub fn undo_relocation_with_deps(
+        record_id: i64,
+        db: &GreenCDb,
+        volume_api: &dyn Win32VolumeApi,
+        reparse_api: &dyn ReparsePointApi,
+        shell_api: &dyn ShellFolderApi,
+        proc_probe: &dyn ProcessServiceProbe,
+        lock_probe: &dyn FileLockProbe,
+        lifecycle: Option<&dyn AppLifecycleApi>,
+        ctrl: &TaskControl,
+        before_swap_hook: Option<&dyn Fn()>,
+    ) -> Result<RelocationRecord> {
+        Self::undo_relocation_impl(
+            record_id,
+            db,
+            volume_api,
+            reparse_api,
+            shell_api,
+            proc_probe,
+            lock_probe,
+            lifecycle,
+            ctrl,
+            before_swap_hook,
+            &NativeBreakawayHelperClient,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn undo_relocation_impl(
+        record_id: i64,
+        db: &GreenCDb,
+        volume_api: &dyn Win32VolumeApi,
+        reparse_api: &dyn ReparsePointApi,
+        shell_api: &dyn ShellFolderApi,
+        proc_probe: &dyn ProcessServiceProbe,
+        lock_probe: &dyn FileLockProbe,
+        lifecycle: Option<&dyn AppLifecycleApi>,
+        ctrl: &TaskControl,
+        before_swap_hook: Option<&dyn Fn()>,
+        breakaway_client: &dyn BreakawayHelperClient,
+    ) -> Result<RelocationRecord> {
+        let _reloc_lock = RelocationLock::acquire_for_db(db.path())?;
+
         let records = db.list_relocations(None)?;
         let mut record = records
             .into_iter()
@@ -349,12 +419,32 @@ impl TransactionalMover {
             });
         }
 
+        let source_drive = extract_drive_letter(&record.source_path).unwrap_or('C');
+
+        // Dedicated safe Zalo Undo path: strict copy, full verification, pre-swap re-check of
+        // Zalo closed + target size/mtime unchanged, and 24h target retention instead of delete.
+        if record.app_id.eq_ignore_ascii_case("zalo")
+            && record.strategy == RelocationStrategyKind::Junction
+        {
+            return ZaloRelocator::undo_zalo_relocation_locked(
+                &mut record,
+                source_drive,
+                db,
+                volume_api,
+                reparse_api,
+                proc_probe,
+                lock_probe,
+                lifecycle,
+                ctrl,
+                before_swap_hook,
+            );
+        }
+
         // Verify processes are not running
         CandidateQualificationEngine::check_process_running(&record.process_names, proc_probe)?;
 
         // Validate free space on the destination of the undo (the source volume)
         // Enforces `free_bytes >= record.size_bytes + 512 MiB`
-        let source_drive = extract_drive_letter(&record.source_path).unwrap_or('C');
         CandidateQualificationEngine::check_free_space_reserve(
             source_drive,
             record.size_bytes,
@@ -455,7 +545,9 @@ impl TransactionalMover {
                     }
 
                     // Only delete secondary-disk copy AFTER outside-package verification passed!
-                    remove_dir_all_safe(&target_path);
+                    if !record.target_user_repaired {
+                        remove_dir_all_safe(&target_path);
+                    }
                     record.status = RelocationStatus::Undone;
                     record.detail = Some(
                         "Hoàn tác di chuyển về AppData thật thành công (đã xác minh ngoài gói MSIX)"
@@ -469,8 +561,13 @@ impl TransactionalMover {
                     .parent()
                     .map(|p| p.to_path_buf())
                     .unwrap_or_else(|| PathBuf::from("C:\\"));
+                let source_name = source_path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("folder");
                 let uuid_suffix = uuid::Uuid::new_v4().to_string();
-                let restore_tmp = source_parent.join(format!("restoring.{}", uuid_suffix));
+                let restore_tmp =
+                    source_parent.join(format!("{source_name}.greenc-restoring.{uuid_suffix}"));
 
                 // Step 1: Copy from target back to temporary restoring folder on source volume
                 tracing::info!(
@@ -479,25 +576,99 @@ impl TransactionalMover {
                     restore_tmp.display()
                 );
 
-                verified_copy_tree(&target_path, &restore_tmp, ctrl, |_, _| {})?;
-
-                // Step 2: Delete junction at source
-                if reparse_api.is_reparse_point(&source_path) {
-                    reparse_api.delete_junction(&source_path)?;
-                } else if source_path.exists() {
-                    let _ = fs::remove_dir(&source_path);
+                if let Err(copy_err) =
+                    verified_copy_tree(&target_path, &restore_tmp, ctrl, |_, _| {})
+                {
+                    remove_dir_all_safe(&restore_tmp);
+                    return Err(copy_err);
                 }
 
-                // Step 3: Rename restore_tmp to source_path
-                fs::rename(&restore_tmp, &source_path)?;
+                // Persist durable intermediate state BEFORE touching junction / renaming!
+                let prev_status = record.status;
+                let prev_health = record.health_status;
+                let prev_detail = record.detail.clone();
+                record.status = RelocationStatus::Moving;
+                record.moving_path = Some(restore_tmp.clone());
+                record.detail = Some("Đang hoàn tác dữ liệu về vị trí ban đầu...".to_string());
+                db.save_relocation_durable(&record)?;
 
-                // Step 4: Remove files from secondary disk
-                remove_dir_all_safe(&target_path);
+                // Step 2: Delete junction at source; on failure clean temp and revert to Done.
+                let was_junction = reparse_api.is_reparse_point(&source_path);
+                let vacate_res = if was_junction {
+                    reparse_api.delete_junction(&source_path)
+                } else if source_path.exists() {
+                    fs::remove_dir(&source_path).map_err(GreenCError::Io)
+                } else {
+                    Ok(())
+                };
+                if let Err(vacate_err) = vacate_res {
+                    remove_dir_all_safe(&restore_tmp);
+                    record.status = prev_status;
+                    record.health_status = prev_health;
+                    record.moving_path = None;
+                    record.detail = prev_detail;
+                    let _ = db.save_relocation_durable(&record);
+                    return Err(vacate_err);
+                }
+
+                // Step 3: Rename restore_tmp to source_path; on failure rebuild junction and
+                // revert to Done (or NeedsReview + LinkBroken if junction rebuild fails).
+                if let Err(rename_err) = fs::rename(&restore_tmp, &source_path) {
+                    let rebuilt = if was_junction {
+                        reparse_api
+                            .create_junction(&source_path, &target_path)
+                            .is_ok()
+                    } else {
+                        false
+                    };
+                    if rebuilt {
+                        remove_dir_all_safe(&restore_tmp);
+                        record.status = prev_status;
+                        record.health_status = prev_health;
+                        record.moving_path = None;
+                        record.detail = prev_detail;
+                    } else {
+                        record.status = RelocationStatus::NeedsReview;
+                        record.health_status = RelocationHealthStatus::LinkBroken;
+                        record.moving_path = Some(restore_tmp);
+                        record.detail = Some(format!(
+                            "Hoàn tác thất bại ({rename_err}) và không dựng lại được liên kết tới {} — cần kiểm tra.",
+                            target_path.display()
+                        ));
+                    }
+                    let _ = db.save_relocation_durable(&record);
+                    return Err(GreenCError::Io(rename_err));
+                }
+
+                // Step 4: Remove files from secondary disk — NEVER delete a user-repaired target,
+                // and NEVER swallow deletion errors!
+                let undo_detail = if record.target_user_repaired {
+                    format!(
+                        "Hoàn tác di chuyển thành công về vị trí ban đầu. GreenC giữ nguyên thư mục đích {} do người dùng chỉ định (không tự xoá).",
+                        target_path.display()
+                    )
+                } else {
+                    if target_path.exists() {
+                        if let Err(del_err) = fs::remove_dir_all(to_extended_io_path(&target_path))
+                        {
+                            record.status = RelocationStatus::NeedsReview;
+                            record.detail = Some(format!(
+                                "Đã hoàn trả dữ liệu về {} nhưng không xoá được thư mục đích {}: {del_err}",
+                                source_path.display(),
+                                target_path.display()
+                            ));
+                            let _ = db.save_relocation_durable(&record);
+                            return Err(GreenCError::Io(del_err));
+                        }
+                    }
+                    "Hoàn tác di chuyển thành công về vị trí ban đầu".to_string()
+                };
 
                 // Step 5: Mark record Undone
                 record.status = RelocationStatus::Undone;
-                record.detail = Some("Hoàn tác di chuyển thành công về vị trí ban đầu".to_string());
-                db.save_relocation(&record)?;
+                record.moving_path = None;
+                record.detail = Some(undo_detail);
+                db.save_relocation_durable(&record)?;
 
                 Ok(record)
             }
@@ -527,10 +698,22 @@ impl TransactionalMover {
                     g => g,
                 };
 
-                // Move files back
+                // Move files back (never delete a user-repaired target)
                 if target_path.exists() {
                     verified_copy_tree(&target_path, &source_path, ctrl, |_, _| {})?;
-                    remove_dir_all_safe(&target_path);
+                    if !record.target_user_repaired {
+                        if let Err(del_err) = fs::remove_dir_all(to_extended_io_path(&target_path))
+                        {
+                            record.status = RelocationStatus::NeedsReview;
+                            record.detail = Some(format!(
+                                "Đã chép lại Known Folder về {} nhưng không xoá được thư mục đích {}: {del_err}",
+                                source_path.display(),
+                                target_path.display()
+                            ));
+                            let _ = db.save_relocation(&record);
+                            return Err(GreenCError::Io(del_err));
+                        }
+                    }
                 }
 
                 shell_api.set_known_folder(guid, &source_path)?;

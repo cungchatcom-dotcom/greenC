@@ -472,6 +472,7 @@ fn execute_inner(cli: Cli, db_path: &Path, ctrl: &Arc<TaskControl>) -> Result<se
 
     match cli.command {
         Commands::Status { drive } => {
+            let _ = RecoveryService::recover_interrupted(&db, &NativeReparsePointApi);
             let drives = list_drives_native()?;
             let recommended =
                 recommend_drive_info(&drives).map(|d| d.root.to_string_lossy().to_string());
@@ -546,6 +547,7 @@ fn execute_inner(cli: Cli, db_path: &Path, ctrl: &Arc<TaskControl>) -> Result<se
             days,
             space_lens,
         } => {
+            let _ = RecoveryService::recover_interrupted(&db, &NativeReparsePointApi);
             check_precondition_arg(&drive)?;
             let drive_norm = DiskTracker::normalize_drive(&drive);
             let tracker = DiskTracker::new(Arc::clone(&db));
@@ -596,6 +598,7 @@ fn execute_inner(cli: Cli, db_path: &Path, ctrl: &Arc<TaskControl>) -> Result<se
         }
 
         Commands::Analyze { include_orphans } => {
+            let _ = RecoveryService::recover_interrupted(&db, &NativeReparsePointApi);
             let lock_probe = NativeFileLockProbe;
             let mut profile_ids = vec![
                 "windows_temp",
@@ -933,6 +936,7 @@ fn execute_inner(cli: Cli, db_path: &Path, ctrl: &Arc<TaskControl>) -> Result<se
 
         Commands::Relocate { action } => match action {
             RelocateCommands::List => {
+                let _ = RecoveryService::recover_interrupted(&db, &NativeReparsePointApi);
                 let vol_api = NativeWin32VolumeApi;
                 let shell_api = NativeShellFolderApi;
                 let lock_probe = NativeFileLockProbe;
@@ -1041,47 +1045,21 @@ fn execute_inner(cli: Cli, db_path: &Path, ctrl: &Arc<TaskControl>) -> Result<se
                 let reparse_api = NativeReparsePointApi;
                 let shell_api = NativeShellFolderApi;
                 let proc_probe = NativeProcessServiceProbe;
+                let lock_probe = NativeFileLockProbe;
                 let lifecycle = NativeAppLifecycleApi;
 
-                let existing_zalo = db.list_relocations(None).ok().and_then(|list| {
-                    list.into_iter()
-                        .find(|r| r.id == Some(record_id) && r.app_id == "zalo")
-                });
-
-                let mut shutdown_session = None;
-                if let Some(ref zrec) = existing_zalo {
-                    if lifecycle.has_visible_window(&["ZaloCall.exe"]) {
-                        return Err(GreenCError::PreconditionBlocked {
-                            operation: "relocate undo".to_string(),
-                            reason: greenc_platform::app_lifecycle::ZALO_ACTIVE_CALL_MESSAGE
-                                .to_string(),
-                        });
-                    }
-                    let session = lifecycle.graceful_shutdown(
-                        &[zrec.source_path.clone(), zrec.target_path.clone()],
-                        ZALO_PROCESS_NAMES,
-                        greenc_platform::app_lifecycle::DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT,
-                    )?;
-                    shutdown_session = Some(session);
-                }
-
-                let undo_res = TransactionalMover::undo_relocation(
+                let rec = TransactionalMover::undo_relocation_with_deps(
                     record_id,
                     &db,
                     &vol_api,
                     &reparse_api,
                     &shell_api,
                     &proc_probe,
+                    &lock_probe,
+                    Some(&lifecycle),
                     ctrl,
-                );
-
-                if let Some(mut session) = shutdown_session {
-                    if !session.captured_exes.is_empty() {
-                        let _ = lifecycle.restart_app(&mut session);
-                    }
-                }
-
-                let rec = undo_res?;
+                    None,
+                )?;
                 Ok(json!({
                     "record_id": rec.id.unwrap_or(record_id),
                     "status": rec.status.as_str(),
@@ -1704,7 +1682,13 @@ fn execute_inner(cli: Cli, db_path: &Path, ctrl: &Arc<TaskControl>) -> Result<se
                 .list_relocations(Some("done"))
                 .unwrap_or_default()
                 .into_iter()
-                .filter(|r| r.app_id == "zalo")
+                .filter(|r| {
+                    r.app_id == "zalo"
+                        && greenc_platform::traits::ReparsePointApi::is_reparse_point(
+                            &reparse_api,
+                            &r.source_path,
+                        )
+                })
                 .map(|r| r.source_path)
                 .collect();
 
@@ -1718,6 +1702,7 @@ fn execute_inner(cli: Cli, db_path: &Path, ctrl: &Arc<TaskControl>) -> Result<se
 
             match action {
                 ZaloCommands::Status => {
+                    let _ = RecoveryService::recover_interrupted(&db, &reparse_api);
                     let auto_supported = is_zalo_auto_move_supported();
                     let unsupported_reason = if auto_supported {
                         None

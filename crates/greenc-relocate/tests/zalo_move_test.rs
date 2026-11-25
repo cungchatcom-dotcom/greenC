@@ -134,6 +134,11 @@ fn test_zalo_move_happy_path_write_probe_reopen_config_untouched_and_undo() {
     let proc_probe = MockProcessServiceProbe::new();
     let lifecycle = MockAppLifecycleApi::new();
     lifecycle.add_running_exe(exe_path.clone());
+    let zd_hook = zalo_data.clone();
+    lifecycle.set_on_restart_hook(move || {
+        // Simulate real Zalo writing to target through the junction after reopen
+        let _ = fs::write(zd_hook.join("message/zalo.db-shm"), b"ZALO-SHM-LIVE");
+    });
 
     let target_dir = tmp.path().join("D_Drive/GreenC/Relocated/zalo");
     let ctrl = TaskControl::new();
@@ -569,6 +574,8 @@ fn test_zalo_power_loss_recovery_from_moving_state() {
         process_names: vec!["Zalo.exe".to_string()],
         created_at: Utc::now(),
         detail: None,
+        moving_path: None,
+        target_user_repaired: false,
     })
     .unwrap();
 

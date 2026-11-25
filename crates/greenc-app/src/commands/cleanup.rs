@@ -94,6 +94,14 @@ pub async fn scan_cleanup_candidates(
     let state_inner = state.inner().clone();
     let task_id_worker = task_id.clone();
     let result = tokio::task::spawn_blocking(move || {
+        if let Ok(recs) = greenc_relocate::recovery::RecoveryService::recover_interrupted(
+            &state_inner.db,
+            &greenc_platform::traits::NativeReparsePointApi,
+        ) {
+            if !recs.is_empty() {
+                state_inner.push_startup_recoveries(recs);
+            }
+        }
         let mut candidate_dtos = Vec::new();
         let total_profiles = active_profiles.len();
         let lock_probe = NativeFileLockProbe;

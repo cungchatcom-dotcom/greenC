@@ -3,12 +3,14 @@
 use crate::candidate::{CandidateQualificationEngine, CandidateScanner};
 use crate::verified_copy::{remove_dir_all_safe, verified_copy_tree};
 use chrono::Utc;
-use greenc_core::error::Result;
+use greenc_core::error::{GreenCError, Result};
 use greenc_core::models::{
     RelocationHealthStatus, RelocationRecord, RelocationStatus, RelocationStrategyKind,
 };
 use greenc_core::task::TaskControl;
-use greenc_platform::traits::{ShellFolderApi, Win32VolumeApi};
+use greenc_platform::traits::{
+    NativeReparsePointApi, ReparsePointApi, ShellFolderApi, Win32VolumeApi,
+};
 use greenc_platform::{
     FOLDERID_DESKTOP, FOLDERID_DOCUMENTS, FOLDERID_DOWNLOADS, FOLDERID_MUSIC, FOLDERID_PICTURES,
     FOLDERID_VIDEOS,
@@ -16,7 +18,85 @@ use greenc_platform::{
 use greenc_storage::db::GreenCDb;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+fn normalized_path_segments(path: &Path) -> Vec<String> {
+    let raw = path.to_string_lossy();
+    let stripped = raw
+        .strip_prefix(r"\\?\UNC\")
+        .or_else(|| raw.strip_prefix(r"\\?\"))
+        .unwrap_or(&raw);
+    stripped
+        .split(['\\', '/'])
+        .filter(|s| !s.is_empty() && *s != ".")
+        .map(|s| s.to_ascii_lowercase())
+        .collect()
+}
+
+fn path_is_equal_or_inside(candidate: &Path, root: &Path) -> bool {
+    let c_segs = normalized_path_segments(candidate);
+    let r_segs = normalized_path_segments(root);
+    !r_segs.is_empty() && c_segs.len() >= r_segs.len() && c_segs[..r_segs.len()] == r_segs[..]
+}
+
+/// Checks whether `root` equals or contains any Zalo junction (either tracked in `db` or
+/// discovered directly on disk via reparse-point inspection without following symlinks).
+fn find_zalo_junction_in_tree(root: &Path, db: &GreenCDb) -> Option<PathBuf> {
+    // 1. Check active Zalo relocations recorded in DB.
+    if let Ok(relocs) = db.list_relocations(None) {
+        for rec in relocs {
+            if rec.app_id.eq_ignore_ascii_case("zalo")
+                && matches!(
+                    rec.status,
+                    RelocationStatus::Done
+                        | RelocationStatus::NeedsReview
+                        | RelocationStatus::Moving
+                )
+                && path_is_equal_or_inside(&rec.source_path, root)
+            {
+                return Some(rec.source_path);
+            }
+        }
+    }
+
+    // 2. Walk `root` without following symlinks/reparse points to catch untracked Zalo junctions.
+    let reparse = NativeReparsePointApi;
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(meta) = fs::symlink_metadata(&path) else {
+                continue;
+            };
+            let is_link = meta.file_type().is_symlink() || reparse.is_reparse_point(&path);
+            if is_link {
+                let name_lower = entry.file_name().to_string_lossy().to_ascii_lowercase();
+                let target_is_zalo = reparse
+                    .get_junction_target(&path)
+                    .or_else(|_| fs::read_link(&path).map_err(GreenCError::Io))
+                    .is_ok_and(|tgt| {
+                        greenc_scanner::zalo::has_valid_zalo_data_structure(&tgt)
+                            || tgt.to_string_lossy().to_ascii_lowercase().contains("zalo")
+                    });
+                if name_lower.contains("zalo")
+                    || target_is_zalo
+                    || greenc_scanner::zalo::has_valid_zalo_data_structure(&path)
+                {
+                    return Some(path);
+                }
+                // Never recurse into symlinks/junctions.
+                continue;
+            }
+            if meta.is_dir() {
+                stack.push(path);
+            }
+        }
+    }
+    None
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KnownFolderInfo {
@@ -107,6 +187,20 @@ impl KnownFolderService {
         let current_path = shell_api.get_known_folder(guid)?;
         CandidateQualificationEngine::check_onedrive(&current_path, shell_api)?;
 
+        // Item 12: Refuse relocating a Known Folder whose tree contains a Zalo junction
+        // (tracked or untracked) so `verified_copy_tree` + `remove_dir_all_safe` can never break
+        // or orphan relocated Zalo chat data.
+        if let Some(zalo_link) = find_zalo_junction_in_tree(&current_path, db) {
+            return Err(GreenCError::PreconditionBlocked {
+                operation: "relocate_known_folder".to_string(),
+                reason: format!(
+                    "Thư mục '{}' đang chứa liên kết dữ liệu Zalo ({}); GreenC từ chối di chuyển thư mục này để bảo vệ dữ liệu chat Zalo.",
+                    current_path.display(),
+                    zalo_link.display()
+                ),
+            });
+        }
+
         let target_path = custom_target_path.unwrap_or_else(|| {
             let folder_name = current_path
                 .file_name()
@@ -163,6 +257,8 @@ impl KnownFolderService {
             process_names: Vec::new(),
             created_at: Utc::now(),
             detail: Some("Chuyển thư mục Windows Shell thành công".to_string()),
+            moving_path: None,
+            target_user_repaired: false,
         };
 
         let id = db.save_relocation(&record)?;

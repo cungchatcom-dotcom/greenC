@@ -46,6 +46,25 @@ pub fn run() {
     if let Err(err) = greenc_storage::vault_repair::repair_vault_paths_default(&app_state.db) {
         tracing::warn!("Vault path repair skipped: {err}");
     }
+    // Run interrupted-relocation crash recovery once at startup (independent of visiting the
+    // Relocate page). `recover_interrupted` uses the machine-wide `RelocationLock`, so any
+    // live relocation running in CLI or another process is never disturbed.
+    match greenc_relocate::recovery::RecoveryService::recover_interrupted(
+        &app_state.db,
+        &greenc_platform::traits::NativeReparsePointApi,
+    ) {
+        Ok(recovered) if !recovered.is_empty() => {
+            tracing::warn!(
+                "Startup crash recovery processed {} interrupted relocation(s)",
+                recovered.len()
+            );
+            app_state.push_startup_recoveries(recovered);
+        }
+        Ok(_) => {}
+        Err(err) => {
+            tracing::warn!("Startup relocation recovery skipped: {err}");
+        }
+    }
 
     let start_minimized = std::env::args().any(|a| a == "--minimized" || a == "--autostart");
 
@@ -92,6 +111,8 @@ pub fn run() {
             commands::zalo::move_zalo_data,
             commands::zalo::purge_zalo_retained_original,
             commands::zalo::restore_zalo_retained_original,
+            commands::zalo::restore_zalo_safety_copy,
+            commands::zalo::delete_zalo_safety_copy,
             // In-Place Compaction (User Story 4)
             commands::compact::scan_compaction_candidates,
             commands::compact::compact_files,

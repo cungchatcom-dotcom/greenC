@@ -138,6 +138,8 @@ fn test_relocation_and_compaction_history_persistence() {
         process_names: vec!["test.exe".to_string()],
         created_at: chrono::Utc::now(),
         detail: Some("Test detail".to_string()),
+        moving_path: None,
+        target_user_repaired: false,
     };
     let rec_id = state.db.save_relocation(&rel_rec).unwrap();
     assert!(rec_id > 0);

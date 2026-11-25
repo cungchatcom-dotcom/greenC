@@ -2,7 +2,7 @@ use greenc_core::error::{GreenCError, Result};
 use rusqlite::Connection;
 use tracing::info;
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 5;
+pub const CURRENT_SCHEMA_VERSION: u32 = 8;
 
 pub const SCHEMA_V2_FULL_DDL: &str = "
 CREATE TABLE IF NOT EXISTS app_settings (
@@ -132,7 +132,9 @@ CREATE TABLE IF NOT EXISTS relocations (
     health_status TEXT NOT NULL DEFAULT 'healthy',
     process_names TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
-    detail TEXT NOT NULL DEFAULT ''
+    detail TEXT NOT NULL DEFAULT '',
+    moving_path TEXT NOT NULL DEFAULT '',
+    target_user_repaired INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS compaction_records (
@@ -156,9 +158,12 @@ CREATE TABLE IF NOT EXISTS zalo_retained_originals (
     retained_path TEXT NOT NULL UNIQUE,
     size_bytes INTEGER NOT NULL DEFAULT 0,
     file_count INTEGER NOT NULL DEFAULT 0,
+    message_file_count INTEGER NOT NULL DEFAULT 0,
     health_verified INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     purge_after TEXT NOT NULL,
+    observed_healthy_secs INTEGER NOT NULL DEFAULT 0,
+    last_observed_at TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT 'retained',
     resolved_at TEXT NOT NULL DEFAULT '',
     detail TEXT NOT NULL DEFAULT ''
@@ -273,6 +278,47 @@ pub fn run_migrations(conn: &mut Connection) -> Result<u32> {
         if !column_exists(&tx, "drive_quotas", "regenerable_cache_mode")? {
             tx.execute(
                 "ALTER TABLE drive_quotas ADD COLUMN regenerable_cache_mode TEXT NOT NULL DEFAULT 'vault';",
+                [],
+            )
+            .map_err(|e| GreenCError::Sqlite(e.to_string()))?;
+        }
+
+        // 4c. Upgrade relocations with exact moving_path (Schema v6)
+        if !column_exists(&tx, "relocations", "moving_path")? {
+            tx.execute(
+                "ALTER TABLE relocations ADD COLUMN moving_path TEXT NOT NULL DEFAULT '';",
+                [],
+            )
+            .map_err(|e| GreenCError::Sqlite(e.to_string()))?;
+        }
+
+        // 4c-bis. Upgrade relocations with target_user_repaired (Schema v8)
+        if !column_exists(&tx, "relocations", "target_user_repaired")? {
+            tx.execute(
+                "ALTER TABLE relocations ADD COLUMN target_user_repaired INTEGER NOT NULL DEFAULT 0;",
+                [],
+            )
+            .map_err(|e| GreenCError::Sqlite(e.to_string()))?;
+        }
+
+        // 4d. Upgrade zalo_retained_originals with message_file_count & real observation counters (Schema v7)
+        if !column_exists(&tx, "zalo_retained_originals", "message_file_count")? {
+            tx.execute(
+                "ALTER TABLE zalo_retained_originals ADD COLUMN message_file_count INTEGER NOT NULL DEFAULT 0;",
+                [],
+            )
+            .map_err(|e| GreenCError::Sqlite(e.to_string()))?;
+        }
+        if !column_exists(&tx, "zalo_retained_originals", "observed_healthy_secs")? {
+            tx.execute(
+                "ALTER TABLE zalo_retained_originals ADD COLUMN observed_healthy_secs INTEGER NOT NULL DEFAULT 0;",
+                [],
+            )
+            .map_err(|e| GreenCError::Sqlite(e.to_string()))?;
+        }
+        if !column_exists(&tx, "zalo_retained_originals", "last_observed_at")? {
+            tx.execute(
+                "ALTER TABLE zalo_retained_originals ADD COLUMN last_observed_at TEXT NOT NULL DEFAULT '';",
                 [],
             )
             .map_err(|e| GreenCError::Sqlite(e.to_string()))?;

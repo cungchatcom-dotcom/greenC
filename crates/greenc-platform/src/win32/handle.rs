@@ -397,3 +397,257 @@ pub fn validate_private_staging_dir(
 ) -> std::result::Result<(), String> {
     is_trusted_user_dir(path, expected_uid)
 }
+
+/// Restricts a real directory (never following symlinks/junctions) so its protected DACL grants
+/// inherited full control (`OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE`, `FILE_ALL_ACCESS`) ONLY
+/// to the current Windows user SID, `NT AUTHORITY\SYSTEM`, and `BUILTIN\Administrators`, stripping
+/// inherited `Users` / `Authenticated Users` / `Everyone` entries from non-system volumes such as
+/// `D:\`.
+pub fn restrict_dir_to_current_user(path: &Path) -> Result<()> {
+    use crate::acl_policy::{
+        compute_protected_dacl_size, FILE_ALL_ACCESS_MASK, INHERIT_ALL_ACE_FLAGS,
+        REQUIRED_EXTRA_WELL_KNOWN_SIDS, RESTRICT_DIR_HANDLE_ACCESS, SECURITY_MAX_SID_SIZE,
+    };
+    use std::os::windows::fs::MetadataExt;
+    use windows::Win32::Foundation::GetLastError;
+
+    const FILE_ATTRIBUTE_REPARSE_POINT_MASK: u32 = 0x0000_0400;
+    const SE_FILE_OBJECT: u32 = 1;
+    const DACL_SECURITY_INFO: u32 = 0x0000_0004;
+    const PROTECTED_DACL_SECURITY_INFO: u32 = 0x8000_0000;
+    const ACL_REVISION: u32 = 2;
+
+    #[link(name = "advapi32")]
+    extern "system" {
+        fn CreateWellKnownSid(
+            well_known_sid_type: u32,
+            domain_sid: PSID,
+            p_sid: *mut std::ffi::c_void,
+            cb_sid: *mut u32,
+        ) -> i32;
+        fn GetLengthSid(p_sid: PSID) -> u32;
+        fn InitializeAcl(
+            p_acl: *mut std::ffi::c_void,
+            n_acl_length: u32,
+            dw_acl_revision: u32,
+        ) -> i32;
+        fn AddAccessAllowedAceEx(
+            p_acl: *mut std::ffi::c_void,
+            dw_ace_revision: u32,
+            ace_flags: u32,
+            access_mask: u32,
+            p_sid: PSID,
+        ) -> i32;
+        fn SetSecurityInfo(
+            handle: HANDLE,
+            object_type: u32,
+            security_info: u32,
+            psid_owner: PSID,
+            psid_group: PSID,
+            p_dacl: *const std::ffi::c_void,
+            p_sacl: *const std::ffi::c_void,
+        ) -> u32;
+    }
+
+    let meta = std::fs::symlink_metadata(path)?;
+    if meta.file_type().is_symlink()
+        || (meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT_MASK) != 0
+    {
+        return Err(GreenCError::PreconditionBlocked {
+            operation: "restrict_dir_to_current_user".to_string(),
+            reason: format!("Từ chối đặt ACL trên symlink/junction '{}'", path.display()),
+        });
+    }
+    if !meta.is_dir() {
+        return Err(GreenCError::PreconditionBlocked {
+            operation: "restrict_dir_to_current_user".to_string(),
+            reason: format!("Đường dẫn '{}' không phải thư mục thật", path.display()),
+        });
+    }
+
+    // 1. Obtain the current interactive user's SID from the process token (`TokenUser`).
+    let mut token = HANDLE::default();
+    // SAFETY: `GetCurrentProcess()` is a pseudo-handle; `token` is wrapped in `OwnedHandle`.
+    unsafe {
+        OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).map_err(|e| {
+            GreenCError::Win32 {
+                code: (e.code().0 as u32) & 0xFFFF,
+                message: format!("OpenProcessToken failed: {e}"),
+            }
+        })?;
+    }
+    let token_guard = OwnedHandle::new(token).ok_or_else(|| GreenCError::Win32 {
+        code: 6,
+        message: "Invalid process token handle".to_string(),
+    })?;
+
+    let mut token_len = 0u32;
+    // SAFETY: Queries required buffer size for `TokenUser`.
+    let _ = unsafe { GetTokenInformation(token_guard.raw(), TokenUser, None, 0, &mut token_len) };
+    if token_len == 0 {
+        return Err(GreenCError::Win32 {
+            code: 0,
+            message: "GetTokenInformation(TokenUser) returned zero length".to_string(),
+        });
+    }
+    let mut token_buf = vec![0u8; token_len as usize];
+    // SAFETY: `token_buf` has exact byte capacity `token_len` for `TOKEN_USER`.
+    unsafe {
+        GetTokenInformation(
+            token_guard.raw(),
+            TokenUser,
+            Some(token_buf.as_mut_ptr().cast()),
+            token_len,
+            &mut token_len,
+        )
+        .map_err(|e| GreenCError::Win32 {
+            code: (e.code().0 as u32) & 0xFFFF,
+            message: format!("GetTokenInformation(TokenUser) failed: {e}"),
+        })?;
+    }
+    // SAFETY: `token_buf` holds a valid `TOKEN_USER` filled by `GetTokenInformation`.
+    let current_sid: PSID =
+        unsafe { std::ptr::read_unaligned(token_buf.as_ptr().cast::<TOKEN_USER>()) }
+            .User
+            .Sid;
+    if current_sid.is_invalid() {
+        return Err(GreenCError::Win32 {
+            code: 1337,
+            message: "Current user SID is invalid".to_string(),
+        });
+    }
+
+    // 2. Build well-known SIDs for `NT AUTHORITY\SYSTEM` and `BUILTIN\Administrators`
+    //    (4-byte aligned buffers kept alive across `SetSecurityInfo`).
+    let mut extra_sid_buffers: Vec<Vec<u32>> =
+        Vec::with_capacity(REQUIRED_EXTRA_WELL_KNOWN_SIDS.len());
+    for &sid_type in REQUIRED_EXTRA_WELL_KNOWN_SIDS {
+        let mut sid_words = vec![0u32; SECURITY_MAX_SID_SIZE.div_ceil(4)];
+        let mut cb_sid = (sid_words.len() * 4) as u32;
+        // SAFETY: `sid_words` is 4-byte aligned with capacity >= `SECURITY_MAX_SID_SIZE`.
+        if unsafe {
+            CreateWellKnownSid(
+                sid_type,
+                PSID::default(),
+                sid_words.as_mut_ptr().cast(),
+                &mut cb_sid,
+            )
+        } == 0
+        {
+            let code = unsafe { GetLastError().0 };
+            return Err(GreenCError::Win32 {
+                code,
+                message: format!("CreateWellKnownSid({sid_type}) failed (code {code})"),
+            });
+        }
+        extra_sid_buffers.push(sid_words);
+    }
+
+    // Deduplicate trustees in case the process token itself is already SYSTEM or an admin group.
+    let mut trustee_sids: Vec<PSID> = vec![current_sid];
+    for buf in &extra_sid_buffers {
+        let sid = PSID(buf.as_ptr() as *mut _);
+        let already_present = trustee_sids
+            .iter()
+            .any(|&existing| unsafe { EqualSid(existing, sid).is_ok() });
+        if !already_present {
+            trustee_sids.push(sid);
+        }
+    }
+
+    // 3. Build a 4-byte-aligned explicit DACL granting full inherited access to all trustees.
+    let mut sid_lens: Vec<u32> = Vec::with_capacity(trustee_sids.len());
+    for &sid in &trustee_sids {
+        // SAFETY: Every SID points into live `token_buf` or `extra_sid_buffers`.
+        let sid_len = unsafe { GetLengthSid(sid) };
+        if sid_len == 0 {
+            return Err(GreenCError::Win32 {
+                code: 1337,
+                message: "GetLengthSid returned 0".to_string(),
+            });
+        }
+        sid_lens.push(sid_len);
+    }
+    let acl_bytes = compute_protected_dacl_size(&sid_lens);
+    let mut acl_words = vec![0u32; (acl_bytes as usize) / 4];
+    let acl_ptr = acl_words.as_mut_ptr().cast::<std::ffi::c_void>();
+
+    // SAFETY: `acl_ptr` points to 4-byte-aligned writable buffer of `acl_bytes` bytes.
+    if unsafe { InitializeAcl(acl_ptr, acl_bytes, ACL_REVISION) } == 0 {
+        let code = unsafe { GetLastError().0 };
+        return Err(GreenCError::Win32 {
+            code,
+            message: format!("InitializeAcl failed (code {code})"),
+        });
+    }
+    for &sid in &trustee_sids {
+        // SAFETY: `acl_ptr` has capacity for all ACEs computed by `compute_protected_dacl_size`.
+        if unsafe {
+            AddAccessAllowedAceEx(
+                acl_ptr,
+                ACL_REVISION,
+                INHERIT_ALL_ACE_FLAGS,
+                FILE_ALL_ACCESS_MASK,
+                sid,
+            )
+        } == 0
+        {
+            let code = unsafe { GetLastError().0 };
+            return Err(GreenCError::Win32 {
+                code,
+                message: format!("AddAccessAllowedAceEx failed (code {code})"),
+            });
+        }
+    }
+
+    // 4. Open the directory handle with `READ_CONTROL | WRITE_DAC` (no reparse-point following)
+    //    and apply the protected DACL.
+    let wide = path_to_wide(path);
+    // SAFETY: `wide` is NUL-terminated UTF-16; returned handle is owned by `OwnedHandle`.
+    let raw_obj = unsafe {
+        CreateFileW(
+            PCWSTR(wide.as_ptr()),
+            RESTRICT_DIR_HANDLE_ACCESS,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            None,
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            None,
+        )
+        .map_err(|e| GreenCError::Win32 {
+            code: (e.code().0 as u32) & 0xFFFF,
+            message: format!(
+                "CreateFileW(READ_CONTROL | WRITE_DAC) failed for '{}': {e}",
+                path.display()
+            ),
+        })?
+    };
+    let obj_guard = OwnedHandle::new(raw_obj).ok_or_else(|| GreenCError::Win32 {
+        code: 6,
+        message: "Invalid directory handle for ACL update".to_string(),
+    })?;
+
+    // SAFETY: `obj_guard.raw()` is open with `READ_CONTROL | WRITE_DAC`, `acl_ptr` is a valid
+    // initialized DACL, and `PROTECTED_DACL_SECURITY_INFO` blocks inheriting `Users`/`Everyone`.
+    let rc = unsafe {
+        SetSecurityInfo(
+            obj_guard.raw(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFO | PROTECTED_DACL_SECURITY_INFO,
+            PSID::default(),
+            PSID::default(),
+            acl_ptr,
+            std::ptr::null(),
+        )
+    };
+    if rc != 0 {
+        return Err(GreenCError::Win32 {
+            code: rc,
+            message: format!(
+                "SetSecurityInfo(PROTECTED_DACL) failed for '{}' (code {rc})",
+                path.display()
+            ),
+        });
+    }
+    Ok(())
+}
