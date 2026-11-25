@@ -54,6 +54,10 @@ jobs:
             Start-App $dir $env:FROM
             $db = Get-ChildItem $env:LOCALAPPDATA,$env:APPDATA -Recurse -Filter 'greenc.db' -ErrorAction SilentlyContinue | Select-Object -First 1
             Write-Output "::notice::database after $($env:FROM): $([bool]$db)"
+            try { $null = Install-GreenC $env:TO; Write-Output "::notice::silent upgrade while running: ok" }
+            catch { Write-Output "::warning::silent upgrade while running: $($_.Exception.Message)" }
+            Get-Process GreenC -ErrorAction SilentlyContinue | Stop-Process -Force
+            Start-Sleep 3
             $dir = Install-GreenC $env:TO
             Start-App $dir $env:TO
             $out = & (Join-Path $dir 'greenc-cli.exe') zalo status --json 2>&1 | Out-String
