@@ -9,7 +9,7 @@ on:
       to:
         default: '2.2.0'
   push:
-    branches: ['test/installer-smoke', 'fix/silent-upgrade']
+    branches: ['test/installer-smoke']
 
 permissions:
   contents: read
