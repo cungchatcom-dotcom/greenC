@@ -579,8 +579,13 @@ impl DriveQuota {
     }
 }
 
-/// Extracts an uppercase Windows drive letter if `raw` begins with `<letter>:`.
+/// Extracts an uppercase Windows drive letter if `raw` begins with `<letter>:`, including the
+/// verbatim form returned by `std::fs::canonicalize` (`\\?\C:\...`).
 fn windows_drive_letter(raw: &str) -> Option<char> {
+    let raw = raw
+        .strip_prefix(r"\\?\")
+        .or_else(|| raw.strip_prefix(r"\\.\"))
+        .unwrap_or(raw);
     let bytes = raw.as_bytes();
     if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
         Some((bytes[0] as char).to_ascii_uppercase())
@@ -777,6 +782,11 @@ mod drive_quota_tests {
         assert!(is_same_volume(Path::new("C:/bk"), Path::new("C:\\")));
         assert!(is_same_volume(Path::new("c:\\Users\\a"), Path::new("C:\\")));
         assert!(!is_same_volume(Path::new("D:\\bk"), Path::new("C:\\")));
+        assert!(is_same_volume(
+            Path::new(r"\\?\C:\Users\a"),
+            Path::new(r"C:\Users\a\staging")
+        ));
+        assert!(!is_same_volume(Path::new(r"\\?\D:\x"), Path::new(r"C:\")));
         assert!(!is_same_volume(Path::new("/tmp/bk"), Path::new("Q:/")));
 
         // Synthetic Unix mounts: segment-boundary prefix match prevents /mnt/a matching /mnt/a2
