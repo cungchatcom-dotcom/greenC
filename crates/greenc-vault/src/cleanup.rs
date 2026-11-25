@@ -10,6 +10,7 @@
 use greenc_core::config::MIN_VAULT_RESERVE_BYTES;
 use greenc_core::error::Result;
 use greenc_core::models::FileManifestItem;
+use greenc_platform::handle::{ensure_not_protected_system_path, query_file_identity};
 use greenc_platform::traits::{FileLockProbe, Win32VolumeApi};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -44,9 +45,19 @@ impl ShellFileOperationApi for StandardFileDeleter {
     }
 
     fn permanent_delete(&self, path: &Path) -> Result<()> {
-        if path.is_file() || path.is_symlink() {
+        let Ok(meta) = std::fs::symlink_metadata(path) else {
+            return Ok(());
+        };
+        if meta.file_type().is_symlink() {
+            return Err(greenc_core::error::GreenCError::PreconditionBlocked {
+                operation: "permanent_delete".to_string(),
+                reason: format!("Refused to unlink symlink '{}'", path.display()),
+            });
+        }
+        ensure_not_protected_system_path(path, "permanent_delete")?;
+        if meta.is_file() {
             std::fs::remove_file(path)?;
-        } else if path.is_dir() {
+        } else if meta.is_dir() {
             std::fs::remove_dir(path)?;
         }
         Ok(())
@@ -141,14 +152,29 @@ impl<'a> SafeCleaner<'a> {
                 continue;
             }
 
-            // 2. Metadata snapshot comparison
-            let meta = match std::fs::metadata(path) {
+            // 2. Metadata snapshot comparison (no symlink following)
+            let meta = match std::fs::symlink_metadata(path) {
                 Ok(m) => m,
                 Err(_) => {
                     // Already gone
                     continue;
                 }
             };
+            if meta.file_type().is_symlink() || !meta.is_file() {
+                result.skipped_files_count += 1;
+                result.skipped_items.push((
+                    path.clone(),
+                    "Skipped symlink or non-regular file before unlink".to_string(),
+                ));
+                continue;
+            }
+            if ensure_not_protected_system_path(path, "unlink_archived_items").is_err() {
+                result.skipped_files_count += 1;
+                result
+                    .skipped_items
+                    .push((path.clone(), "Skipped protected system path".to_string()));
+                continue;
+            }
 
             if let Some(&(snap_size, snap_mtime)) = snapshots.get(path) {
                 let current_size = meta.len();
@@ -164,11 +190,44 @@ impl<'a> SafeCleaner<'a> {
                 }
             }
 
-            // 3. Unlink all HardLink siblings
+            let orig_identity = query_file_identity(path);
+
+            // 3. Unlink all verified HardLink siblings (never following symlinks or unrelated paths)
             let mut deleted_primary = false;
             for sibling_path in &item.hardlink_paths {
-                if !sibling_path.exists() {
+                let Ok(smeta) = std::fs::symlink_metadata(sibling_path) else {
                     continue;
+                };
+                if smeta.file_type().is_symlink() || !smeta.is_file() {
+                    result.skipped_items.push((
+                        sibling_path.clone(),
+                        "Skipped symlink/non-file hardlink sibling".to_string(),
+                    ));
+                    continue;
+                }
+                if ensure_not_protected_system_path(sibling_path, "unlink_archived_items").is_err()
+                {
+                    result.skipped_items.push((
+                        sibling_path.clone(),
+                        "Skipped protected system path sibling".to_string(),
+                    ));
+                    continue;
+                }
+                if sibling_path != path {
+                    let same_inode = match (orig_identity, query_file_identity(sibling_path)) {
+                        (Some(a), Some(b)) => {
+                            a.volume_serial == b.volume_serial && a.file_index == b.file_index
+                        }
+                        _ => false,
+                    };
+                    if !same_inode {
+                        result.skipped_items.push((
+                            sibling_path.clone(),
+                            "Skipped hardlink sibling whose physical identity does not match original"
+                                .to_string(),
+                        ));
+                        continue;
+                    }
                 }
 
                 // Delete based on configured method
@@ -207,6 +266,15 @@ impl<'a> SafeCleaner<'a> {
         while let Some(dir) = current {
             // Never delete root paths like "C:\" or "C:"
             if dir.parent().is_none() {
+                break;
+            }
+            let Ok(dmeta) = std::fs::symlink_metadata(dir) else {
+                break;
+            };
+            if dmeta.file_type().is_symlink() || !dmeta.is_dir() {
+                break;
+            }
+            if ensure_not_protected_system_path(dir, "prune_empty_parents").is_err() {
                 break;
             }
 

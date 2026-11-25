@@ -4,17 +4,24 @@ use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{
-    CloseHandle, ERROR_ACCESS_DENIED, ERROR_LOCK_VIOLATION, ERROR_SHARING_VIOLATION, HANDLE,
+    CloseHandle, BOOL, ERROR_ACCESS_DENIED, ERROR_LOCK_VIOLATION, ERROR_SHARING_VIOLATION, HANDLE,
     INVALID_HANDLE_VALUE,
+};
+use windows::Win32::Security::{
+    EqualSid, GetKernelObjectSecurity, GetSecurityDescriptorOwner, GetTokenInformation, TokenUser,
+    OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, TOKEN_QUERY, TOKEN_USER,
 };
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_NORMAL,
-    FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_DELETE, FILE_SHARE_MODE, FILE_SHARE_READ,
-    FILE_SHARE_WRITE, OPEN_EXISTING,
+    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_MODE,
+    FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
 };
+use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
 /// Win32 DELETE access mask (0x00010000).
 const DELETE_ACCESS: u32 = 0x0001_0000;
+/// Win32 READ_CONTROL access mask (0x00020000) for querying object security descriptors.
+const READ_CONTROL_ACCESS: u32 = 0x0002_0000;
 
 /// Canonicalizes `path` (when existing) and blocks mutations against Windows OS system trees
 /// (`\Windows`, `\Program Files`, `\Program Files (x86)`, `\System Volume Information`).
@@ -117,6 +124,11 @@ pub fn is_file_locked(path: &Path) -> bool {
     }
 }
 
+/// Reads a UTF-8 text file (matches the Unix `O_NOATIME` helper signature).
+pub fn read_to_string_noatime(path: &Path) -> std::io::Result<String> {
+    std::fs::read_to_string(path)
+}
+
 /// Concrete production implementation of `FileLockProbe`.
 #[derive(Default, Clone, Debug)]
 pub struct NativeFileLockProbe;
@@ -162,4 +174,146 @@ pub fn query_file_identity(path: &Path) -> Option<Win32FileIdentity> {
         file_index,
         number_of_links: info.nNumberOfLinks,
     })
+}
+
+/// Checks (without following reparse points/symlinks) whether `path` is owned by the current
+/// Windows user SID.
+pub fn is_owned_by_current_user(path: &Path) -> std::io::Result<bool> {
+    let mut token = HANDLE::default();
+    // SAFETY: `GetCurrentProcess()` returns the pseudo-handle for the current process, and
+    // `token` receives a real handle wrapped in `OwnedHandle` below.
+    unsafe {
+        OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token)
+            .map_err(|e| std::io::Error::other(format!("OpenProcessToken failed: {e}")))?;
+    }
+    let token_guard = OwnedHandle::new(token)
+        .ok_or_else(|| std::io::Error::other("Invalid process token handle"))?;
+
+    let mut token_len = 0u32;
+    // SAFETY: First call queries required buffer size for `TokenUser`.
+    let _ = unsafe { GetTokenInformation(token_guard.raw(), TokenUser, None, 0, &mut token_len) };
+    if token_len == 0 {
+        return Err(std::io::Error::other(
+            "GetTokenInformation returned zero length",
+        ));
+    }
+    let mut token_buf = vec![0u8; token_len as usize];
+    // SAFETY: `token_buf` has exact length `token_len` allocated for `TOKEN_USER`.
+    unsafe {
+        GetTokenInformation(
+            token_guard.raw(),
+            TokenUser,
+            Some(token_buf.as_mut_ptr().cast()),
+            token_len,
+            &mut token_len,
+        )
+        .map_err(|e| std::io::Error::other(format!("GetTokenInformation failed: {e}")))?;
+    }
+    // SAFETY: Buffer was filled by `GetTokenInformation(TokenUser)` and starts with `TOKEN_USER`.
+    let current_sid: PSID = unsafe { (*(token_buf.as_ptr().cast::<TOKEN_USER>())).User.Sid };
+
+    let wide = path_to_wide(path);
+    // SAFETY: `wide` is NUL-terminated UTF-16; `FILE_FLAG_OPEN_REPARSE_POINT` prevents following
+    // symlinks/junctions, and any returned handle is owned by `OwnedHandle`.
+    let obj_handle = unsafe {
+        CreateFileW(
+            PCWSTR(wide.as_ptr()),
+            READ_CONTROL_ACCESS,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            None,
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            None,
+        )
+        .map_err(|e| std::io::Error::other(format!("CreateFileW(READ_CONTROL) failed: {e}")))?
+    };
+    let obj_guard = OwnedHandle::new(obj_handle)
+        .ok_or_else(|| std::io::Error::other("Invalid object handle"))?;
+
+    let mut sd_len = 0u32;
+    // SAFETY: Queries required buffer size for owner security descriptor on open handle.
+    let _ = unsafe {
+        GetKernelObjectSecurity(
+            obj_guard.raw(),
+            OWNER_SECURITY_INFORMATION.0,
+            None,
+            0,
+            &mut sd_len,
+        )
+    };
+    if sd_len == 0 {
+        return Err(std::io::Error::other(
+            "GetKernelObjectSecurity returned zero length",
+        ));
+    }
+    let mut sd_buf = vec![0u8; sd_len as usize];
+    let sd_ptr = PSECURITY_DESCRIPTOR(sd_buf.as_mut_ptr().cast());
+    // SAFETY: `sd_buf` has exact length `sd_len` for `OWNER_SECURITY_INFORMATION`.
+    unsafe {
+        GetKernelObjectSecurity(
+            obj_guard.raw(),
+            OWNER_SECURITY_INFORMATION.0,
+            Some(sd_ptr),
+            sd_len,
+            &mut sd_len,
+        )
+        .map_err(|e| std::io::Error::other(format!("GetKernelObjectSecurity failed: {e}")))?;
+    }
+
+    let mut owner_sid = PSID::default();
+    let mut defaulted = BOOL(0);
+    // SAFETY: `sd_ptr` points to a valid self-relative security descriptor in `sd_buf`.
+    unsafe {
+        GetSecurityDescriptorOwner(sd_ptr, &mut owner_sid, &mut defaulted).map_err(|e| {
+            std::io::Error::other(format!("GetSecurityDescriptorOwner failed: {e}"))
+        })?;
+    }
+    if owner_sid.is_invalid() || current_sid.is_invalid() {
+        return Ok(false);
+    }
+
+    // SAFETY: Both SIDs are valid pointers living inside `sd_buf` and `token_buf`.
+    Ok(unsafe { EqualSid(owner_sid, current_sid).is_ok() })
+}
+
+/// Verifies that `path` is a real directory (not a symlink/reparse point) owned by the current
+/// Windows user.
+pub fn is_trusted_user_dir(
+    path: &Path,
+    _expected_uid: Option<u32>,
+) -> std::result::Result<(), String> {
+    let meta = std::fs::symlink_metadata(path).map_err(|e| {
+        format!(
+            "Không đọc được siêu dữ liệu thư mục '{}': {e}",
+            path.display()
+        )
+    })?;
+    if meta.file_type().is_symlink() {
+        return Err(format!("Thư mục '{}' là symlink, từ chối", path.display()));
+    }
+    if !meta.is_dir() {
+        return Err(format!(
+            "Đường dẫn '{}' không phải thư mục thật",
+            path.display()
+        ));
+    }
+    match is_owned_by_current_user(path) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(format!(
+            "Thư mục '{}' không thuộc người dùng hiện tại, từ chối",
+            path.display()
+        )),
+        Err(e) => Err(format!(
+            "Không xác minh được chủ sở hữu thư mục '{}': {e}",
+            path.display()
+        )),
+    }
+}
+
+/// Verifies that a GreenC staging directory is a real directory owned by the current Windows user.
+pub fn validate_private_staging_dir(
+    path: &Path,
+    expected_uid: Option<u32>,
+) -> std::result::Result<(), String> {
+    is_trusted_user_dir(path, expected_uid)
 }

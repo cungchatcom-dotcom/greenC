@@ -6,9 +6,16 @@
 //! - Exclude pattern filtering against `DEFAULT_PROTECTED_PATTERNS`
 //! - Age-based filtering and exclusive file lock evaluation
 
+#[cfg(all(unix, not(target_os = "macos")))]
+use crate::cache_units::is_linux_app_log_file;
+use crate::cache_units::{
+    scan_dev_cache_root, CleanUnit, CleanUnitKind, DEFAULT_DEV_CACHE_MIN_AGE_SECS,
+};
 use greenc_core::config::is_protected_filename;
 use greenc_core::models::CleanCandidate;
 use greenc_core::task::TaskControl;
+use greenc_platform::dev_tools::{BusyToolsStatus, DevToolProbe, NativeDevToolProbe};
+use greenc_platform::handle::query_file_identity;
 use greenc_platform::traits::FileLockProbe;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -106,16 +113,26 @@ impl PresetProfiles {
             CleanupProfile {
                 id: "package_managers".to_string(),
                 name: "Bộ nhớ đệm Gói Lập trình".to_string(),
-                description: "Cache npm, pip, cargo, uv, pnpm, gradle".to_string(),
+                description:
+                    "Cache npm, pip, cargo, uv, pnpm, gradle (đơn vị nguyên khối >= 7 ngày)"
+                        .to_string(),
                 category: ProfileCategory::Developer,
                 default_enabled: true,
-                min_file_age_seconds: 300,
+                min_file_age_seconds: DEFAULT_DEV_CACHE_MIN_AGE_SECS,
                 default_watermark_ratio: 0.85,
                 exclude_patterns: vec![
                     "lockfile".to_string(),
+                    "*.lock".to_string(),
+                    "*.lck".to_string(),
                     "*.toml".to_string(),
                     "*.json".to_string(),
                     "config".to_string(),
+                    "gc.properties".to_string(),
+                    "CACHEDIR.TAG".to_string(),
+                    "file-access.bin".to_string(),
+                    "fileHashes".to_string(),
+                    "journal-*".to_string(),
+                    "metadata-*".to_string(),
                 ],
             },
             CleanupProfile {
@@ -173,6 +190,25 @@ impl PresetProfiles {
 
         // Return only paths that exist on disk (silently skips TCC/permission-denied paths)
         paths.into_iter().filter(|p| p.exists()).collect()
+    }
+
+    /// Returns all configured developer cache root directories (`package_managers` profile)
+    /// managed by GreenC for the current user (OS-aware).
+    pub fn managed_dev_cache_roots() -> Vec<PathBuf> {
+        #[cfg(windows)]
+        {
+            Self::resolve_profile_paths_windows("package_managers")
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            Self::resolve_profile_paths_macos("package_managers")
+        }
+
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            Self::resolve_profile_paths_linux("package_managers")
+        }
     }
 
     #[cfg(windows)]
@@ -370,7 +406,12 @@ impl PresetProfiles {
                 paths.push(home.join(".gradle/caches"));
             }
             "app_logs" => {
-                paths.push(home.join(".local/state"));
+                let xdg_state = std::env::var("XDG_STATE_HOME")
+                    .ok()
+                    .filter(|s| !s.trim().is_empty())
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| home.join(".local/state"));
+                paths.push(xdg_state);
             }
             "old_versions" => {
                 paths.push(xdg_data.join("Trash/files"));
@@ -383,28 +424,96 @@ impl PresetProfiles {
     }
 
     /// Discovers candidate cleanup files for a specified profile.
+    ///
+    /// For `package_managers`, this delegates to the atomic developer cache unit scanner using
+    /// [`NativeDevToolProbe`], so forbidden lock/journal/metadata files and busy build tools are
+    /// always protected (including in `greenc-cli clean --all`).
     pub fn scan_profile_candidates(
         profile_id: &str,
         task_control: &TaskControl,
         lock_probe: &dyn FileLockProbe,
     ) -> Vec<CleanCandidate> {
+        let dev_probe = NativeDevToolProbe;
+        Self::scan_profile_candidates_with_probe(profile_id, task_control, lock_probe, &dev_probe)
+    }
+
+    /// Discovers candidate cleanup files using an injectable [`DevToolProbe`].
+    pub fn scan_profile_candidates_with_probe(
+        profile_id: &str,
+        task_control: &TaskControl,
+        lock_probe: &dyn FileLockProbe,
+        dev_tool_probe: &dyn DevToolProbe,
+    ) -> Vec<CleanCandidate> {
+        let busy = dev_tool_probe.detect_busy_tools();
+        Self::scan_profile_units_with_busy(profile_id, task_control, lock_probe, &busy)
+            .into_iter()
+            .flat_map(|u| u.files)
+            .collect()
+    }
+
+    /// Discovers atomic [`CleanUnit`] entries for a specified profile given pre-probed busy tools.
+    pub fn scan_profile_units_with_busy(
+        profile_id: &str,
+        task_control: &TaskControl,
+        lock_probe: &dyn FileLockProbe,
+        busy_status: &BusyToolsStatus,
+    ) -> Vec<CleanUnit> {
         let profile = match Self::get_by_id(profile_id) {
             Some(p) => p,
             None => return Vec::new(),
         };
 
         let target_dirs = Self::resolve_profile_paths(profile_id);
-        let mut candidates = Vec::new();
         let now = SystemTime::now();
+        Self::scan_profile_dirs_as_units(
+            &profile,
+            &target_dirs,
+            now,
+            task_control,
+            lock_probe,
+            busy_status,
+        )
+    }
+
+    /// Scans explicit `target_dirs` for a given `profile` into atomic [`CleanUnit`] entries.
+    /// Exposed for deterministic tempdir testing without mutating `HOME`.
+    pub fn scan_profile_dirs_as_units(
+        profile: &CleanupProfile,
+        target_dirs: &[PathBuf],
+        now: SystemTime,
+        task_control: &TaskControl,
+        lock_probe: &dyn FileLockProbe,
+        busy_status: &BusyToolsStatus,
+    ) -> Vec<CleanUnit> {
         let min_age = Duration::from_secs(profile.min_file_age_seconds);
 
+        if profile.id == "package_managers" {
+            let mut units = Vec::new();
+            for dir in target_dirs {
+                if task_control.is_cancelled() {
+                    break;
+                }
+                units.extend(scan_dev_cache_root(
+                    dir,
+                    min_age,
+                    now,
+                    busy_status,
+                    lock_probe,
+                    task_control,
+                ));
+            }
+            return units;
+        }
+
+        let mut units = Vec::new();
         for dir in target_dirs {
             if task_control.is_cancelled() {
                 break;
             }
+            let mut candidates = Vec::new();
             Self::scan_directory_recursive(
-                &dir,
-                &profile,
+                dir,
+                profile,
                 now,
                 min_age,
                 task_control,
@@ -413,12 +522,34 @@ impl PresetProfiles {
                 0,
                 5, // Max depth 5
             );
+            for cand in candidates {
+                if cand.is_locked {
+                    continue;
+                }
+                let root_identity = query_file_identity(&cand.path);
+                let total_bytes = cand.size_bytes;
+                let last_used = cand.mtime;
+                let root_path = cand.path.clone();
+                units.push(CleanUnit {
+                    root_path,
+                    allowed_parent: dir.clone(),
+                    files: vec![cand],
+                    total_bytes,
+                    last_used,
+                    profile_id: profile.id.clone(),
+                    kind: CleanUnitKind::StandardFile,
+                    dev_tool: None,
+                    unit_label: "standard_file".to_string(),
+                    root_identity,
+                    min_age,
+                });
+            }
         }
-
-        candidates
+        units
     }
 
     /// Helper for recursive directory traversal with filtering and lock inspection.
+    #[allow(clippy::too_many_arguments)]
     fn scan_directory_recursive(
         dir: &Path,
         profile: &CleanupProfile,
@@ -477,6 +608,13 @@ impl PresetProfiles {
                     max_depth,
                 );
             } else if file_type.is_file() {
+                // On Linux, `app_logs` scans `$XDG_STATE_HOME` (`~/.local/state`) ONLY for old
+                // `*.log` and `*.log.*` files — never arbitrary application state files.
+                #[cfg(all(unix, not(target_os = "macos")))]
+                if profile.id == "app_logs" && !is_linux_app_log_file(file_name) {
+                    continue;
+                }
+
                 let meta = match entry.metadata() {
                     Ok(m) => m,
                     Err(_) => continue,

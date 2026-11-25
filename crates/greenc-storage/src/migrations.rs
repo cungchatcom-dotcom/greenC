@@ -2,7 +2,7 @@ use greenc_core::error::{GreenCError, Result};
 use rusqlite::Connection;
 use tracing::info;
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 3;
+pub const CURRENT_SCHEMA_VERSION: u32 = 4;
 
 pub const SCHEMA_V2_FULL_DDL: &str = "
 CREATE TABLE IF NOT EXISTS app_settings (
@@ -66,7 +66,28 @@ CREATE TABLE IF NOT EXISTS drive_quotas (
     auto_backup INTEGER NOT NULL DEFAULT 0,
     backup_dir TEXT NOT NULL DEFAULT '',
     enabled INTEGER NOT NULL DEFAULT 1,
+    regenerable_cache_mode TEXT NOT NULL DEFAULT 'vault',
     created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS guard_cooldowns (
+    drive_root TEXT PRIMARY KEY COLLATE NOCASE,
+    consecutive_ineffective INTEGER NOT NULL DEFAULT 0,
+    cooldown_until TEXT NOT NULL DEFAULT '',
+    last_run_at TEXT NOT NULL DEFAULT '',
+    last_reason TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS direct_delete_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    drive_root TEXT NOT NULL,
+    profile_id TEXT NOT NULL,
+    unit_kind TEXT NOT NULL,
+    unit_path TEXT NOT NULL,
+    file_count INTEGER NOT NULL,
+    logical_bytes INTEGER NOT NULL,
+    reason TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS vault_archives (
@@ -222,6 +243,15 @@ pub fn run_migrations(conn: &mut Connection) -> Result<u32> {
         if !column_exists(&tx, "relocations", "health_status")? {
             tx.execute(
                 "ALTER TABLE relocations ADD COLUMN health_status TEXT NOT NULL DEFAULT 'healthy';",
+                [],
+            )
+            .map_err(|e| GreenCError::Sqlite(e.to_string()))?;
+        }
+
+        // 4b. Upgrade drive_quotas with regenerable_cache_mode (Schema v4)
+        if !column_exists(&tx, "drive_quotas", "regenerable_cache_mode")? {
+            tx.execute(
+                "ALTER TABLE drive_quotas ADD COLUMN regenerable_cache_mode TEXT NOT NULL DEFAULT 'vault';",
                 [],
             )
             .map_err(|e| GreenCError::Sqlite(e.to_string()))?;

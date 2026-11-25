@@ -804,6 +804,29 @@ impl GreenCDb {
         })
     }
 
+    /// Permanently deletes a `vault_archives` record and all of its `vault_files` children
+    /// (used to roll back an orphan archive when 0 source files were actually removed).
+    pub fn delete_vault_archive(&self, archive_id: i64) -> Result<()> {
+        self.with_conn_mut(|conn| {
+            let tx = conn
+                .transaction()
+                .map_err(|e| GreenCError::Sqlite(e.to_string()))?;
+            tx.execute(
+                "DELETE FROM vault_files WHERE archive_id = ?1;",
+                params![archive_id],
+            )
+            .map_err(|e| GreenCError::Sqlite(e.to_string()))?;
+            tx.execute(
+                "DELETE FROM vault_archives WHERE id = ?1;",
+                params![archive_id],
+            )
+            .map_err(|e| GreenCError::Sqlite(e.to_string()))?;
+            tx.commit()
+                .map_err(|e| GreenCError::Sqlite(e.to_string()))?;
+            Ok(())
+        })
+    }
+
     // ==========================================
     // Relocations CRUD
     // ==========================================
@@ -1087,12 +1110,13 @@ impl GreenCDb {
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
         let root = quota.drive_root.clone();
+        let cache_mode = quota.regenerable_cache_mode.as_str();
         self.with_conn(|conn| {
             conn.execute(
                 "INSERT INTO drive_quotas (
                     drive_root, limit_bytes, warn_ratio, clean_ratio, target_ratio,
-                    auto_clean, auto_backup, backup_dir, enabled, created_at
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                    auto_clean, auto_backup, backup_dir, enabled, regenerable_cache_mode, created_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
                  ON CONFLICT(drive_root) DO UPDATE SET
                     limit_bytes = excluded.limit_bytes,
                     warn_ratio = excluded.warn_ratio,
@@ -1101,7 +1125,8 @@ impl GreenCDb {
                     auto_clean = excluded.auto_clean,
                     auto_backup = excluded.auto_backup,
                     backup_dir = excluded.backup_dir,
-                    enabled = excluded.enabled;",
+                    enabled = excluded.enabled,
+                    regenerable_cache_mode = excluded.regenerable_cache_mode;",
                 params![
                     root,
                     quota.limit_bytes as i64,
@@ -1112,6 +1137,7 @@ impl GreenCDb {
                     quota.auto_backup as i64,
                     backup,
                     quota.enabled as i64,
+                    cache_mode,
                     quota.created_at.to_rfc3339()
                 ],
             )
@@ -1125,11 +1151,28 @@ impl GreenCDb {
         })
     }
 
+    /// Updates `regenerable_cache_mode` for an existing drive quota. Returns `true` if updated.
+    pub fn set_drive_regenerable_cache_mode(
+        &self,
+        drive_root: &str,
+        mode: RegenerableCacheMode,
+    ) -> Result<bool> {
+        self.with_conn(|conn| {
+            let changed = conn
+                .execute(
+                    "UPDATE drive_quotas SET regenerable_cache_mode = ?1 WHERE drive_root = ?2;",
+                    params![mode.as_str(), drive_root],
+                )
+                .map_err(|e| GreenCError::Sqlite(e.to_string()))?;
+            Ok(changed > 0)
+        })
+    }
+
     pub fn list_drive_quotas(&self, enabled_only: bool) -> Result<Vec<DriveQuota>> {
         self.with_conn(|conn| {
             let sql = format!(
                 "SELECT id, drive_root, limit_bytes, warn_ratio, clean_ratio, target_ratio,
-                        auto_clean, auto_backup, backup_dir, enabled, created_at
+                        auto_clean, auto_backup, backup_dir, enabled, regenerable_cache_mode, created_at
                  FROM drive_quotas {} ORDER BY drive_root ASC;",
                 if enabled_only {
                     "WHERE enabled = 1"
@@ -1143,7 +1186,8 @@ impl GreenCDb {
             let rows = stmt
                 .query_map([], |r| {
                     let backup: String = r.get(8)?;
-                    let created: String = r.get(10)?;
+                    let mode_str: String = r.get(10)?;
+                    let created: String = r.get(11)?;
                     Ok(DriveQuota {
                         id: Some(r.get(0)?),
                         drive_root: r.get(1)?,
@@ -1159,6 +1203,7 @@ impl GreenCDb {
                             Some(PathBuf::from(backup))
                         },
                         enabled: r.get::<_, i64>(9)? == 1,
+                        regenerable_cache_mode: RegenerableCacheMode::from_str_loose(&mode_str),
                         created_at: DateTime::parse_from_rfc3339(&created)
                             .map(|d| d.with_timezone(&Utc))
                             .unwrap_or_else(|_| Utc::now()),
@@ -1180,6 +1225,171 @@ impl GreenCDb {
             Ok(())
         })
     }
+
+    // ==========================================
+    // Guard Cooldowns CRUD (Schema v4)
+    // ==========================================
+
+    pub fn get_guard_cooldown(&self, drive_root: &str) -> Result<Option<GuardCooldownState>> {
+        self.with_conn(|conn| {
+            conn.query_row(
+                "SELECT drive_root, consecutive_ineffective, cooldown_until, last_run_at, last_reason
+                 FROM guard_cooldowns WHERE drive_root = ?1;",
+                params![drive_root],
+                |r| {
+                    let until_str: String = r.get(2)?;
+                    let last_run_str: String = r.get(3)?;
+                    Ok(GuardCooldownState {
+                        drive_root: r.get(0)?,
+                        consecutive_ineffective: r.get::<_, i64>(1)?.max(0) as u32,
+                        cooldown_until: if until_str.is_empty() {
+                            None
+                        } else {
+                            DateTime::parse_from_rfc3339(&until_str)
+                                .ok()
+                                .map(|d| d.with_timezone(&Utc))
+                        },
+                        last_run_at: if last_run_str.is_empty() {
+                            None
+                        } else {
+                            DateTime::parse_from_rfc3339(&last_run_str)
+                                .ok()
+                                .map(|d| d.with_timezone(&Utc))
+                        },
+                        last_reason: r.get(4)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|e| GreenCError::Sqlite(e.to_string()))
+        })
+    }
+
+    pub fn save_guard_cooldown(&self, state: &GuardCooldownState) -> Result<()> {
+        let until = state
+            .cooldown_until
+            .map(|t| t.to_rfc3339())
+            .unwrap_or_default();
+        let last_run = state
+            .last_run_at
+            .map(|t| t.to_rfc3339())
+            .unwrap_or_default();
+        self.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO guard_cooldowns (
+                    drive_root, consecutive_ineffective, cooldown_until, last_run_at, last_reason
+                 ) VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(drive_root) DO UPDATE SET
+                    consecutive_ineffective = excluded.consecutive_ineffective,
+                    cooldown_until = excluded.cooldown_until,
+                    last_run_at = excluded.last_run_at,
+                    last_reason = excluded.last_reason;",
+                params![
+                    state.drive_root,
+                    i64::from(state.consecutive_ineffective),
+                    until,
+                    last_run,
+                    state.last_reason
+                ],
+            )
+            .map_err(|e| GreenCError::Sqlite(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    pub fn clear_guard_cooldown(&self, drive_root: &str) -> Result<()> {
+        self.with_conn(|conn| {
+            conn.execute(
+                "DELETE FROM guard_cooldowns WHERE drive_root = ?1;",
+                params![drive_root],
+            )
+            .map_err(|e| GreenCError::Sqlite(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    // ==========================================
+    // Direct Delete Audit Log CRUD (Schema v4)
+    // ==========================================
+
+    pub fn record_direct_delete(&self, rec: &DirectDeleteRecord) -> Result<i64> {
+        self.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO direct_delete_log (
+                    timestamp, drive_root, profile_id, unit_kind, unit_path,
+                    file_count, logical_bytes, reason
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8);",
+                params![
+                    rec.timestamp.to_rfc3339(),
+                    rec.drive_root,
+                    rec.profile_id,
+                    rec.unit_kind,
+                    rec.unit_path.to_string_lossy().to_string(),
+                    rec.file_count as i64,
+                    rec.logical_bytes as i64,
+                    rec.reason
+                ],
+            )
+            .map_err(|e| GreenCError::Sqlite(e.to_string()))?;
+            Ok(conn.last_insert_rowid())
+        })
+    }
+
+    pub fn list_direct_deletes(
+        &self,
+        drive_root: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<DirectDeleteRecord>> {
+        self.with_conn(|conn| {
+            let (sql, has_drive) = if drive_root.is_some() {
+                (
+                    "SELECT id, timestamp, drive_root, profile_id, unit_kind, unit_path,
+                            file_count, logical_bytes, reason
+                     FROM direct_delete_log WHERE drive_root = ?1 ORDER BY id DESC LIMIT ?2;",
+                    true,
+                )
+            } else {
+                (
+                    "SELECT id, timestamp, drive_root, profile_id, unit_kind, unit_path,
+                            file_count, logical_bytes, reason
+                     FROM direct_delete_log ORDER BY id DESC LIMIT ?1;",
+                    false,
+                )
+            };
+            let mut stmt = conn
+                .prepare(sql)
+                .map_err(|e| GreenCError::Sqlite(e.to_string()))?;
+            let mapper = |r: &rusqlite::Row| {
+                let ts_str: String = r.get(1)?;
+                let path_str: String = r.get(5)?;
+                Ok(DirectDeleteRecord {
+                    id: Some(r.get(0)?),
+                    timestamp: DateTime::parse_from_rfc3339(&ts_str)
+                        .map(|d| d.with_timezone(&Utc))
+                        .unwrap_or_else(|_| Utc::now()),
+                    drive_root: r.get(2)?,
+                    profile_id: r.get(3)?,
+                    unit_kind: r.get(4)?,
+                    unit_path: PathBuf::from(path_str),
+                    file_count: r.get::<_, i64>(6)?.max(0) as u64,
+                    logical_bytes: r.get::<_, i64>(7)?.max(0) as u64,
+                    reason: r.get(8)?,
+                })
+            };
+            let rows = if has_drive {
+                stmt.query_map(params![drive_root.unwrap(), limit as i64], mapper)
+            } else {
+                stmt.query_map(params![limit as i64], mapper)
+            }
+            .map_err(|e| GreenCError::Sqlite(e.to_string()))?;
+
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(row.map_err(|e| GreenCError::Sqlite(e.to_string()))?);
+            }
+            Ok(out)
+        })
+    }
 }
 
 #[cfg(test)]
@@ -1194,11 +1404,13 @@ mod drive_quota_db_tests {
         q.limit_bytes = 123;
         q.auto_clean = true;
         q.backup_dir = Some(PathBuf::from("D:/bk"));
+        assert_eq!(q.regenerable_cache_mode, RegenerableCacheMode::Vault);
         let id = db.save_drive_quota(&q).unwrap();
 
         // Saving the same drive again updates instead of duplicating.
         q.limit_bytes = 456;
         q.auto_clean = false;
+        q.regenerable_cache_mode = RegenerableCacheMode::Direct;
         assert_eq!(db.save_drive_quota(&q).unwrap(), id);
 
         let all = db.list_drive_quotas(false).unwrap();
@@ -1207,8 +1419,131 @@ mod drive_quota_db_tests {
         assert_eq!(all[0].limit_bytes, 456);
         assert!(!all[0].auto_clean);
         assert_eq!(all[0].backup_dir, Some(PathBuf::from("D:/bk")));
+        assert_eq!(all[0].regenerable_cache_mode, RegenerableCacheMode::Direct);
+
+        assert!(db
+            .set_drive_regenerable_cache_mode("C:\\", RegenerableCacheMode::Vault)
+            .unwrap());
+        assert_eq!(
+            db.list_drive_quotas(false).unwrap()[0].regenerable_cache_mode,
+            RegenerableCacheMode::Vault
+        );
 
         db.delete_drive_quota(id).unwrap();
         assert!(db.list_drive_quotas(false).unwrap().is_empty());
+    }
+
+    #[test]
+    fn schema_v3_migrates_to_v4_preserving_vault_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("v3.db");
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE drive_quotas (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    drive_root TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                    limit_bytes INTEGER NOT NULL DEFAULT 0,
+                    warn_ratio REAL NOT NULL DEFAULT 0.80,
+                    clean_ratio REAL NOT NULL DEFAULT 0.90,
+                    target_ratio REAL NOT NULL DEFAULT 0.85,
+                    auto_clean INTEGER NOT NULL DEFAULT 0,
+                    auto_backup INTEGER NOT NULL DEFAULT 0,
+                    backup_dir TEXT NOT NULL DEFAULT '',
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL
+                );
+                INSERT INTO drive_quotas (drive_root, auto_clean, created_at)
+                VALUES ('/home', 1, '2026-11-24T00:00:00Z');
+                PRAGMA user_version = 3;",
+            )
+            .unwrap();
+        }
+
+        let db = GreenCDb::open(&db_path).unwrap();
+        let quotas = db.list_drive_quotas(false).unwrap();
+        assert_eq!(quotas.len(), 1);
+        assert_eq!(quotas[0].drive_root, "/home");
+        assert_eq!(
+            quotas[0].regenerable_cache_mode,
+            RegenerableCacheMode::Vault
+        );
+    }
+
+    #[test]
+    fn guard_cooldown_and_direct_delete_log_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = GreenCDb::open(dir.path().join("guard.db")).unwrap();
+
+        assert!(db.get_guard_cooldown("/home").unwrap().is_none());
+
+        let now = Utc::now();
+        let st = GuardCooldownState {
+            drive_root: "/home".to_string(),
+            consecutive_ineffective: 2,
+            cooldown_until: Some(now + chrono::Duration::hours(2)),
+            last_run_at: Some(now),
+            last_reason: "Gradle đang chạy".to_string(),
+        };
+        db.save_guard_cooldown(&st).unwrap();
+        let loaded = db.get_guard_cooldown("/home").unwrap().unwrap();
+        assert_eq!(loaded.consecutive_ineffective, 2);
+        assert_eq!(loaded.last_reason, "Gradle đang chạy");
+
+        db.clear_guard_cooldown("/home").unwrap();
+        assert!(db.get_guard_cooldown("/home").unwrap().is_none());
+
+        let rec = DirectDeleteRecord {
+            id: None,
+            timestamp: now,
+            drive_root: "/home".to_string(),
+            profile_id: "package_managers".to_string(),
+            unit_kind: "gradle_transform".to_string(),
+            unit_path: PathBuf::from("/home/u/.gradle/caches/8.11.1/transforms/abc123"),
+            file_count: 12,
+            logical_bytes: 1_048_576,
+            reason: "direct regenerable dev cache".to_string(),
+        };
+        let row_id = db.record_direct_delete(&rec).unwrap();
+        assert!(row_id > 0);
+        let logs = db.list_direct_deletes(Some("/home"), 10).unwrap();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].unit_kind, "gradle_transform");
+        assert_eq!(logs[0].logical_bytes, 1_048_576);
+
+        // Verify delete_vault_archive removes both vault_archives and vault_files rows cleanly.
+        let arch = VaultArchive {
+            id: None,
+            rule_id: 0,
+            app_name: "TestOrphan".to_string(),
+            zip_path: PathBuf::from("/tmp/orphan.zip"),
+            manifest_path: PathBuf::from("/tmp/orphan.manifest.json"),
+            file_count: 1,
+            original_bytes: 128,
+            compressed_bytes: 64,
+            created_at: now,
+            expires_at: now + chrono::Duration::days(7),
+            status: VaultStatus::Quarantined,
+            status_reason: "test".to_string(),
+            resolved_at: None,
+        };
+        let vf = VaultFileItem {
+            id: None,
+            archive_id: None,
+            original_path: PathBuf::from("/tmp/a.txt"),
+            rel_arcname: "item_00001_a.txt".to_string(),
+            size_bytes: 128,
+            sha256: "abc".to_string(),
+            mtime: 0.0,
+            atime: 0.0,
+            hardlink_paths: vec![PathBuf::from("/tmp/a.txt")],
+            restored_individually: false,
+        };
+        let aid = db.create_vault_archive(&arch, &[vf]).unwrap();
+        assert_eq!(db.list_vault_archives(None).unwrap().len(), 1);
+        assert_eq!(db.get_vault_files(aid).unwrap().len(), 1);
+        db.delete_vault_archive(aid).unwrap();
+        assert!(db.list_vault_archives(None).unwrap().is_empty());
+        assert!(db.get_vault_files(aid).unwrap().is_empty());
     }
 }

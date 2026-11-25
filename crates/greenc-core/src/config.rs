@@ -59,7 +59,12 @@ pub const DEFAULT_PROTECTED_PATTERNS: &[&str] = &[
     "*.mdf",
     "*.ldf",
     "*.rescache",
+    "*.lock",
+    "*.lck",
     "lockfile",
+    "CACHEDIR.TAG",
+    "gc.properties",
+    "file-access.bin",
     "CURRENT",
     "MANIFEST-*",
 ];

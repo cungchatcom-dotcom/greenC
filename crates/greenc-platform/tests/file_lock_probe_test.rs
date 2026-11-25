@@ -40,3 +40,16 @@ fn test_exclusive_lock_detection() {
     // Now unlocked
     assert!(!is_file_locked(&file_path));
 }
+
+#[cfg(unix)]
+#[test]
+fn plain_open_fd_without_advisory_lock_is_not_reported_locked_on_unix() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let file_path = temp_dir.path().join("plain_open.dat");
+    std::fs::write(&file_path, b"gradle cache artifact").unwrap();
+
+    // Opening a file on Unix without flock/fcntl does NOT acquire an advisory lock.
+    // This verifies why process-level busy-tool detection is required on Linux/macOS.
+    let _plain_open = OpenOptions::new().read(true).open(&file_path).unwrap();
+    assert!(!is_file_locked(&file_path));
+}

@@ -13,10 +13,11 @@ use clap::{Parser, Subcommand};
 use greenc_core::config::{default_vault_dir, sandbox_demo_dir, MIN_VAULT_RESERVE_BYTES};
 use greenc_core::error::{GreenCError, Result};
 use greenc_core::models::{
-    normalize_drive_root, DriveQuota, FileManifestItem, QuotaRule, RelocationHealthStatus,
-    VaultStatus,
+    normalize_drive_root, DriveQuota, FileManifestItem, QuotaRule, RegenerableCacheMode,
+    RelocationHealthStatus, VaultStatus,
 };
 use greenc_core::task::TaskControl;
+use greenc_platform::dev_tools::{DevTool, DevToolProbe, NativeDevToolProbe};
 use greenc_platform::handle::NativeFileLockProbe;
 use greenc_platform::reparse::NativeReparsePointApi;
 use greenc_platform::traits::{
@@ -35,10 +36,13 @@ use greenc_scanner::walker::walk_directory_parallel;
 use greenc_storage::db::GreenCDb;
 use greenc_storage::settings::{AppSettings, ThemeMode};
 use greenc_vault::archiver::{ArchiveOptions, ArchiverPipeline};
+use greenc_vault::cache_units::is_forbidden_dev_cache_path;
 use greenc_vault::canary::CanaryVerifier;
 use greenc_vault::cleanup::{CleanupOptions, DeletionMethod, SafeCleaner};
+use greenc_vault::guard::{run_guard_for_quota, GuardRunOptions};
 use greenc_vault::profiles::PresetProfiles;
-use greenc_vault::rollback::{RestoreOptions, RollbackEngine};
+use greenc_vault::rollback::{safe_remove_vault_artifact, RestoreOptions, RollbackEngine};
+use greenc_vault::suggest::{suggest_large_build_outputs, SuggestOptions};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
@@ -125,6 +129,54 @@ pub enum Commands {
         #[command(subcommand)]
         action: QuotaCommands,
     },
+    /// Quota-aware safe disk guardian (`run`, read-only `suggest`, and `set-mode`).
+    Guard {
+        #[command(subcommand)]
+        action: GuardCommands,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum GuardCommands {
+    /// Enforces per-drive quotas using the shared safe quota guard engine.
+    Run {
+        /// Restrict execution to one drive root (e.g. `/home` or `C:\`).
+        #[arg(long)]
+        drive: Option<String>,
+        /// Preview cleanup decisions without modifying disk or cooldown state.
+        #[arg(long)]
+        dry_run: bool,
+        /// Extra externally detected busy tools (comma-separated, e.g. `gradle,cargo`).
+        #[arg(long, value_delimiter = ',')]
+        extra_busy_tools: Vec<String>,
+    },
+    /// Read-only report of large stale git-ignored build outputs and Vault size (never deletes).
+    Suggest {
+        /// Restrict suggestions to one drive root.
+        #[arg(long)]
+        drive: Option<String>,
+        /// Explicit root directory to scan (defaults to current user HOME).
+        #[arg(long)]
+        root: Option<PathBuf>,
+        /// Minimum idle age in days (default: 3).
+        #[arg(long, default_value_t = 3)]
+        min_days: u64,
+        /// Maximum directory traversal depth (default: 6).
+        #[arg(long, default_value_t = 6)]
+        max_depth: usize,
+        /// Maximum scan wall-clock time in seconds (default: 10).
+        #[arg(long, default_value_t = 10)]
+        max_secs: u64,
+    },
+    /// Sets `regenerable_cache_mode` (`vault` | `direct`) on a configured drive quota.
+    SetMode {
+        /// Drive letter or mount point (e.g. `/home` or `C:\`).
+        #[arg(long)]
+        drive: String,
+        /// Cleanup mode for verified regenerable dev caches: `vault` (default) or `direct`.
+        #[arg(long)]
+        mode: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -158,6 +210,9 @@ pub enum QuotaCommands {
         /// Store the quota switched off.
         #[arg(long)]
         disabled: bool,
+        /// Mode for verified regenerable dev caches on this drive: `vault` (default) or `direct`.
+        #[arg(long)]
+        regenerable_cache_mode: Option<String>,
     },
     /// Removes the quota of one drive.
     Remove {
@@ -539,7 +594,11 @@ fn execute_inner(cli: Cli, db_path: &Path, ctrl: &Arc<TaskControl>) -> Result<se
                 }
             }
 
-            let _ = std::fs::remove_dir_all(&probe_dir);
+            if std::fs::symlink_metadata(&probe_dir)
+                .is_ok_and(|m| !m.file_type().is_symlink() && m.is_dir())
+            {
+                let _ = std::fs::remove_dir_all(&probe_dir);
+            }
             let count = proposals.len();
             Ok(json!({
                 "proposals": proposals,
@@ -576,7 +635,13 @@ fn execute_inner(cli: Cli, db_path: &Path, ctrl: &Arc<TaskControl>) -> Result<se
                 ));
             }
 
-            let unlocked: Vec<_> = candidates.into_iter().filter(|c| !c.is_locked).collect();
+            let unlocked: Vec<_> = candidates
+                .into_iter()
+                .filter(|c| !c.is_locked)
+                .filter(|c| {
+                    c.profile_id != "package_managers" || !is_forbidden_dev_cache_path(&c.path)
+                })
+                .collect();
             let preview_bytes: u64 = unlocked.iter().map(|c| c.size_bytes).sum();
 
             if dry_run || unlocked.is_empty() {
@@ -621,7 +686,26 @@ fn execute_inner(cli: Cli, db_path: &Path, ctrl: &Arc<TaskControl>) -> Result<se
                     prune_empty_directories: true,
                 },
             );
-            let items: Vec<FileManifestItem> = manifest.files.clone();
+            // Pre-unlink TOCTOU guard for developer caches: if any build tool started during
+            // archiving, preserve all `package_managers` items untouched.
+            let pkg_mgr_paths: std::collections::HashSet<&Path> = unlocked
+                .iter()
+                .filter(|c| c.profile_id == "package_managers")
+                .map(|c| c.path.as_path())
+                .collect();
+            let has_pkg_mgr = !pkg_mgr_paths.is_empty();
+            let pkg_mgr_blocked =
+                has_pkg_mgr && NativeDevToolProbe.detect_busy_tools().is_any_busy();
+            let items: Vec<FileManifestItem> = if pkg_mgr_blocked {
+                manifest
+                    .files
+                    .iter()
+                    .filter(|item| !pkg_mgr_paths.contains(item.original_path.as_path()))
+                    .cloned()
+                    .collect()
+            } else {
+                manifest.files.clone()
+            };
             let clean_res = cleaner.unlink_archived_items(&items, &snapshots)?;
 
             Ok(json!({
@@ -693,7 +777,11 @@ fn execute_inner(cli: Cli, db_path: &Path, ctrl: &Arc<TaskControl>) -> Result<se
                 file_ids,
             } => {
                 let db_id = resolve_archive_id(&db, &archive_id)?;
-                let restore_opts = RestoreOptions::default();
+                let vault_dir = settings.vault_dir(&default_vault_dir())?;
+                let restore_opts = RestoreOptions {
+                    vault_dir: Some(vault_dir),
+                    ..Default::default()
+                };
                 let sha256_verified = restore_opts.verify_sha256;
                 let engine = RollbackEngine::new(&db, restore_opts);
                 let res = if file_ids.is_empty() {
@@ -713,6 +801,7 @@ fn execute_inner(cli: Cli, db_path: &Path, ctrl: &Arc<TaskControl>) -> Result<se
                 expired,
                 archive_id,
             } => {
+                let vault_dir = settings.vault_dir(&default_vault_dir())?;
                 let mut purged_count = 0usize;
                 let mut freed_bytes = 0u64;
                 if expired {
@@ -720,8 +809,20 @@ fn execute_inner(cli: Cli, db_path: &Path, ctrl: &Arc<TaskControl>) -> Result<se
                     for a in db.list_vault_archives(Some(VaultStatus::Quarantined.as_str()))? {
                         if a.expires_at <= now {
                             if let Some(id) = a.id {
-                                let _ = std::fs::remove_file(&a.zip_path);
-                                let _ = std::fs::remove_file(&a.manifest_path);
+                                let zip_res =
+                                    safe_remove_vault_artifact(&a.zip_path, &vault_dir, ".zip");
+                                let man_res = safe_remove_vault_artifact(
+                                    &a.manifest_path,
+                                    &vault_dir,
+                                    ".manifest.json",
+                                );
+                                if zip_res.is_err() || man_res.is_err() {
+                                    tracing::warn!(
+                                        "Skipped purging archive {} with path outside vault_dir",
+                                        id
+                                    );
+                                    continue;
+                                }
                                 db.update_vault_status(
                                     id,
                                     VaultStatus::Purged.as_str(),
@@ -735,8 +836,8 @@ fn execute_inner(cli: Cli, db_path: &Path, ctrl: &Arc<TaskControl>) -> Result<se
                 } else if let Some(target_id) = archive_id {
                     let db_id = resolve_archive_id(&db, &target_id)?;
                     if let Some(a) = db.get_vault_archive(db_id)? {
-                        let _ = std::fs::remove_file(&a.zip_path);
-                        let _ = std::fs::remove_file(&a.manifest_path);
+                        safe_remove_vault_artifact(&a.zip_path, &vault_dir, ".zip")?;
+                        safe_remove_vault_artifact(&a.manifest_path, &vault_dir, ".manifest.json")?;
                         db.update_vault_status(
                             db_id,
                             VaultStatus::Purged.as_str(),
@@ -1038,6 +1139,7 @@ fn execute_inner(cli: Cli, db_path: &Path, ctrl: &Arc<TaskControl>) -> Result<se
                             "auto_backup": q.auto_backup,
                             "backup_dir": q.backup_dir.as_ref().map(|p| p.to_string_lossy().to_string()),
                             "enabled": q.enabled,
+                            "regenerable_cache_mode": q.regenerable_cache_mode.as_str(),
                             "level": if available { q.level(total, free).as_str() } else { "unavailable" },
                             "available": available,
                         })
@@ -1070,6 +1172,7 @@ fn execute_inner(cli: Cli, db_path: &Path, ctrl: &Arc<TaskControl>) -> Result<se
                 auto_backup,
                 backup_dir,
                 disabled,
+                regenerable_cache_mode,
             } => {
                 let root = normalize_drive_root(&drive).ok_or_else(|| {
                     GreenCError::PreconditionBlocked {
@@ -1077,6 +1180,22 @@ fn execute_inner(cli: Cli, db_path: &Path, ctrl: &Arc<TaskControl>) -> Result<se
                         reason: format!("Invalid drive '{drive}' (expected e.g. C:\\ or /)"),
                     }
                 })?;
+                let cache_mode = match regenerable_cache_mode {
+                    Some(raw) => RegenerableCacheMode::from_str_strict(&raw).ok_or_else(|| {
+                        GreenCError::PreconditionBlocked {
+                            operation: "quota".to_string(),
+                            reason: format!(
+                                "Invalid regenerable_cache_mode '{raw}' (expected 'vault' or 'direct')"
+                            ),
+                        }
+                    })?,
+                    None => db
+                        .list_drive_quotas(false)?
+                        .into_iter()
+                        .find(|existing| existing.drive_root.eq_ignore_ascii_case(&root))
+                        .map(|existing| existing.regenerable_cache_mode)
+                        .unwrap_or(RegenerableCacheMode::Vault),
+                };
                 let mut q = DriveQuota::new(root.clone());
                 q.limit_bytes = (limit_gb.max(0.0) * 1024.0 * 1024.0 * 1024.0) as u64;
                 q.warn_ratio = f64::from(warn) / 100.0;
@@ -1086,6 +1205,7 @@ fn execute_inner(cli: Cli, db_path: &Path, ctrl: &Arc<TaskControl>) -> Result<se
                 q.auto_backup = auto_backup;
                 q.backup_dir = backup_dir;
                 q.enabled = !disabled;
+                q.regenerable_cache_mode = cache_mode;
                 q.validate_backup()
                     .map_err(|reason| GreenCError::PreconditionBlocked {
                         operation: "quota".to_string(),
@@ -1099,7 +1219,12 @@ fn execute_inner(cli: Cli, db_path: &Path, ctrl: &Arc<TaskControl>) -> Result<se
                     "warn_ratio": q.warn_ratio,
                     "clean_ratio": q.clean_ratio,
                     "target_ratio": q.target_ratio,
-                    "_human": format!("Quota saved for {}", q.drive_root)
+                    "regenerable_cache_mode": q.regenerable_cache_mode.as_str(),
+                    "_human": format!(
+                        "Quota saved for {} (regenerable_cache_mode={})",
+                        q.drive_root,
+                        q.regenerable_cache_mode.as_str()
+                    )
                 }))
             }
             QuotaCommands::Remove { drive } => {
@@ -1121,6 +1246,193 @@ fn execute_inner(cli: Cli, db_path: &Path, ctrl: &Arc<TaskControl>) -> Result<se
                     db.delete_drive_quota(id)?;
                 }
                 Ok(json!({ "removed": root, "_human": format!("Quota removed for {root}") }))
+            }
+        },
+
+        Commands::Guard { action } => match action {
+            GuardCommands::Run {
+                drive,
+                dry_run,
+                extra_busy_tools,
+            } => {
+                let drive_filter = match drive {
+                    Some(raw) => Some(normalize_drive_root(&raw).ok_or_else(|| {
+                        GreenCError::PreconditionBlocked {
+                            operation: "guard run".to_string(),
+                            reason: format!("Invalid drive '{raw}' (expected e.g. C:\\ or /home)"),
+                        }
+                    })?),
+                    None => None,
+                };
+
+                let mut parsed_extra_busy: Vec<DevTool> = extra_busy_tools
+                    .iter()
+                    .filter_map(|s| DevTool::from_str_loose(s))
+                    .collect();
+                if let Ok(env_busy) = std::env::var("GREENC_EXTRA_BUSY_TOOLS") {
+                    for part in env_busy.split([',', ' ', ';']) {
+                        if let Some(t) = DevTool::from_str_loose(part) {
+                            if !parsed_extra_busy.contains(&t) {
+                                parsed_extra_busy.push(t);
+                            }
+                        }
+                    }
+                }
+
+                let mut quotas = db.list_drive_quotas(true)?;
+                if let Some(ref target_root) = drive_filter {
+                    quotas.retain(|q| q.drive_root.eq_ignore_ascii_case(target_root));
+                }
+
+                let vault_dir = settings.vault_dir(&default_vault_dir())?;
+                let volume_api = NativeWin32VolumeApi;
+                let lock_probe = NativeFileLockProbe;
+                let dev_tool_probe = NativeDevToolProbe;
+
+                let suggest_roots: Vec<PathBuf> = default_suggest_roots();
+                let opts = GuardRunOptions {
+                    dry_run,
+                    extra_busy_tools: parsed_extra_busy,
+                    suggest_roots_on_miss: suggest_roots,
+                    ..Default::default()
+                };
+
+                let mut results = Vec::new();
+                for quota in &quotas {
+                    if ctrl.is_cancelled() {
+                        return Err(GreenCError::Cancelled);
+                    }
+                    let outcome = run_guard_for_quota(
+                        quota,
+                        &vault_dir,
+                        &db,
+                        &volume_api,
+                        &lock_probe,
+                        &dev_tool_probe,
+                        &opts,
+                        ctrl,
+                    )?;
+                    if !dry_run && outcome.net_freed_bytes > 0 {
+                        let today = chrono::Local::now()
+                            .date_naive()
+                            .format("%Y-%m-%d")
+                            .to_string();
+                        let _ = db.record_reclaimed_bytes(
+                            &quota.drive_root,
+                            &today,
+                            outcome.net_freed_bytes as u64,
+                        );
+                    }
+                    results.push(outcome);
+                }
+
+                let total_logical: u64 = results.iter().map(|r| r.logical_bytes).sum();
+                let total_vault: u64 = results.iter().map(|r| r.vault_bytes).sum();
+                let total_direct: u64 = results.iter().map(|r| r.direct_deleted_bytes).sum();
+                let total_net: i64 = results.iter().map(|r| r.net_freed_bytes).sum();
+                let all_target_reached = results.iter().all(|r| r.target_reached);
+                let all_reasons: Vec<String> = results
+                    .iter()
+                    .flat_map(|r| r.reasons.iter().cloned())
+                    .collect();
+
+                let human = if results.is_empty() {
+                    "Không có hạn mức ổ đĩa nào đang bật.".to_string()
+                } else {
+                    results
+                        .iter()
+                        .map(|r| r.human_summary())
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                };
+
+                Ok(json!({
+                    "dry_run": dry_run,
+                    "drives": results,
+                    "logical_bytes": total_logical,
+                    "vault_bytes": total_vault,
+                    "direct_deleted_bytes": total_direct,
+                    "net_freed_bytes": total_net,
+                    "target_reached": all_target_reached,
+                    "reasons": all_reasons,
+                    "_human": human
+                }))
+            }
+            GuardCommands::Suggest {
+                drive,
+                root,
+                min_days,
+                max_depth,
+                max_secs,
+            } => {
+                let drive_filter = match drive {
+                    Some(raw) => Some(PathBuf::from(normalize_drive_root(&raw).ok_or_else(
+                        || GreenCError::PreconditionBlocked {
+                            operation: "guard suggest".to_string(),
+                            reason: format!("Invalid drive '{raw}' (expected e.g. C:\\ or /home)"),
+                        },
+                    )?)),
+                    None => None,
+                };
+                let roots = match root {
+                    Some(r) => vec![r],
+                    None => default_suggest_roots(),
+                };
+                let vault_dir = settings.vault_dir(&default_vault_dir())?;
+                let mut opts = SuggestOptions::with_defaults(roots, vault_dir);
+                opts.drive_filter = drive_filter;
+                opts.min_stale_days = min_days;
+                opts.max_depth = max_depth;
+                opts.max_duration = std::time::Duration::from_secs(max_secs.max(1));
+
+                let dev_tool_probe = NativeDevToolProbe;
+                let report = suggest_large_build_outputs(&opts, &dev_tool_probe, ctrl);
+
+                let total_gb = report.total_suggestable_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+                let vault_gb = report.vault.total_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+                let human = format!(
+                    "Gợi ý (chỉ đọc): {} thư mục output build cũ ({:.2} GB) | Vault: {} gói ({:.2} GB)",
+                    report.suggestions.len(),
+                    total_gb,
+                    report.vault.archive_count,
+                    vault_gb
+                );
+
+                let mut val = serde_json::to_value(&report)?;
+                if let Some(obj) = val.as_object_mut() {
+                    obj.insert("_human".to_string(), json!(human));
+                }
+                Ok(val)
+            }
+            GuardCommands::SetMode { drive, mode } => {
+                let root = normalize_drive_root(&drive).ok_or_else(|| {
+                    GreenCError::PreconditionBlocked {
+                        operation: "guard set-mode".to_string(),
+                        reason: format!("Invalid drive '{drive}' (expected e.g. C:\\ or /home)"),
+                    }
+                })?;
+                let parsed = RegenerableCacheMode::from_str_strict(&mode).ok_or_else(|| {
+                    GreenCError::PreconditionBlocked {
+                        operation: "guard set-mode".to_string(),
+                        reason: format!("Invalid mode '{mode}' (expected 'vault' or 'direct')"),
+                    }
+                })?;
+                let updated = db.set_drive_regenerable_cache_mode(&root, parsed)?;
+                if !updated {
+                    return Err(GreenCError::NotFound {
+                        entity: "DriveQuota".to_string(),
+                        id: root,
+                    });
+                }
+                Ok(json!({
+                    "drive_root": root,
+                    "regenerable_cache_mode": parsed.as_str(),
+                    "_human": format!(
+                        "Đã đặt regenerable_cache_mode={} cho ổ {}",
+                        parsed.as_str(),
+                        root
+                    )
+                }))
             }
         },
 
@@ -1258,6 +1570,17 @@ fn execute_inner(cli: Cli, db_path: &Path, ctrl: &Arc<TaskControl>) -> Result<se
             }
         },
     }
+}
+
+fn default_suggest_roots() -> Vec<PathBuf> {
+    #[cfg(windows)]
+    let home = std::env::var("USERPROFILE").ok();
+    #[cfg(not(windows))]
+    let home = std::env::var("HOME").ok();
+
+    home.filter(|s| !s.trim().is_empty())
+        .map(|s| vec![PathBuf::from(s)])
+        .unwrap_or_default()
 }
 
 const fn target_or_zero(n: usize) -> usize {

@@ -2,7 +2,7 @@
 
 use crate::state::AppState;
 use chrono::Utc;
-use greenc_core::models::{DriveQuota, QuotaLevel};
+use greenc_core::models::{DriveQuota, QuotaLevel, RegenerableCacheMode};
 use greenc_platform::traits::Win32VolumeApi;
 use greenc_platform::volume::NativeWin32VolumeApi;
 use serde::{Deserialize, Serialize};
@@ -22,6 +22,8 @@ pub struct DriveQuotaInputDto {
     pub auto_backup: Option<bool>,
     pub backup_dir: Option<String>,
     pub enabled: Option<bool>,
+    #[serde(default)]
+    pub regenerable_cache_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,6 +43,7 @@ pub struct DriveQuotaStatusDto {
     pub auto_backup: bool,
     pub backup_dir: Option<String>,
     pub enabled: bool,
+    pub regenerable_cache_mode: String,
     pub level: String,
     pub bytes_to_reclaim: u64,
     pub available: bool,
@@ -79,6 +82,7 @@ pub fn quota_status(quota: &DriveQuota, volume: &dyn Win32VolumeApi) -> DriveQuo
             .as_ref()
             .map(|p| p.to_string_lossy().to_string()),
         enabled: quota.enabled,
+        regenerable_cache_mode: quota.regenerable_cache_mode.as_str().to_string(),
         level: level.as_str().to_string(),
         bytes_to_reclaim: quota.bytes_to_reclaim(total, free),
         available,
@@ -105,6 +109,11 @@ pub fn build_quota(input: &DriveQuotaInputDto) -> Result<DriveQuota, String> {
     q.auto_clean = input.auto_clean.unwrap_or(false);
     q.auto_backup = input.auto_backup.unwrap_or(false);
     q.enabled = input.enabled.unwrap_or(true);
+    q.regenerable_cache_mode = match input.regenerable_cache_mode.as_deref() {
+        Some(raw) => RegenerableCacheMode::from_str_strict(raw)
+            .ok_or_else(|| format!("Chế độ cache tái tạo không hợp lệ: '{raw}'"))?,
+        None => RegenerableCacheMode::Vault,
+    };
     q.backup_dir = input
         .backup_dir
         .as_deref()
@@ -137,10 +146,21 @@ pub async fn save_drive_quota(
     quota: DriveQuotaInputDto,
     state: State<'_, AppState>,
 ) -> std::result::Result<DriveQuotaStatusDto, String> {
+    let explicit_mode = quota.regenerable_cache_mode.is_some();
     let mut model = build_quota(&quota)?;
     model.created_at = Utc::now();
     let db = state.db.clone();
     tokio::task::spawn_blocking(move || {
+        if !explicit_mode {
+            if let Ok(existing_list) = db.list_drive_quotas(false) {
+                if let Some(existing) = existing_list
+                    .into_iter()
+                    .find(|q| q.drive_root.eq_ignore_ascii_case(&model.drive_root))
+                {
+                    model.regenerable_cache_mode = existing.regenerable_cache_mode;
+                }
+            }
+        }
         let id = db
             .save_drive_quota(&model)
             .map_err(|e| format!("Không thể lưu hạn mức: {e}"))?;
@@ -181,6 +201,7 @@ mod tests {
             auto_backup: None,
             backup_dir: None,
             enabled: None,
+            regenerable_cache_mode: None,
         }
     }
 

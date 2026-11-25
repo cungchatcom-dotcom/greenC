@@ -1,7 +1,8 @@
 use greenc_platform::unix_parsers::{
-    assign_unix_drive_letter, evaluate_unix_drive_eligibility, is_ignored_unix_mount,
-    is_protected_unix_path, is_supported_unix_fs, parse_pmset_battery, parse_proc_mounts,
-    parse_xdg_user_dirs, unescape_proc_mount_field,
+    assign_unix_drive_letter, detect_atime_reliability_from_proc_mounts,
+    evaluate_unix_drive_eligibility, is_ignored_unix_mount, is_protected_unix_path,
+    is_supported_unix_fs, parse_pmset_battery, parse_proc_mounts, parse_xdg_user_dirs,
+    unescape_proc_mount_field, AtimeReliability,
 };
 use std::path::{Path, PathBuf};
 
@@ -120,5 +121,44 @@ XDG_DOCUMENTS_DIR="/mnt/docs"
     assert_eq!(
         map.get("XDG_DOCUMENTS_DIR"),
         Some(&PathBuf::from("/mnt/docs"))
+    );
+}
+
+#[test]
+fn test_detect_atime_reliability_from_proc_mounts() {
+    let mounts = r#"
+/dev/nvme0n1p1 / ext4 rw,relatime 0 0
+/dev/nvme0n1p2 /home ext4 rw,noatime,errors=remount-ro 0 0
+/dev/nvme0n1p3 /home/alice/fast ext4 rw,strictatime 0 0
+/dev/sda1 /mnt/data btrfs rw,relatime,space_cache=v2 0 0
+/dev/sda2 /mnt/data btrfs rw,noatime 0 0
+"#;
+    assert_eq!(
+        detect_atime_reliability_from_proc_mounts(Path::new("/var/log/app.log"), mounts),
+        AtimeReliability::Reliable
+    );
+    assert_eq!(
+        detect_atime_reliability_from_proc_mounts(Path::new("/home/alice/.gradle/caches"), mounts),
+        AtimeReliability::UnreliableNoAtime
+    );
+    // Boundary check: `/home2` must match `/` (relatime), NOT `/home` (noatime)!
+    assert_eq!(
+        detect_atime_reliability_from_proc_mounts(Path::new("/home2/alice/.gradle"), mounts),
+        AtimeReliability::Reliable
+    );
+    // More specific child mount overrides parent mount.
+    assert_eq!(
+        detect_atime_reliability_from_proc_mounts(Path::new("/home/alice/fast/cache"), mounts),
+        AtimeReliability::Reliable
+    );
+    // Stacked mount at the exact same mount point: later entry wins.
+    assert_eq!(
+        detect_atime_reliability_from_proc_mounts(Path::new("/mnt/data/work"), mounts),
+        AtimeReliability::UnreliableNoAtime
+    );
+    // Empty /proc/mounts snapshot fails safe to Unknown.
+    assert_eq!(
+        detect_atime_reliability_from_proc_mounts(Path::new("/home/alice"), ""),
+        AtimeReliability::Unknown
     );
 }

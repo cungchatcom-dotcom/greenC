@@ -19,7 +19,7 @@ use greenc_core::models::{CleanCandidate, FileManifestItem};
 use greenc_core::task::TaskControl;
 use greenc_platform::traits::Win32VolumeApi;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -312,6 +312,33 @@ impl ArchiverPipeline {
     where
         F: Fn(ArchiveProgress) + Send + Sync + 'static,
     {
+        self.archive_candidates_mapped(
+            rule_id,
+            app_name,
+            candidates,
+            &HashMap::new(),
+            volume_api,
+            task_control,
+            progress_cb,
+        )
+    }
+
+    /// Archives candidates reading payload bytes from `cand.path` while recording mapped logical
+    /// `original_path`s (from `original_path_overrides`, e.g. when archiving from an atomic staging
+    /// directory) so Vault restore always restores to the true original paths.
+    pub fn archive_candidates_mapped<F>(
+        &self,
+        rule_id: i64,
+        app_name: &str,
+        candidates: &[CleanCandidate],
+        original_path_overrides: &HashMap<PathBuf, PathBuf>,
+        volume_api: &dyn Win32VolumeApi,
+        task_control: &TaskControl,
+        progress_cb: F,
+    ) -> Result<VaultManifest>
+    where
+        F: Fn(ArchiveProgress) + Send + Sync + 'static,
+    {
         task_control.check_pause_or_cancel()?;
 
         // Ensure vault directory exists
@@ -368,6 +395,7 @@ impl ArchiverPipeline {
         let execution_result = self.execute_archiving(
             &zip_path,
             &dedup_candidates,
+            original_path_overrides,
             total_planned_bytes,
             task_control,
             &progress_cb,
@@ -384,7 +412,13 @@ impl ArchiverPipeline {
 
                 let original_root = dedup_candidates
                     .first()
-                    .and_then(|c| c.path.parent())
+                    .map(|c| {
+                        original_path_overrides
+                            .get(&c.path)
+                            .unwrap_or(&c.path)
+                            .as_path()
+                    })
+                    .and_then(|p| p.parent())
                     .unwrap_or(Path::new("C:\\"))
                     .to_path_buf();
 
@@ -426,11 +460,73 @@ impl ArchiverPipeline {
         }
     }
 
+    /// Rewrites `zip_path` in place (via temp file + atomic rename) keeping ONLY entries whose
+    /// `rel_arcname` is in `kept_arcnames`. Returns `(new_compressed_size, new_archive_sha256)`.
+    pub fn filter_zip_archive(
+        zip_path: &Path,
+        kept_arcnames: &HashSet<String>,
+    ) -> Result<(u64, String)> {
+        if std::fs::symlink_metadata(zip_path)
+            .map(|m| m.file_type().is_symlink() || !m.is_file())
+            .unwrap_or(true)
+        {
+            return Err(GreenCError::PreconditionBlocked {
+                operation: "filter_zip_archive".to_string(),
+                reason: format!(
+                    "Refused to rewrite symlink or non-file archive '{}'",
+                    zip_path.display()
+                ),
+            });
+        }
+        let tmp_path = zip_path.with_extension("zip.filtered.tmp");
+        if std::fs::symlink_metadata(&tmp_path).is_ok_and(|m| m.file_type().is_symlink()) {
+            return Err(GreenCError::PreconditionBlocked {
+                operation: "filter_zip_archive".to_string(),
+                reason: format!("Refused symlink temp path '{}'", tmp_path.display()),
+            });
+        }
+        {
+            let src_file = File::open(zip_path)?;
+            let mut src_zip = zip::ZipArchive::new(src_file)
+                .map_err(|e| GreenCError::Vault(format!("Failed to open source ZIP: {e}")))?;
+
+            let dst_file = File::create(&tmp_path)?;
+            let mut dst_zip = ZipWriter::new(dst_file);
+
+            for i in 0..src_zip.len() {
+                let entry = src_zip
+                    .by_index_raw(i)
+                    .map_err(|e| GreenCError::Vault(format!("Failed reading ZIP entry: {e}")))?;
+                if kept_arcnames.contains(entry.name()) {
+                    dst_zip.raw_copy_file(entry).map_err(|e| {
+                        GreenCError::Vault(format!("Failed copying ZIP entry: {e}"))
+                    })?;
+                }
+            }
+
+            let mut out = dst_zip
+                .finish()
+                .map_err(|e| GreenCError::Vault(format!("Failed finalizing filtered ZIP: {e}")))?;
+            out.flush()?;
+            out.sync_all()?;
+        }
+
+        if let Err(e) = std::fs::rename(&tmp_path, zip_path) {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(GreenCError::Io(e));
+        }
+
+        let compressed_size = std::fs::metadata(zip_path)?.len();
+        let sha256 = compute_file_sha256(zip_path)?;
+        Ok((compressed_size, sha256))
+    }
+
     /// Internal execution loop for archiving candidate files.
     fn execute_archiving<F>(
         &self,
         zip_path: &Path,
         candidates: &[CleanCandidate],
+        original_path_overrides: &HashMap<PathBuf, PathBuf>,
         total_planned_bytes: u64,
         task_control: &TaskControl,
         progress_cb: &F,
@@ -539,15 +635,29 @@ impl ArchiverPipeline {
 
             written_entries.insert(rel_arcname.clone(), file_size);
 
-            let mut hardlink_paths = cand.hardlink_siblings.clone();
-            if !hardlink_paths.contains(&cand.path) {
-                hardlink_paths.insert(0, cand.path.clone());
+            let logical_original_path = original_path_overrides
+                .get(&cand.path)
+                .cloned()
+                .unwrap_or_else(|| cand.path.clone());
+
+            let mut hardlink_paths: Vec<PathBuf> = cand
+                .hardlink_siblings
+                .iter()
+                .map(|p| {
+                    original_path_overrides
+                        .get(p)
+                        .cloned()
+                        .unwrap_or_else(|| p.clone())
+                })
+                .collect();
+            if !hardlink_paths.contains(&logical_original_path) {
+                hardlink_paths.insert(0, logical_original_path.clone());
             }
 
             manifest_items.push(FileManifestItem {
                 id: None,
                 archive_id: None,
-                original_path: cand.path.clone(),
+                original_path: logical_original_path,
                 rel_arcname,
                 size_bytes: file_size,
                 sha256: file_sha256,

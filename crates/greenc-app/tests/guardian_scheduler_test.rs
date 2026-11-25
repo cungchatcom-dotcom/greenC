@@ -64,6 +64,7 @@ fn make_test_guardian(
         lock_probe: Arc::new(MockFileLockProbe::new()),
         proc_probe: Arc::new(MockProcessServiceProbe::new()),
         reparse_api: Arc::new(MockReparsePointApi::new()),
+        dev_tool_probe: Arc::new(greenc_platform::dev_tools::MockDevToolProbe::idle()),
     };
 
     let guardian = BackgroundGuardian::with_deps(state.clone(), deps, Duration::from_secs(45))
@@ -291,6 +292,7 @@ fn enforce_drive_quota_moves_oldest_candidates_into_vault_and_flags_same_drive_b
         lock_probe: Arc::new(MockFileLockProbe::new()),
         proc_probe: Arc::new(MockProcessServiceProbe::new()),
         reparse_api: Arc::new(MockReparsePointApi::new()),
+        dev_tool_probe: Arc::new(greenc_platform::dev_tools::MockDevToolProbe::idle()),
     };
 
     // Fabricated candidates inside the temp dir: never touches real user data.

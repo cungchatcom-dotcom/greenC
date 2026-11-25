@@ -142,7 +142,13 @@ fn test_full_archive_rollback() {
     assert!(!orig_file2.exists());
 
     // Execute full rollback
-    let engine = RollbackEngine::new(&db, RestoreOptions::default());
+    let engine = RollbackEngine::new(
+        &db,
+        RestoreOptions {
+            vault_dir: Some(vault_dir.clone()),
+            ..Default::default()
+        },
+    );
     let report = engine
         .rollback_archive(archive_id, "User requested rollback", false)
         .expect("Rollback must succeed");
@@ -237,7 +243,13 @@ fn test_restoration_collision_non_destructive() {
         .unwrap();
 
     // Execute rollback
-    let engine = RollbackEngine::new(&db, RestoreOptions::default());
+    let engine = RollbackEngine::new(
+        &db,
+        RestoreOptions {
+            vault_dir: Some(vault_dir.clone()),
+            ..Default::default()
+        },
+    );
     let report = engine
         .rollback_archive(archive_id, "Collision test", false)
         .unwrap();
@@ -337,7 +349,13 @@ fn test_granular_single_file_restore() {
     let db_files = db.get_vault_files(archive_id).unwrap();
     let target_file_id = db_files[0].id.unwrap();
 
-    let engine = RollbackEngine::new(&db, RestoreOptions::default());
+    let engine = RollbackEngine::new(
+        &db,
+        RestoreOptions {
+            vault_dir: Some(vault_dir.clone()),
+            ..Default::default()
+        },
+    );
     let report = engine
         .restore_files_selective(archive_id, &[target_file_id])
         .unwrap();
@@ -397,7 +415,13 @@ fn test_auto_purge_expired_archives() {
         )
         .unwrap();
 
-    let engine = RollbackEngine::new(&db, RestoreOptions::default());
+    let engine = RollbackEngine::new(
+        &db,
+        RestoreOptions {
+            vault_dir: Some(vault_dir.clone()),
+            ..Default::default()
+        },
+    );
     let mock_probe = MockProcessProbe {
         service_running: true,
     };
@@ -477,7 +501,13 @@ fn test_repeated_restores_get_unique_names_and_never_overwrite() {
     let (archive_id, original, archived) = archive_with_occupied_original(tmp.path(), &db);
     let file_id = db.get_vault_files(archive_id).unwrap()[0].id.unwrap();
 
-    let engine = RollbackEngine::new(&db, RestoreOptions::default());
+    let engine = RollbackEngine::new(
+        &db,
+        RestoreOptions {
+            vault_dir: Some(tmp.path().join("vault")),
+            ..Default::default()
+        },
+    );
     let first = engine
         .restore_files_selective(archive_id, &[file_id])
         .unwrap();
@@ -509,7 +539,13 @@ fn test_full_rollback_skips_files_already_restored_individually() {
     let (archive_id, _original, _) = archive_with_occupied_original(tmp.path(), &db);
     let file_id = db.get_vault_files(archive_id).unwrap()[0].id.unwrap();
 
-    let engine = RollbackEngine::new(&db, RestoreOptions::default());
+    let engine = RollbackEngine::new(
+        &db,
+        RestoreOptions {
+            vault_dir: Some(tmp.path().join("vault")),
+            ..Default::default()
+        },
+    );
     engine
         .restore_files_selective(archive_id, &[file_id])
         .unwrap();

@@ -8,6 +8,7 @@ mod unix;
 #[cfg(windows)]
 mod win32;
 
+pub mod dev_tools;
 pub mod traits;
 pub mod unix_parsers;
 
@@ -21,8 +22,21 @@ pub use unix::{
     handle, known_folders, mutex, power_session, reparse, restart_mgr, volume, wof_compact,
 };
 
+pub use unix_parsers::{
+    detect_atime_reliability, detect_atime_reliability_from_proc_mounts, AtimeReliability,
+};
+
+pub use dev_tools::{
+    detect_busy_dev_tools, detect_busy_dev_tools_native, parse_ps_output, BusyToolsStatus, DevTool,
+    DevToolProbe, MockDevToolProbe, NativeDevToolProbe, ProcessSnapshot,
+};
+
+#[cfg(unix)]
+pub use handle::{current_user_uid, is_owned_by_uid};
 pub use handle::{
-    ensure_not_protected_system_path, is_file_locked, query_file_identity, Win32FileIdentity,
+    ensure_not_protected_system_path, is_file_locked, is_owned_by_current_user,
+    is_trusted_user_dir, query_file_identity, read_to_string_noatime, validate_private_staging_dir,
+    Win32FileIdentity,
 };
 #[cfg(windows)]
 pub use handle::{path_to_wide, OwnedHandle};

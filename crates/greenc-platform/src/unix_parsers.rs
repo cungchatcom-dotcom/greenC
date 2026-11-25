@@ -3,8 +3,140 @@
 //! Compiled unconditionally on all OS targets so unit tests can verify macOS/Linux parsing
 //! logic even when executed on Windows hosts.
 
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+
+/// Reliability of filesystem access-time (`atime`) metadata for cache-age heuristics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AtimeReliability {
+    /// Filesystem updates `atime` on reads (`relatime`, `strictatime`, or default `atime`).
+    Reliable,
+    /// Filesystem is mounted with `noatime`; reads never update `atime`.
+    UnreliableNoAtime,
+    /// Mount options could not be determined; callers should treat `atime` conservatively.
+    Unknown,
+}
+
+impl AtimeReliability {
+    pub fn is_reliable(self) -> bool {
+        self == Self::Reliable
+    }
+}
+
+/// Determines `atime` reliability for `path` by matching the most specific mount point
+/// in a Linux `/proc/mounts` snapshot.
+///
+/// Pure function so all mount-option cases (`noatime`, `relatime`, `strictatime`, nested mounts,
+/// bind mounts overriding an earlier mount at the same path) are unit-testable without root.
+pub fn detect_atime_reliability_from_proc_mounts(
+    path: &Path,
+    proc_mounts_content: &str,
+) -> AtimeReliability {
+    let entries = parse_proc_mounts(proc_mounts_content);
+    if entries.is_empty() {
+        return AtimeReliability::Unknown;
+    }
+
+    let raw_path = path.to_string_lossy();
+    let norm_path = if raw_path.len() > 1 {
+        raw_path.trim_end_matches('/')
+    } else {
+        raw_path.as_ref()
+    };
+
+    let mut best: Option<&UnixMountEntry> = None;
+    let mut best_len: usize = 0;
+
+    for entry in &entries {
+        let mnt = if entry.mount_point.len() > 1 {
+            entry.mount_point.trim_end_matches('/')
+        } else {
+            entry.mount_point.as_str()
+        };
+
+        let matches = if mnt == "/" {
+            norm_path.starts_with('/')
+        } else {
+            norm_path == mnt
+                || (norm_path.starts_with(mnt)
+                    && norm_path.as_bytes().get(mnt.len()) == Some(&b'/'))
+        };
+
+        // Use `>=` so a later mount stacked on the exact same mount point wins (Linux order).
+        if matches && mnt.len() >= best_len {
+            best = Some(entry);
+            best_len = mnt.len();
+        }
+    }
+
+    let Some(matched) = best else {
+        return AtimeReliability::Unknown;
+    };
+
+    for opt in matched.options.split(',') {
+        let trimmed = opt.trim();
+        if trimmed == "noatime" {
+            return AtimeReliability::UnreliableNoAtime;
+        }
+    }
+
+    AtimeReliability::Reliable
+}
+
+/// Inspects the real filesystem mount options for `path` to determine whether `atime` is reliable.
+pub fn detect_atime_reliability(path: &Path) -> AtimeReliability {
+    #[cfg(target_os = "linux")]
+    {
+        // Canonicalize the path or its nearest existing ancestor so symlinks resolve to real mount.
+        let mut probe = path.to_path_buf();
+        let resolved = loop {
+            if let Ok(c) = std::fs::canonicalize(&probe) {
+                break c;
+            }
+            if !probe.pop() {
+                break path.to_path_buf();
+            }
+        };
+        let Ok(content) = std::fs::read_to_string("/proc/mounts") else {
+            return AtimeReliability::Unknown;
+        };
+        detect_atime_reliability_from_proc_mounts(&resolved, &content)
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+        let mut probe = path.to_path_buf();
+        while !probe.exists() {
+            if !probe.pop() {
+                return AtimeReliability::Unknown;
+            }
+        }
+        let Ok(c_path) = CString::new(probe.as_os_str().as_bytes()) else {
+            return AtimeReliability::Unknown;
+        };
+        // SAFETY: `statfs` is a plain C struct zero-initialized before passing to `libc::statfs`.
+        let mut st: libc::statfs = unsafe { std::mem::zeroed() };
+        let rc = unsafe { libc::statfs(c_path.as_ptr(), &mut st) };
+        if rc != 0 {
+            return AtimeReliability::Unknown;
+        }
+        if (st.f_flags & (libc::MNT_NOATIME as u32)) != 0 {
+            AtimeReliability::UnreliableNoAtime
+        } else {
+            AtimeReliability::Reliable
+        }
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = path;
+        AtimeReliability::Reliable
+    }
+}
 
 /// Parsed entry from Linux `/proc/mounts` or macOS volume enumeration.
 #[derive(Debug, Clone, PartialEq, Eq)]

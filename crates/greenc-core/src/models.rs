@@ -423,6 +423,65 @@ impl QuotaLevel {
     }
 }
 
+/// Controls how verified regenerable developer cache units are handled during drive-quota cleanup.
+///
+/// - `Vault` (default): every cleaned unit is archived into Canary Safety Vault first.
+/// - `Direct`: ONLY verified regenerable developer cache units (`package_managers` atomic units)
+///   are deleted directly with full DB audit logging (avoids same-drive Vault overhead).
+///   Non-regenerable data ALWAYS goes through the Vault regardless of this setting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RegenerableCacheMode {
+    #[default]
+    Vault,
+    Direct,
+}
+
+impl RegenerableCacheMode {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Vault => "vault",
+            Self::Direct => "direct",
+        }
+    }
+
+    pub fn from_str_strict(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "vault" => Some(Self::Vault),
+            "direct" => Some(Self::Direct),
+            _ => None,
+        }
+    }
+
+    pub fn from_str_loose(s: &str) -> Self {
+        Self::from_str_strict(s).unwrap_or(Self::Vault)
+    }
+}
+
+/// Persistent per-drive guard backoff cooldown state (stored in SQLite `guard_cooldowns`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GuardCooldownState {
+    pub drive_root: String,
+    pub consecutive_ineffective: u32,
+    pub cooldown_until: Option<DateTime<Utc>>,
+    pub last_run_at: Option<DateTime<Utc>>,
+    pub last_reason: String,
+}
+
+/// Audit log record for every regenerable developer cache unit deleted directly in `direct` mode.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DirectDeleteRecord {
+    pub id: Option<i64>,
+    pub timestamp: DateTime<Utc>,
+    pub drive_root: String,
+    pub profile_id: String,
+    pub unit_kind: String,
+    pub unit_path: PathBuf,
+    pub file_count: u64,
+    pub logical_bytes: u64,
+    pub reason: String,
+}
+
 /// Capacity budget for a whole drive. It is the basis for warnings, automatic backup and
 /// automatic cleanup performed by the background guardian.
 ///
@@ -446,6 +505,8 @@ pub struct DriveQuota {
     /// Folder that receives a copy of each new Vault archive when `auto_backup` is on.
     pub backup_dir: Option<PathBuf>,
     pub enabled: bool,
+    #[serde(default)]
+    pub regenerable_cache_mode: RegenerableCacheMode,
     pub created_at: DateTime<Utc>,
 }
 
@@ -466,6 +527,7 @@ impl DriveQuota {
             auto_backup: false,
             backup_dir: None,
             enabled: true,
+            regenerable_cache_mode: RegenerableCacheMode::Vault,
             created_at: Utc::now(),
         }
     }

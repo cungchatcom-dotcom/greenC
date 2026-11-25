@@ -330,3 +330,222 @@ fn cli_quota_supports_unix_mount_points() {
     );
     assert_eq!(rm.exit_code, EXIT_SUCCESS);
 }
+
+#[test]
+fn cli_guard_set_mode_run_dry_run_and_suggest_contract() {
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("guard_cli.db");
+
+    // 1. Configure quota on `/` with default regenerable_cache_mode = vault
+    let set = run_args(
+        &[
+            "greenc",
+            "quota",
+            "set",
+            "--drive",
+            "/",
+            "--warn",
+            "70",
+            "--clean",
+            "80",
+            "--target",
+            "75",
+            "--auto-clean",
+            "--json",
+        ],
+        &db_path,
+    );
+    assert_eq!(set.exit_code, EXIT_SUCCESS, "stderr: {}", set.stderr);
+    let set_json: serde_json::Value = serde_json::from_str(&set.stdout).unwrap();
+    assert_eq!(set_json["regenerable_cache_mode"], "vault");
+
+    // 2. Toggle regenerable_cache_mode to `direct` via `guard set-mode`
+    let mode_ok = run_args(
+        &[
+            "greenc", "guard", "set-mode", "--drive", "/", "--mode", "direct", "--json",
+        ],
+        &db_path,
+    );
+    assert_eq!(
+        mode_ok.exit_code, EXIT_SUCCESS,
+        "stderr: {}",
+        mode_ok.stderr
+    );
+    let mode_json: serde_json::Value = serde_json::from_str(&mode_ok.stdout).unwrap();
+    assert_eq!(mode_json["regenerable_cache_mode"], "direct");
+
+    // Re-saving thresholds with `quota set` WITHOUT `--regenerable-cache-mode` preserves `direct`
+    let preserve = run_args(
+        &[
+            "greenc",
+            "quota",
+            "set",
+            "--drive",
+            "/",
+            "--warn",
+            "72",
+            "--clean",
+            "82",
+            "--target",
+            "76",
+            "--auto-clean",
+            "--json",
+        ],
+        &db_path,
+    );
+    assert_eq!(
+        preserve.exit_code, EXIT_SUCCESS,
+        "stderr: {}",
+        preserve.stderr
+    );
+    let preserve_json: serde_json::Value = serde_json::from_str(&preserve.stdout).unwrap();
+    assert_eq!(preserve_json["regenerable_cache_mode"], "direct");
+
+    // Invalid mode is rejected with exit code 2
+    let mode_bad = run_args(
+        &[
+            "greenc", "guard", "set-mode", "--drive", "/", "--mode", "invalid", "--json",
+        ],
+        &db_path,
+    );
+    assert_eq!(mode_bad.exit_code, EXIT_PRECONDITION_BLOCKED);
+
+    // 3. `guard run --drive / --dry-run --json` returns net-freed contract fields
+    let run_out = run_args(
+        &[
+            "greenc",
+            "guard",
+            "run",
+            "--drive",
+            "/",
+            "--dry-run",
+            "--json",
+        ],
+        &db_path,
+    );
+    assert_eq!(
+        run_out.exit_code, EXIT_SUCCESS,
+        "stderr: {}",
+        run_out.stderr
+    );
+    let run_json: serde_json::Value = serde_json::from_str(&run_out.stdout).unwrap();
+    assert_eq!(run_json["dry_run"], true);
+    assert!(run_json.get("logical_bytes").is_some());
+    assert!(run_json.get("vault_bytes").is_some());
+    assert!(run_json.get("net_freed_bytes").is_some());
+    assert!(run_json.get("target_reached").is_some());
+    assert_eq!(run_json["drives"].as_array().unwrap().len(), 1);
+
+    // 4. `guard suggest --root <tempdir> --json` is read-only and returns Vault + suggestions
+    let repo = dir.path().join("fake_repo");
+    std::fs::create_dir_all(repo.join("app/build")).unwrap();
+    std::fs::write(repo.join(".git"), "gitdir: /tmp/fake\n").unwrap();
+    std::fs::write(repo.join(".gitignore"), "build/\n").unwrap();
+    let artifact = repo.join("app/build/out.bin");
+    std::fs::write(&artifact, vec![1u8; 4096]).unwrap();
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(5 * 86_400);
+    let ft = std::fs::FileTimes::new()
+        .set_modified(old)
+        .set_accessed(old);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&artifact)
+        .unwrap()
+        .set_times(ft)
+        .unwrap();
+    #[cfg(unix)]
+    {
+        let _ = std::fs::File::open(repo.join("app/build")).and_then(|f| f.set_times(ft));
+    }
+
+    let sug = run_args(
+        &[
+            "greenc",
+            "guard",
+            "suggest",
+            "--root",
+            &dir.path().to_string_lossy(),
+            "--min-days",
+            "3",
+            "--json",
+        ],
+        &db_path,
+    );
+    assert_eq!(sug.exit_code, EXIT_SUCCESS, "stderr: {}", sug.stderr);
+    let sug_json: serde_json::Value = serde_json::from_str(&sug.stdout).unwrap();
+    assert!(sug_json.get("suggestions").is_some());
+    assert!(sug_json.get("vault").is_some());
+    assert!(artifact.exists(), "guard suggest must never delete files");
+}
+
+#[test]
+fn cli_vault_purge_and_restore_reject_paths_outside_vault_dir() {
+    use chrono::Utc;
+    use greenc_core::models::{VaultArchive, VaultStatus};
+    use greenc_storage::db::GreenCDb;
+    use greenc_storage::settings::AppSettings;
+
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("vault_sec.db");
+    let vault_dir = dir.path().join("Vault");
+    std::fs::create_dir_all(&vault_dir).unwrap();
+
+    let outside_dir = dir.path().join("outside_secret");
+    std::fs::create_dir_all(&outside_dir).unwrap();
+    let victim_zip = outside_dir.join("secret.zip");
+    let victim_man = outside_dir.join("secret.manifest.json");
+    std::fs::write(&victim_zip, b"not a real vault zip").unwrap();
+    std::fs::write(&victim_man, b"{}").unwrap();
+
+    let db = GreenCDb::open(&db_path).unwrap();
+    AppSettings::new(&db).set_data_root(dir.path()).unwrap();
+    let arch_id = db
+        .create_vault_archive(
+            &VaultArchive {
+                id: None,
+                rule_id: 1,
+                app_name: "TamperedCli".to_string(),
+                zip_path: victim_zip.clone(),
+                manifest_path: victim_man.clone(),
+                file_count: 0,
+                original_bytes: 10,
+                compressed_bytes: 10,
+                created_at: Utc::now() - chrono::Duration::days(10),
+                expires_at: Utc::now() - chrono::Duration::days(1),
+                status: VaultStatus::Quarantined,
+                status_reason: "Tampered".to_string(),
+                resolved_at: None,
+            },
+            &[],
+        )
+        .unwrap();
+    drop(db);
+
+    // 1. `vault purge --expired` must skip the tampered archive and leave victim untouched
+    let exp = run_args(
+        &["greenc", "vault", "purge", "--expired", "--json"],
+        &db_path,
+    );
+    assert_eq!(exp.exit_code, EXIT_SUCCESS, "stderr: {}", exp.stderr);
+    let v: serde_json::Value = serde_json::from_str(&exp.stdout).unwrap();
+    assert_eq!(v["purged_archives"], 0);
+    assert!(victim_zip.exists() && victim_man.exists());
+
+    // 2. `vault purge <id>` must refuse with EXIT_PRECONDITION_BLOCKED
+    let id_str = arch_id.to_string();
+    let manual = run_args(&["greenc", "vault", "purge", &id_str, "--json"], &db_path);
+    assert_eq!(
+        manual.exit_code, EXIT_PRECONDITION_BLOCKED,
+        "manual purge of outside path must be blocked, stdout={}, stderr={}",
+        manual.stdout, manual.stderr
+    );
+    assert!(victim_zip.exists() && victim_man.exists());
+
+    // 3. `vault restore <id>` must also refuse
+    let restore = run_args(&["greenc", "vault", "restore", &id_str, "--json"], &db_path);
+    assert_eq!(
+        restore.exit_code, EXIT_PRECONDITION_BLOCKED,
+        "restore of outside zip_path must be blocked"
+    );
+    assert!(victim_zip.exists() && victim_man.exists());
+}

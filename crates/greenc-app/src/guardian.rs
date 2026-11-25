@@ -15,7 +15,8 @@ use greenc_core::models::{
     CleanCandidate, DriveQuota, FileManifestItem, QuotaLevel, QuotaRule, RelocationHealthStatus,
 };
 use greenc_core::task::TaskControl;
-use greenc_platform::handle::NativeFileLockProbe;
+use greenc_platform::dev_tools::{DevToolProbe, NativeDevToolProbe};
+use greenc_platform::handle::{query_file_identity, NativeFileLockProbe};
 use greenc_platform::power_session::{NativePowerSessionApi, PowerSessionApi};
 use greenc_platform::reparse::NativeReparsePointApi;
 use greenc_platform::traits::{
@@ -24,7 +25,12 @@ use greenc_platform::traits::{
 use greenc_platform::volume::NativeWin32VolumeApi;
 use greenc_relocate::recovery::RecoveryService;
 use greenc_vault::archiver::{ArchiveOptions, ArchiverPipeline};
+use greenc_vault::cache_units::{CleanUnit, CleanUnitKind};
 use greenc_vault::cleanup::{CleanupOptions, DeletionMethod, SafeCleaner};
+pub use greenc_vault::guard::backup_vault_archive;
+use greenc_vault::guard::{
+    enforce_drive_quota_units, run_guard_for_quota, GuardRunOptions, GUARD_AUTO_CLEAN_PROFILE_IDS,
+};
 use greenc_vault::profiles::PresetProfiles;
 use greenc_vault::rollback::{RestoreOptions, RollbackEngine};
 use parking_lot::Mutex;
@@ -69,6 +75,7 @@ pub struct GuardianDeps {
     pub lock_probe: Arc<dyn FileLockProbe>,
     pub proc_probe: Arc<dyn ProcessServiceProbe>,
     pub reparse_api: Arc<dyn ReparsePointApi>,
+    pub dev_tool_probe: Arc<dyn DevToolProbe>,
 }
 
 impl std::fmt::Debug for GuardianDeps {
@@ -85,6 +92,7 @@ impl Default for GuardianDeps {
             lock_probe: Arc::new(NativeFileLockProbe),
             proc_probe: Arc::new(NativeProcessServiceProbe),
             reparse_api: Arc::new(NativeReparsePointApi),
+            dev_tool_probe: Arc::new(NativeDevToolProbe),
         }
     }
 }
@@ -348,8 +356,16 @@ impl BackgroundGuardian {
             }
 
             // Check 2: Safety Watchdog (service stop / missing-file log auto-rollback & expired purge)
-            let rollback_engine =
-                RollbackEngine::new(&guardian_state.db, RestoreOptions::default());
+            let vault_dir = settings
+                .vault_dir(&default_vault_dir())
+                .unwrap_or_else(|_| default_vault_dir());
+            let rollback_engine = RollbackEngine::new(
+                &guardian_state.db,
+                RestoreOptions {
+                    vault_dir: Some(vault_dir.clone()),
+                    ..Default::default()
+                },
+            );
             if let Ok(restores) = rollback_engine.run_watchdog_cycle(deps.proc_probe.as_ref()) {
                 for res in restores {
                     report.auto_rollbacks_triggered += 1;
@@ -412,10 +428,6 @@ impl BackgroundGuardian {
 
             // Check 5: Rolling QuotaRule Enforcement (down to watermark_ratio = 85%), throttled
             // to `HEAVY_RULE_SCAN_COOLDOWN` so dozens of rules do not spin CPU every 45 seconds.
-            let vault_dir = settings
-                .vault_dir(&default_vault_dir())
-                .unwrap_or_else(|_| default_vault_dir());
-
             let should_scan_rules = {
                 let guard = last_rule_scan_ref.lock();
                 match *guard {
@@ -473,10 +485,9 @@ impl BackgroundGuardian {
                 *last_rule_scan_ref.lock() = Some(Instant::now());
             }
 
-            // Check 6: Drive-quota auto-clean (+ auto-backup) for drives at the critical level,
-            // throttled per drive to `DRIVE_QUOTA_CLEAN_COOLDOWN` so persistent critical drives
-            // do not loop endlessly over the same folders.
-            for (quota, total, free, level) in quota_states {
+            // Check 6: Drive-quota auto-clean (+ auto-backup) via the shared `greenc_vault::guard`
+            // core (DB-backed cooldown 30m -> 2h -> 12h, atomic dev cache units, TOCTOU, net bytes).
+            for (quota, _total, _free, level) in quota_states {
                 let key = quota.drive_root.to_ascii_uppercase();
                 if level != QuotaLevel::Critical || !quota.auto_clean {
                     continue;
@@ -493,37 +504,25 @@ impl BackgroundGuardian {
                     report.preempted_by_foreground = true;
                     break;
                 }
-                let pool = match scan_auto_clean_pool(
-                    &auto_clean_ids,
-                    Path::new(&quota.drive_root),
-                    deps.lock_probe.as_ref(),
-                    &ctrl_worker,
-                ) {
-                    Ok(p) => p,
-                    Err(GreenCError::Cancelled) => {
-                        report.preempted_by_foreground = true;
-                        break;
-                    }
-                    Err(_) => {
-                        quota_clean_ref.lock().insert(key, Instant::now());
-                        continue;
-                    }
+                let guard_opts = GuardRunOptions {
+                    profile_ids: (*auto_clean_ids).clone(),
+                    ..Default::default()
                 };
-                match enforce_drive_quota(
+                match run_guard_for_quota(
                     &quota,
-                    total,
-                    free,
-                    pool,
                     &vault_dir,
-                    &guardian_state,
-                    &deps,
+                    &guardian_state.db,
+                    deps.volume_api.as_ref(),
+                    deps.lock_probe.as_ref(),
+                    deps.dev_tool_probe.as_ref(),
+                    &guard_opts,
                     &ctrl_worker,
                 ) {
                     Ok(out) => {
                         quota_clean_ref.lock().insert(key, Instant::now());
-                        if out.bytes_freed > 0 {
+                        if out.logical_bytes > 0 {
                             report.drive_quota_cleanups += 1;
-                            report.bytes_reclaimed += out.bytes_freed;
+                            report.bytes_reclaimed += out.logical_bytes;
                             let today = chrono::Local::now()
                                 .date_naive()
                                 .format("%Y-%m-%d")
@@ -531,23 +530,45 @@ impl BackgroundGuardian {
                             let _ = guardian_state.db.record_reclaimed_bytes(
                                 &quota.drive_root,
                                 &today,
-                                out.bytes_freed,
+                                out.net_freed_bytes.max(0) as u64,
                             );
                             pending_alerts.push(WatchdogAlertEvent {
                                 kind: "drive_quota_cleanup".to_string(),
-                                severity: "info".to_string(),
+                                severity: if out.target_reached {
+                                    "info"
+                                } else {
+                                    "warning"
+                                }
+                                .to_string(),
                                 title: format!(
-                                    "Đã tự dọn {:.1} GB trên ổ {}",
-                                    out.bytes_freed as f64 / 1_073_741_824.0,
+                                    "Đã tự dọn {:.1} GB (thực lợi {:+.1} GB) trên ổ {}",
+                                    out.logical_bytes as f64 / 1_073_741_824.0,
+                                    out.net_freed_bytes as f64 / 1_073_741_824.0,
                                     quota.drive_root
                                 ),
-                                detail: match (&out.backed_up_to, &out.backup_problem) {
-                                    (Some(p), _) => {
-                                        format!("Đã sao lưu gói Vault tới {}", p.display())
+                                detail: if !out.target_reached && !out.reasons.is_empty() {
+                                    out.reasons.join("; ")
+                                } else {
+                                    match (&out.backed_up_to, &out.backup_problem) {
+                                        (Some(p), _) => {
+                                            format!("Đã sao lưu gói Vault tới {}", p.display())
+                                        }
+                                        (None, Some(why)) => format!("Chưa sao lưu được: {why}"),
+                                        _ => "Dữ liệu được giữ trong Vault, có thể khôi phục."
+                                            .to_string(),
                                     }
-                                    (None, Some(why)) => format!("Chưa sao lưu được: {why}"),
-                                    _ => "Dữ liệu được giữ trong Vault, có thể khôi phục."
-                                        .to_string(),
+                                },
+                                archive_id: None,
+                            });
+                        } else if let Some(warn) = out.warning {
+                            pending_alerts.push(WatchdogAlertEvent {
+                                kind: "drive_quota_cleanup_warning".to_string(),
+                                severity: "warning".to_string(),
+                                title: format!("Chưa dọn đạt mục tiêu trên ổ {}", quota.drive_root),
+                                detail: if out.reasons.is_empty() {
+                                    warn
+                                } else {
+                                    format!("{warn} ({})", out.reasons.join("; "))
                                 },
                                 archive_id: None,
                             });
@@ -749,63 +770,24 @@ fn archive_and_unlink(
 }
 
 /// Safe preset profiles used by automatic drive-quota cleanup (opt-in `orphan_radar` excluded).
-pub const AUTO_CLEAN_PROFILE_IDS: [&str; 7] = [
-    "windows_temp",
-    "browser_cache",
-    "chat_media",
-    "crash_dumps",
-    "package_managers",
-    "app_logs",
-    "old_versions",
-];
-
-/// Retention (days) for Vault archives produced by automatic drive-quota cleanup.
-const DEFAULT_QUOTA_RETENTION_DAYS: u32 = 14;
+pub const AUTO_CLEAN_PROFILE_IDS: [&str; 7] = GUARD_AUTO_CLEAN_PROFILE_IDS;
 
 /// Result of one automatic drive-quota enforcement pass.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DriveQuotaOutcome {
     pub bytes_freed: u64,
+    pub vault_bytes: u64,
+    pub net_freed_bytes: i64,
+    pub target_reached: bool,
     pub vault_zip: Option<PathBuf>,
     pub backed_up_to: Option<PathBuf>,
     /// Set when a requested backup could not be made (the cleanup itself still stands).
     pub backup_problem: Option<String>,
+    pub reasons: Vec<String>,
 }
 
 fn same_drive(a: &Path, b: &Path) -> bool {
     greenc_core::models::is_same_volume(a, b)
-}
-
-/// Copies a Vault archive (zip + manifest) into `backup_dir`. Refuses a backup folder that lives on
-/// the very drive being protected, because it would eat the space we are trying to free.
-pub fn backup_vault_archive(
-    zip: &Path,
-    protected_root: &Path,
-    backup_dir: &Path,
-) -> std::result::Result<PathBuf, String> {
-    if same_drive(backup_dir, protected_root) {
-        return Err(format!(
-            "Thư mục sao lưu {} nằm trên chính ổ đang được bảo vệ",
-            backup_dir.display()
-        ));
-    }
-    std::fs::create_dir_all(backup_dir)
-        .map_err(|e| format!("Không tạo được thư mục sao lưu: {e}"))?;
-    let name = zip
-        .file_name()
-        .ok_or_else(|| "Đường dẫn gói Vault không hợp lệ".to_string())?;
-    let dest = backup_dir.join(name);
-    std::fs::copy(zip, &dest).map_err(|e| format!("Không sao chép được gói Vault: {e}"))?;
-
-    // Manifest sits next to the zip as "<archive_id>.manifest.json".
-    if let (Some(dir), Some(stem)) = (zip.parent(), zip.file_stem()) {
-        let mname = format!("{}.manifest.json", stem.to_string_lossy());
-        let manifest = dir.join(&mname);
-        if manifest.exists() {
-            let _ = std::fs::copy(&manifest, backup_dir.join(&mname));
-        }
-    }
-    Ok(dest)
 }
 
 /// Scans the given preset profiles for unlocked cleanup candidates located on `drive_root`.
@@ -832,67 +814,108 @@ pub fn scan_auto_clean_pool(
     Ok(pool)
 }
 
-/// Brings a drive back under its quota's `target_ratio` by moving the oldest files of `pool` into the
-/// Canary Vault, optionally mirroring the archive to a backup folder.
+/// Volume API adapter supplying explicit caller-provided `(total, free)` for a single drive root
+/// while delegating all other calls to the inner `Win32VolumeApi`.
+struct ExplicitDriveSpaceAdapter<'a> {
+    drive_root: PathBuf,
+    total_bytes: u64,
+    free_bytes: u64,
+    inner: &'a dyn Win32VolumeApi,
+}
+
+impl Win32VolumeApi for ExplicitDriveSpaceAdapter<'_> {
+    fn list_drives(&self) -> Result<Vec<greenc_core::models::DriveInfo>> {
+        self.inner.list_drives()
+    }
+
+    fn get_disk_free_space(&self, root: &Path) -> Result<(u64, u64)> {
+        if same_drive(root, &self.drive_root) {
+            Ok((self.total_bytes, self.free_bytes))
+        } else {
+            self.inner.get_disk_free_space(root)
+        }
+    }
+
+    fn get_volume_info(&self, root: &Path) -> Result<(String, String, u32)> {
+        self.inner.get_volume_info(root)
+    }
+}
+
+/// Brings a drive back under its quota's `target_ratio` using the shared `greenc_vault::guard`
+/// engine, moving eligible files of `pool` into the Canary Vault (or direct-deleting verified
+/// regenerable dev caches when enabled), and optionally mirroring the archive to a backup folder.
 #[allow(clippy::too_many_arguments)]
 pub fn enforce_drive_quota(
     quota: &DriveQuota,
     total_bytes: u64,
     free_bytes: u64,
-    mut pool: Vec<CleanCandidate>,
+    pool: Vec<CleanCandidate>,
     vault_dir: &Path,
     state: &AppState,
     deps: &GuardianDeps,
     ctrl: &TaskControl,
 ) -> Result<DriveQuotaOutcome> {
-    let need = quota.bytes_to_reclaim(total_bytes, free_bytes);
-    if need == 0 {
-        return Ok(DriveQuotaOutcome::default());
-    }
-    pool.retain(|c| !c.is_locked && !c.is_orphan);
-    pool.sort_by_key(|c| c.mtime);
+    let units: Vec<CleanUnit> = pool
+        .into_iter()
+        .filter(|c| !c.is_locked && !c.is_orphan)
+        .map(|c| {
+            let root_path = c.path.clone();
+            let allowed_parent = root_path
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| PathBuf::from(&quota.drive_root));
+            let total_bytes = c.size_bytes;
+            let last_used = c.mtime;
+            let profile_id = c.profile_id.clone();
+            let root_identity = query_file_identity(&root_path);
+            CleanUnit {
+                root_path,
+                allowed_parent,
+                files: vec![c],
+                total_bytes,
+                last_used,
+                profile_id,
+                kind: CleanUnitKind::StandardFile,
+                dev_tool: None,
+                unit_label: "standard_file".to_string(),
+                root_identity,
+                min_age: Duration::ZERO,
+            }
+        })
+        .collect();
 
-    let mut chosen = Vec::new();
-    let mut acc = 0u64;
-    for c in pool {
-        if acc >= need {
-            break;
-        }
-        acc = acc.saturating_add(c.size_bytes);
-        chosen.push(c);
-    }
-    if chosen.is_empty() {
-        return Ok(DriveQuotaOutcome::default());
-    }
-
-    let (freed, zip) = archive_and_unlink(
-        quota.id.unwrap_or(0),
-        &format!("Quota ổ {}", quota.drive_root),
-        "",
-        "",
-        DEFAULT_QUOTA_RETENTION_DAYS,
-        chosen,
+    let adapter = ExplicitDriveSpaceAdapter {
+        drive_root: PathBuf::from(&quota.drive_root),
+        total_bytes,
+        free_bytes,
+        inner: deps.volume_api.as_ref(),
+    };
+    let opts = GuardRunOptions {
+        ignore_cooldown: true,
+        ..Default::default()
+    };
+    let out = enforce_drive_quota_units(
+        quota,
+        units,
         vault_dir,
-        state,
-        deps,
+        &state.db,
+        &adapter,
+        deps.lock_probe.as_ref(),
+        deps.dev_tool_probe.as_ref(),
+        &opts,
         ctrl,
     )?;
 
-    let mut outcome = DriveQuotaOutcome {
-        bytes_freed: freed,
-        vault_zip: Some(zip.clone()),
-        ..Default::default()
-    };
-    if quota.auto_backup {
-        match quota.backup_dir.as_deref() {
-            Some(dir) => match backup_vault_archive(&zip, Path::new(&quota.drive_root), dir) {
-                Ok(dest) => outcome.backed_up_to = Some(dest),
-                Err(e) => outcome.backup_problem = Some(e),
-            },
-            None => outcome.backup_problem = Some("Chưa chọn thư mục sao lưu".to_string()),
-        }
-    }
-    Ok(outcome)
+    Ok(DriveQuotaOutcome {
+        bytes_freed: out.logical_bytes,
+        vault_bytes: out.vault_bytes,
+        net_freed_bytes: out.net_freed_bytes,
+        target_reached: out.target_reached,
+        vault_zip: out.vault_zip,
+        backed_up_to: out.backed_up_to,
+        backup_problem: out.backup_problem,
+        reasons: out.reasons,
+    })
 }
 
 /// Computes current physical bytes inside a `QuotaRule`'s `target_paths`.

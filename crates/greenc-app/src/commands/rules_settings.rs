@@ -631,7 +631,13 @@ pub async fn run_sandbox_demo(
             .map_err(|e| e.to_string())?;
             log_f.sync_all().map_err(|e| e.to_string())?;
 
-            let engine = RollbackEngine::new(&state_inner.db, RestoreOptions::default());
+            let engine = RollbackEngine::new(
+                &state_inner.db,
+                RestoreOptions {
+                    vault_dir: Some(demo_vault.clone()),
+                    ..Default::default()
+                },
+            );
             let restores = engine
                 .run_watchdog_cycle(&proc_probe)
                 .map_err(|e| e.to_string())?;
@@ -647,7 +653,11 @@ pub async fn run_sandbox_demo(
             "Đã chạy Canary Probe và lưu trữ an toàn vào Kho dự phòng trong môi trường Sandbox cô lập.".to_string()
         };
 
-        let _ = std::fs::remove_dir_all(&base_dir);
+        if std::fs::symlink_metadata(&base_dir)
+            .is_ok_and(|m| !m.file_type().is_symlink() && m.is_dir())
+        {
+            let _ = std::fs::remove_dir_all(&base_dir);
+        }
 
         Ok(SandboxDemoResultDto {
             sandbox_dir: base_dir.to_string_lossy().to_string(),

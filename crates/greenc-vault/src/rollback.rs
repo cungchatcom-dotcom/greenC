@@ -10,18 +10,228 @@
 
 use crate::manifest::VaultManifest;
 use chrono::Utc;
+use greenc_core::config::default_vault_dir;
 use greenc_core::error::{GreenCError, Result};
 use greenc_core::models::{VaultFileItem, VaultStatus};
+use greenc_platform::handle::{ensure_not_protected_system_path, is_owned_by_current_user};
 use greenc_platform::traits::ProcessServiceProbe;
 use greenc_storage::db::GreenCDb;
+use greenc_storage::settings::AppSettings;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fs::{File, FileTimes};
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::{info, warn};
 use zip::ZipArchive;
+
+fn path_has_parent_dir(path: &Path) -> bool {
+    path.components().any(|c| matches!(c, Component::ParentDir))
+}
+
+/// Validates that a Vault artifact path (`zip_path` or `manifest_path`) read from DB/manifest is
+/// strictly contained inside `vault_dir`:
+/// - absolute, no `..`, filename ends with `expected_suffix` (`.zip` or `.manifest.json`),
+/// - `vault_dir` is a real directory (not a symlink),
+/// - `path` is a real regular file (not a symlink), owned by the current user,
+/// - canonicalized `path` starts with canonicalized `vault_dir`.
+pub fn validate_vault_artifact_path(
+    path: &Path,
+    vault_dir: &Path,
+    expected_suffix: &str,
+) -> Result<PathBuf> {
+    if !path.is_absolute() || path_has_parent_dir(path) {
+        return Err(GreenCError::PreconditionBlocked {
+            operation: "vault_artifact_validation".to_string(),
+            reason: format!(
+                "Đường dẫn gói Vault '{}' không hợp lệ (không tuyệt đối hoặc chứa '..')",
+                path.display()
+            ),
+        });
+    }
+    let fname = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default();
+    if !fname.ends_with(expected_suffix) {
+        return Err(GreenCError::PreconditionBlocked {
+            operation: "vault_artifact_validation".to_string(),
+            reason: format!(
+                "Đường dẫn gói Vault '{}' không khớp hậu tố '{}'",
+                path.display(),
+                expected_suffix
+            ),
+        });
+    }
+
+    let vmeta =
+        std::fs::symlink_metadata(vault_dir).map_err(|e| GreenCError::PreconditionBlocked {
+            operation: "vault_artifact_validation".to_string(),
+            reason: format!(
+                "Không kiểm tra được thư mục Vault '{}': {e}",
+                vault_dir.display()
+            ),
+        })?;
+    if vmeta.file_type().is_symlink() || !vmeta.is_dir() {
+        return Err(GreenCError::PreconditionBlocked {
+            operation: "vault_artifact_validation".to_string(),
+            reason: format!(
+                "Thư mục Vault '{}' là symlink hoặc không phải thư mục thật",
+                vault_dir.display()
+            ),
+        });
+    }
+    let canon_vault = vault_dir.canonicalize()?;
+
+    let pmeta = std::fs::symlink_metadata(path)?;
+    if pmeta.file_type().is_symlink() || !pmeta.is_file() {
+        return Err(GreenCError::PreconditionBlocked {
+            operation: "vault_artifact_validation".to_string(),
+            reason: format!(
+                "Tệp Vault '{}' là symlink hoặc không phải tệp thường",
+                path.display()
+            ),
+        });
+    }
+    match is_owned_by_current_user(path) {
+        Ok(true) => {}
+        Ok(false) => {
+            return Err(GreenCError::PreconditionBlocked {
+                operation: "vault_artifact_validation".to_string(),
+                reason: format!(
+                    "Tệp Vault '{}' không thuộc người dùng hiện tại",
+                    path.display()
+                ),
+            });
+        }
+        Err(e) => {
+            return Err(GreenCError::PreconditionBlocked {
+                operation: "vault_artifact_validation".to_string(),
+                reason: format!(
+                    "Không xác minh được chủ sở hữu tệp Vault '{}': {e}",
+                    path.display()
+                ),
+            });
+        }
+    }
+
+    let canon_path = path.canonicalize()?;
+    if !canon_path.starts_with(&canon_vault) || canon_path == canon_vault {
+        return Err(GreenCError::PreconditionBlocked {
+            operation: "vault_artifact_validation".to_string(),
+            reason: format!(
+                "Tệp Vault '{}' nằm ngoài thư mục Vault '{}'",
+                path.display(),
+                canon_vault.display()
+            ),
+        });
+    }
+
+    Ok(canon_path)
+}
+
+/// Safely deletes a Vault `.zip` or `.manifest.json` file ONLY after verifying it lies strictly
+/// inside `vault_dir` (no `..`, not a symlink, regular file owned by current user).
+/// Returns `Ok(true)` if removed, `Ok(false)` if already absent inside `vault_dir`, or `Err` if
+/// the path fails containment checks.
+pub fn safe_remove_vault_artifact(
+    path: &Path,
+    vault_dir: &Path,
+    expected_suffix: &str,
+) -> Result<bool> {
+    if !path.is_absolute() || path_has_parent_dir(path) {
+        return Err(GreenCError::PreconditionBlocked {
+            operation: "vault_artifact_remove".to_string(),
+            reason: format!(
+                "Từ chối xoá đường dẫn gói Vault '{}' không hợp lệ",
+                path.display()
+            ),
+        });
+    }
+    let fname = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default();
+    if !fname.ends_with(expected_suffix) {
+        return Err(GreenCError::PreconditionBlocked {
+            operation: "vault_artifact_remove".to_string(),
+            reason: format!(
+                "Từ chối xoá tệp '{}' không khớp hậu tố '{}'",
+                path.display(),
+                expected_suffix
+            ),
+        });
+    }
+
+    let vmeta =
+        std::fs::symlink_metadata(vault_dir).map_err(|e| GreenCError::PreconditionBlocked {
+            operation: "vault_artifact_remove".to_string(),
+            reason: format!(
+                "Không kiểm tra được thư mục Vault '{}': {e}",
+                vault_dir.display()
+            ),
+        })?;
+    if vmeta.file_type().is_symlink() || !vmeta.is_dir() {
+        return Err(GreenCError::PreconditionBlocked {
+            operation: "vault_artifact_remove".to_string(),
+            reason: format!(
+                "Thư mục Vault '{}' là symlink hoặc không phải thư mục thật",
+                vault_dir.display()
+            ),
+        });
+    }
+    let canon_vault = vault_dir.canonicalize()?;
+
+    match std::fs::symlink_metadata(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // Even when absent, confirm parent resides within `vault_dir` so tampered paths are rejected.
+            let parent_inside = path
+                .parent()
+                .and_then(|p| p.canonicalize().ok())
+                .is_some_and(|cp| cp.starts_with(&canon_vault));
+            if !parent_inside {
+                return Err(GreenCError::PreconditionBlocked {
+                    operation: "vault_artifact_remove".to_string(),
+                    reason: format!(
+                        "Đường dẫn gói Vault '{}' nằm ngoài thư mục Vault '{}'",
+                        path.display(),
+                        canon_vault.display()
+                    ),
+                });
+            }
+            Ok(false)
+        }
+        Err(e) => Err(GreenCError::Io(e)),
+        Ok(_) => {
+            let verified = validate_vault_artifact_path(path, vault_dir, expected_suffix)?;
+            std::fs::remove_file(&verified)?;
+            Ok(true)
+        }
+    }
+}
+
+fn validate_restore_file_path(path: &Path, operation: &str) -> Result<()> {
+    if !path.is_absolute() || path_has_parent_dir(path) {
+        return Err(GreenCError::PreconditionBlocked {
+            operation: operation.to_string(),
+            reason: format!(
+                "Đường dẫn khôi phục '{}' không tuyệt đối hoặc chứa '..'",
+                path.display()
+            ),
+        });
+    }
+    if let Ok(meta) = std::fs::symlink_metadata(path) {
+        if meta.file_type().is_symlink() {
+            return Err(GreenCError::PreconditionBlocked {
+                operation: operation.to_string(),
+                reason: format!("Từ chối ghi/xoá qua symlink '{}'", path.display()),
+            });
+        }
+    }
+    ensure_not_protected_system_path(path, operation)?;
+    Ok(())
+}
 
 /// Strategy to resolve collisions when the restore target file already exists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -48,6 +258,9 @@ pub struct RestoreOptions {
     pub restore_timestamps: bool,
     /// Whether to add restored paths to permanent protected files list.
     pub add_to_protected_list: bool,
+    /// Optional explicit Vault directory used to enforce strict containment on `zip_path` and
+    /// `manifest_path`. When `None`, resolves via `AppSettings::vault_dir(&default_vault_dir())`.
+    pub vault_dir: Option<PathBuf>,
 }
 
 impl Default for RestoreOptions {
@@ -58,6 +271,7 @@ impl Default for RestoreOptions {
             restore_hardlinks: true,
             restore_timestamps: true,
             add_to_protected_list: true,
+            vault_dir: None,
         }
     }
 }
@@ -91,6 +305,13 @@ impl<'a> RollbackEngine<'a> {
         Self { db, options }
     }
 
+    fn effective_vault_dir(&self) -> Result<PathBuf> {
+        if let Some(ref dir) = self.options.vault_dir {
+            return Ok(dir.clone());
+        }
+        AppSettings::new(self.db).vault_dir(&default_vault_dir())
+    }
+
     /// Converts float Unix seconds to SystemTime.
     fn sec_to_system_time(sec: f64) -> SystemTime {
         if sec <= 0.0 {
@@ -115,18 +336,14 @@ impl<'a> RollbackEngine<'a> {
                     id: archive_id.to_string(),
                 })?;
 
-        if !archive.zip_path.exists() {
-            return Err(GreenCError::Vault(format!(
-                "Archive ZIP file not found at: {}",
-                archive.zip_path.display()
-            )));
-        }
+        let vault_dir = self.effective_vault_dir()?;
+        let verified_zip = validate_vault_artifact_path(&archive.zip_path, &vault_dir, ".zip")?;
 
         let files = self.db.get_vault_files(archive_id)?;
         let mut restored_paths = Vec::new();
         let mut restored_bytes = 0u64;
 
-        let zip_file = File::open(&archive.zip_path)?;
+        let zip_file = File::open(&verified_zip)?;
         let mut zip_reader = ZipArchive::new(zip_file)
             .map_err(|e| GreenCError::Vault(format!("Failed to open ZIP archive: {}", e)))?;
 
@@ -193,9 +410,19 @@ impl<'a> RollbackEngine<'a> {
             if self.options.restore_hardlinks && item.hardlink_paths.len() > 1 {
                 for sibling in &item.hardlink_paths {
                     if sibling != &item.original_path && sibling != &primary_dest {
-                        let target_sibling = if sibling.exists() {
-                            let meta = std::fs::metadata(sibling).ok();
-                            let is_empty = meta.as_ref().map(|m| m.len() == 0).unwrap_or(false);
+                        if let Err(e) = validate_restore_file_path(sibling, "vault_restore_sibling")
+                        {
+                            warn!(
+                                "Skipping unsafe hardlink sibling {}: {e}",
+                                sibling.display()
+                            );
+                            continue;
+                        }
+                        let target_sibling = if let Ok(meta) = std::fs::symlink_metadata(sibling) {
+                            if meta.file_type().is_symlink() || !meta.is_file() {
+                                continue;
+                            }
+                            let is_empty = meta.len() == 0;
 
                             if is_empty
                                 || self.options.conflict_strategy
@@ -245,9 +472,9 @@ impl<'a> RollbackEngine<'a> {
             let _ = self.db.add_protected_files(archive.rule_id, &str_paths);
         }
 
-        // Clean up ZIP and sidecar manifest from vault storage
-        let _ = std::fs::remove_file(&archive.zip_path);
-        let _ = std::fs::remove_file(&archive.manifest_path);
+        // Clean up ZIP and sidecar manifest strictly inside vault_dir
+        let _ = safe_remove_vault_artifact(&archive.zip_path, &vault_dir, ".zip");
+        let _ = safe_remove_vault_artifact(&archive.manifest_path, &vault_dir, ".manifest.json");
 
         // Update database state
         let status_reason = if auto_triggered {
@@ -285,12 +512,8 @@ impl<'a> RollbackEngine<'a> {
                     id: archive_id.to_string(),
                 })?;
 
-        if !archive.zip_path.exists() {
-            return Err(GreenCError::Vault(format!(
-                "Archive ZIP file not found at: {}",
-                archive.zip_path.display()
-            )));
-        }
+        let vault_dir = self.effective_vault_dir()?;
+        let verified_zip = validate_vault_artifact_path(&archive.zip_path, &vault_dir, ".zip")?;
 
         let all_files = self.db.get_vault_files(archive_id)?;
         let target_files: Vec<&VaultFileItem> = all_files
@@ -304,7 +527,7 @@ impl<'a> RollbackEngine<'a> {
             ));
         }
 
-        let zip_file = File::open(&archive.zip_path)?;
+        let zip_file = File::open(&verified_zip)?;
         let mut zip_reader = ZipArchive::new(zip_file)
             .map_err(|e| GreenCError::Vault(format!("Failed to open ZIP archive: {}", e)))?;
 
@@ -373,11 +596,20 @@ impl<'a> RollbackEngine<'a> {
 
     /// Resolves destination path according to conflict strategy.
     fn resolve_restore_target(&self, original_path: &Path) -> Result<PathBuf> {
-        if !original_path.exists() {
-            return Ok(original_path.to_path_buf());
-        }
+        validate_restore_file_path(original_path, "vault_restore")?;
 
-        let meta = std::fs::metadata(original_path)?;
+        let Ok(meta) = std::fs::symlink_metadata(original_path) else {
+            return Ok(original_path.to_path_buf());
+        };
+        if meta.file_type().is_symlink() {
+            return Err(GreenCError::PreconditionBlocked {
+                operation: "vault_restore".to_string(),
+                reason: format!(
+                    "Từ chối khôi phục ghi đè symlink '{}'",
+                    original_path.display()
+                ),
+            });
+        }
         if meta.len() == 0
             && self.options.conflict_strategy == RestoreConflictStrategy::OverwriteIfZeroLength
         {
@@ -400,7 +632,7 @@ impl<'a> RollbackEngine<'a> {
         let mut candidate =
             original_path.with_file_name(format!("{file_name}.restored_{timestamp}"));
         let mut n = 2u32;
-        while candidate.exists() {
+        while std::fs::symlink_metadata(&candidate).is_ok() {
             candidate =
                 original_path.with_file_name(format!("{file_name}.restored_{timestamp}_{n}"));
             n += 1;
@@ -416,6 +648,7 @@ impl<'a> RollbackEngine<'a> {
         &self,
         service_probe: &dyn ProcessServiceProbe,
     ) -> Result<Vec<RestoreResult>> {
+        let vault_dir = self.effective_vault_dir()?;
         let active_archives = self
             .db
             .list_vault_archives(Some(VaultStatus::Quarantined.as_str()))?;
@@ -428,26 +661,46 @@ impl<'a> RollbackEngine<'a> {
                 None => continue,
             };
 
-            // 1. Check expiration for auto-purge
+            // 1. Check expiration for auto-purge (strictly bound to `vault_dir`)
             if arch.expires_at <= now {
                 info!(
                     "Quarantine retention period expired for archive ID {}. Purging.",
                     arch_id
                 );
-                let _ = std::fs::remove_file(&arch.zip_path);
-                let _ = std::fs::remove_file(&arch.manifest_path);
-                let _ = self.db.update_vault_status(
-                    arch_id,
-                    VaultStatus::Purged.as_str(),
-                    "Auto-purged after quarantine retention window expired",
-                );
+                let zip_res = safe_remove_vault_artifact(&arch.zip_path, &vault_dir, ".zip");
+                let man_res =
+                    safe_remove_vault_artifact(&arch.manifest_path, &vault_dir, ".manifest.json");
+                if let Err(ref e) = zip_res {
+                    warn!(
+                        "Refused to purge expired archive {} zip_path '{}': {e}",
+                        arch_id,
+                        arch.zip_path.display()
+                    );
+                }
+                if let Err(ref e) = man_res {
+                    warn!(
+                        "Refused to purge expired archive {} manifest_path '{}': {e}",
+                        arch_id,
+                        arch.manifest_path.display()
+                    );
+                }
+                if zip_res.is_ok() && man_res.is_ok() {
+                    let _ = self.db.update_vault_status(
+                        arch_id,
+                        VaultStatus::Purged.as_str(),
+                        "Auto-purged after quarantine retention window expired",
+                    );
+                }
                 continue;
             }
 
             // 2. Service crash check
             // If the archive's quota rule was associated with a Windows service and service stopped
-            // We can inspect manifest or storage
-            let manifest = VaultManifest::read_from_file(&arch.manifest_path).ok();
+            // We can inspect manifest or storage (only if manifest lies strictly inside `vault_dir`)
+            let manifest =
+                validate_vault_artifact_path(&arch.manifest_path, &vault_dir, ".manifest.json")
+                    .ok()
+                    .and_then(|p| VaultManifest::read_from_file(&p).ok());
             if let Some(ref m) = manifest {
                 if !m.service_name.is_empty() {
                     if let Ok(running) = service_probe.is_service_running(&m.service_name) {

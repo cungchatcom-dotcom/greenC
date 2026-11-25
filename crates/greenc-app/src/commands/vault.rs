@@ -2,9 +2,10 @@
 
 use crate::state::AppState;
 use chrono::Utc;
+use greenc_core::config::default_vault_dir;
 use greenc_core::models::VaultStatus;
 use greenc_vault::canary::CanaryVerifier;
-use greenc_vault::rollback::{RestoreOptions, RollbackEngine};
+use greenc_vault::rollback::{safe_remove_vault_artifact, RestoreOptions, RollbackEngine};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
@@ -145,7 +146,17 @@ pub async fn restore_vault_archive(
     let state_inner = state.inner().clone();
 
     tokio::task::spawn_blocking(move || {
-        let engine = RollbackEngine::new(&state_inner.db, RestoreOptions::default());
+        let vault_dir = state_inner
+            .settings()
+            .vault_dir(&default_vault_dir())
+            .unwrap_or_else(|_| default_vault_dir());
+        let engine = RollbackEngine::new(
+            &state_inner.db,
+            RestoreOptions {
+                vault_dir: Some(vault_dir),
+                ..Default::default()
+            },
+        );
         let result = engine
             .rollback_archive(db_id, "User requested 1-click restore from UI", false)
             .map_err(|e| format!("Rollback failed: {}", e))?;
@@ -182,9 +193,15 @@ pub async fn delete_vault_archive(
         .map_err(|e| format!("Database error: {}", e))?
         .ok_or_else(|| format!("Archive not found for ID {}", db_id))?;
 
-    // Delete .zip and .manifest.json from filesystem
-    let _ = std::fs::remove_file(&archive.zip_path);
-    let _ = std::fs::remove_file(&archive.manifest_path);
+    // Delete .zip and .manifest.json strictly inside vault_dir (never trust raw DB paths).
+    let vault_dir = state
+        .settings()
+        .vault_dir(&default_vault_dir())
+        .map_err(|e| format!("Failed to resolve vault_dir: {}", e))?;
+    safe_remove_vault_artifact(&archive.zip_path, &vault_dir, ".zip")
+        .map_err(|e| format!("Refused to delete archive zip: {}", e))?;
+    safe_remove_vault_artifact(&archive.manifest_path, &vault_dir, ".manifest.json")
+        .map_err(|e| format!("Refused to delete archive manifest: {}", e))?;
 
     // Update database status to PURGED
     state
@@ -286,7 +303,17 @@ pub async fn restore_vault_files_selective(
 
     let state_inner = state.inner().clone();
     tokio::task::spawn_blocking(move || {
-        let engine = RollbackEngine::new(&state_inner.db, RestoreOptions::default());
+        let vault_dir = state_inner
+            .settings()
+            .vault_dir(&default_vault_dir())
+            .unwrap_or_else(|_| default_vault_dir());
+        let engine = RollbackEngine::new(
+            &state_inner.db,
+            RestoreOptions {
+                vault_dir: Some(vault_dir),
+                ..Default::default()
+            },
+        );
         let result = engine
             .restore_files_selective(db_id, &file_ids)
             .map_err(|e| format!("Lỗi khôi phục chọn lọc: {}", e))?;
