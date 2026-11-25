@@ -48,6 +48,8 @@ Write-Output "::notice::virtualized data present=$(Test-Path $pkgData) plain Gre
 # The vault restore must bring the file back to its real place.
 $list = & $alias vault list --json | Out-String | ConvertFrom-Json
 $id = $list.archives[0].archive_id
-& $alias vault restore $id --json | Out-String | Write-Output
-Write-Output "::notice::restored=$(Test-Path $victim)"
+$restoreOut = & $alias vault restore $id --json 2>&1 | Out-String
+Write-Output $restoreOut
+$virtual = Join-Path $env:LOCALAPPDATA "Packages\$($pkg.PackageFamilyName)\LocalCache\Local\Google\Chrome\User Data\Default\Cache\Cache_Data\f_000001"
+Write-Output "::notice::restore exit=$LASTEXITCODE real=$(Test-Path $victim) virtualized=$(Test-Path $virtual) out=$($restoreOut.Substring(0, [Math]::Min(350, $restoreOut.Length)) -replace '\s+', ' ')"
 Remove-AppxPackage $pkg.PackageFullName
