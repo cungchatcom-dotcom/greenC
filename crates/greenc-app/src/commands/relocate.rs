@@ -327,10 +327,10 @@ pub async fn relocate_known_folder(
     #[cfg(feature = "store")]
     {
         let _ = (folder_id, target_drive, state);
-        return Err(
+        Err(
             "Bản Microsoft Store tạm tắt chuyển thư mục hệ thống (Known Folders) do cơ chế ảo hoá HKCU của MSIX. Hãy đổi trong File Explorer → Properties → Location hoặc dùng bản cài EXE."
                 .to_string(),
-        );
+        )
     }
 
     #[cfg(not(feature = "store"))]
