@@ -21,6 +21,22 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
+/// Stands in for a link made outside the app: the Store edition itself refuses to create one in AppData.
+fn make_existing_link(link: &std::path::Path, target: &std::path::Path) {
+    #[cfg(windows)]
+    {
+        let out = std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+    }
+    #[cfg(not(windows))]
+    NativeReparsePointApi.create_junction(link, target).unwrap();
+}
+
 /// The default temp dir sits under AppData\Local\Temp on Windows, which is deliberately excluded from
 /// the AppData rule, so fake AppData trees live in the user profile there.
 fn fake_profile() -> tempfile::TempDir {
@@ -135,9 +151,7 @@ fn store_undo_appdata_junction_uses_breakaway_and_preserves_target_on_refusal() 
     std::fs::create_dir_all(source_appdata.parent().unwrap()).unwrap();
     std::fs::create_dir_all(&target_dir).unwrap();
     std::fs::write(target_dir.join("chat.bin"), b"real-chat-data-123").unwrap();
-    reparse
-        .create_junction(&source_appdata, &target_dir)
-        .unwrap();
+    make_existing_link(&source_appdata, &target_dir);
 
     let rec_id = db
         .save_relocation(&RelocationRecord {
@@ -289,7 +303,7 @@ fn store_blocks_known_folder_undo_and_appdata_junction_repair_without_deleting_a
     std::fs::create_dir_all(appdata_link.parent().unwrap()).unwrap();
     std::fs::create_dir_all(&old_target).unwrap();
     std::fs::create_dir_all(&new_target).unwrap();
-    reparse.create_junction(&appdata_link, &old_target).unwrap();
+    make_existing_link(&appdata_link, &old_target);
 
     let repair_id = db
         .save_relocation(&RelocationRecord {
