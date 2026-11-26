@@ -5,13 +5,19 @@
   import {
     getOverviewSummary,
     scanSpaceLens,
+    scanCleanupCandidates,
     listenTaskProgress,
     getBootstrapState,
     type OverviewSummary,
     type SpaceNode,
     type TaskProgressEvent,
-    type DriveInfo
+    type DriveInfo,
+    type CleanupCandidateDto,
+    type ReclaimableItemDto
   } from '$lib/api';
+  import { createLoader, trimTree } from '$lib/cache';
+  import { DEFAULT_CLEANUP_PROFILES, cleanupKey } from '$lib/scans';
+  import UpdateStatus from '$lib/components/UpdateStatus.svelte';
   import SpaceTreemap from '$lib/components/SpaceTreemap.svelte';
   import DailyBarChart from '$lib/components/DailyBarChart.svelte';
   import ExpandableTableCard from '$lib/components/ExpandableTableCard.svelte';
@@ -37,7 +43,17 @@
   let selectedDrive = $state('C');
   let availableDrives = $state<DriveInfo[]>([]);
   let summary = $state<OverviewSummary | null>(null);
-  let spaceNode = $state<SpaceNode | null>(null);
+  let spaceNode = $state.raw<SpaceNode | null>(null);
+  let spaceSavedAt = $state<number | null>(null);
+  let spaceFailed = $state(false);
+  let reclaimable = $state.raw<ReclaimableItemDto[]>([]);
+  let reclaimableSavedAt = $state<number | null>(null);
+  let isScanningReclaimable = $state(false);
+  let reclaimableFailed = $state(false);
+
+  // How old a result may get before this screen scans again by itself.
+  const SPACE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+  const CLEANUP_MAX_AGE_MS = 30 * 60 * 1000;
   let isLoading = $state(false);
   let isScanningSpace = $state(false);
   let progressState = $state<TaskProgressEvent | null>(null);
@@ -57,45 +73,100 @@
   }
 
   function onDriveChanged() {
-    spaceNode = null;
     progressState = null;
     loadOverview();
+    loadSpace();
   }
 
-  async function loadOverview() {
-    isLoading = true;
-    try {
-      summary = await getOverviewSummary(selectedDrive);
-    } catch (err) {
-      console.error('Failed to load overview:', err);
-    } finally {
-      isLoading = false;
+  const loadSummary = createLoader<OverviewSummary>({
+    show: (data) => (summary = data),
+    status: (loading) => (isLoading = loading)
+  });
+
+  const loadSpaceMap = createLoader<SpaceNode>({
+    show(data, at) {
+      spaceNode = data;
+      spaceSavedAt = at;
+    },
+    status(loading, failed) {
+      isScanningSpace = loading;
+      spaceFailed = failed;
+      if (!loading) progressState = null;
     }
+  });
+
+  const loadCleanupScan = createLoader<CleanupCandidateDto[]>({
+    show(data, at) {
+      reclaimable = (data ?? [])
+        .filter((c) => c.reclaimable_bytes > 0)
+        .map((c) => ({
+          app_name: c.app_name,
+          path: c.path,
+          size_bytes: c.reclaimable_bytes,
+          category: c.category,
+          recommendation: t('Dọn dẹp')
+        }));
+      reclaimableSavedAt = at;
+    },
+    status(loading, failed) {
+      isScanningReclaimable = loading;
+      reclaimableFailed = failed;
+    }
+  });
+
+  // A window hidden in the tray only shows what it has; it scans when somebody looks.
+  const isHidden = () => document.visibilityState === 'hidden';
+
+  function loadOverview() {
+    const drive = selectedDrive;
+    return loadSummary(`overview.${drive}`, () => getOverviewSummary(drive), { force: true });
   }
 
-  async function triggerSpaceScan() {
-    isScanningSpace = true;
-    try {
-      spaceNode = await scanSpaceLens(selectedDrive);
-    } catch (err) {
-      console.error('Failed to scan space lens:', err);
-    } finally {
-      isScanningSpace = false;
-      progressState = null;
-    }
+  function loadSpace(force = false) {
+    const drive = selectedDrive;
+    return loadSpaceMap(`space.${drive}`, () => scanSpaceLens(drive), {
+      force,
+      maxAgeMs: SPACE_MAX_AGE_MS,
+      cacheOnly: !force && isHidden(),
+      compact: (tree) => trimTree(tree)
+    });
+  }
+
+  function loadReclaimable() {
+    return loadCleanupScan(
+      cleanupKey(DEFAULT_CLEANUP_PROFILES),
+      () => scanCleanupCandidates(DEFAULT_CLEANUP_PROFILES),
+      { maxAgeMs: CLEANUP_MAX_AGE_MS, cacheOnly: isHidden() }
+    );
+  }
+
+  function triggerSpaceScan() {
+    return loadSpace(true);
+  }
+
+  function onVisibilityChange() {
+    if (isHidden()) return;
+    loadSpace();
+    loadReclaimable();
   }
 
   onMount(() => {
-    initDrives().then(() => loadOverview());
+    initDrives().then(() => {
+      loadOverview();
+      loadSpace();
+      loadReclaimable();
+    });
+    document.addEventListener('visibilitychange', onVisibilityChange);
 
     // Listen to real-time progress events <= 100ms
     const unlistenPromise = listenTaskProgress((event) => {
-      if (event.kind === 'space_lens') {
+      if (event.kind === 'space_lens' && event.task_id.startsWith(`space-lens-${selectedDrive}-`)) {
         progressState = event;
       }
     });
 
     return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
       unlistenPromise.then((unlisten) => unlisten());
     };
   });
@@ -116,9 +187,9 @@
 
   // Burn-Rate Velocity
   let burnRateStr = $derived.by(() => {
-    if (!summary || summary.burn_rate_bps === 0) return '0 B/ngày';
+    if (!summary || summary.burn_rate_bps === 0) return '0 B / 24h';
     const absStr = formatSize(Math.abs(summary.burn_rate_bps));
-    return summary.burn_rate_bps > 0 ? `+${absStr}/ngày` : `-${absStr}/ngày`;
+    return summary.burn_rate_bps > 0 ? `+${absStr} / 24h` : `-${absStr} / 24h`;
   });
 </script>
 
@@ -150,11 +221,11 @@
         {#if availableDrives.length > 0}
           {#each availableDrives as drive}
             <option value={drive.drive_letter}>
-              Ổ {drive.drive_letter}: {drive.label ? `(${drive.label})` : ''}
+              {t('Ổ đĩa')} {drive.drive_letter}: {drive.label ? `(${drive.label})` : ''}
             </option>
           {/each}
         {:else}
-          <option value="C">Ổ C:</option>
+          <option value="C">{t('Ổ đĩa')} C:</option>
         {/if}
       </select>
 
@@ -291,6 +362,8 @@
       </button>
     </div>
 
+    <UpdateStatus savedAt={spaceSavedAt} refreshing={isScanningSpace} failed={spaceFailed} />
+
     <!-- Real-time Progress Bar Overlay during Scan -->
     {#if progressState && progressState.state === 'running'}
       <div class="rounded-lg border border-border bg-subtle p-3 space-y-1.5">
@@ -319,9 +392,20 @@
   <DailyBarChart drive={selectedDrive} />
 
   <!-- Section 4: ExpandableTableCard (Có thể giải phóng) -->
-  <ExpandableTableCard
-    title={t('Có thể giải phóng')}
-    items={summary?.reclaimable_proposals || []}
-    emptyText={t('Chưa phân tích. Bấm Phân tích để tìm dữ liệu có thể dọn hoặc chuyển sang ổ khác.')}
-  />
+  <div class="space-y-2">
+    <UpdateStatus
+      savedAt={reclaimableSavedAt}
+      refreshing={isScanningReclaimable}
+      failed={reclaimableFailed}
+    />
+    <ExpandableTableCard
+      title={t('Có thể giải phóng')}
+      items={reclaimable}
+      emptyText={isScanningReclaimable
+        ? t('Đang quét phân tích ứng dụng và kiểm tra khóa tệp tin...')
+        : reclaimableSavedAt !== null
+          ? t('Không tìm thấy tệp rác hoặc bộ nhớ đệm cần dọn dẹp theo các hồ sơ đã chọn.')
+          : t('Chưa có kết quả phân tích')}
+    />
+  </div>
 </div>

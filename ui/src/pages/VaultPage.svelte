@@ -1,6 +1,8 @@
 <!-- ui/src/pages/VaultPage.svelte -->
 <script lang="ts">
   import { onMount } from 'svelte';
+  import UpdateStatus from '$lib/components/UpdateStatus.svelte';
+  import { createLoader } from '$lib/cache';
   import { t, formatSize, i18n } from '$lib/i18n.svelte';
   import {
     getVaultArchives,
@@ -35,6 +37,10 @@
   // Runes State
   let archives = $state<VaultArchiveDto[]>([]);
   let isLoading = $state(false);
+  // Shown lists may be the last result: actions on files wait for a scan made now.
+  let savedAt = $state<number | null>(null);
+  let isFresh = $state(false);
+  let loadFailed = $state(false);
   let statusFilter = $state<'ALL' | 'QUARANTINED' | 'ROLLED_BACK' | 'PURGED'>('ALL');
 
   // Inspection Modal State
@@ -78,15 +84,20 @@
       : []
   );
 
-  async function loadArchives() {
-    isLoading = true;
-    try {
-      archives = await getVaultArchives();
-    } catch (err) {
-      console.error(t('Lỗi tải danh sách kho lưu trữ:'), err);
-    } finally {
-      isLoading = false;
-    }
+  const loadScan = createLoader<VaultArchiveDto[]>({
+    show(data, at, fresh) {
+      archives = data ?? [];
+      savedAt = at;
+      isFresh = fresh;
+    },
+    status(loading, failed) {
+      isLoading = loading;
+      loadFailed = failed;
+    },
+  });
+
+  function loadArchives(force = false) {
+    return loadScan('vault', getVaultArchives, { force });
   }
 
   async function handleFullRestore(archive: VaultArchiveDto) {
@@ -103,7 +114,7 @@
       const res = await restoreVaultArchive(archive.archive_id);
       restoreReport = res;
       alert(t('Đã khôi phục {count} tệp về vị trí cũ.', { count: res.restored_count }));
-      await loadArchives();
+      await loadArchives(true);
     } catch (err) {
       alert(`${t('Lỗi khôi phục:')} ${err}`);
     } finally {
@@ -121,7 +132,7 @@
 
     try {
       await deleteVaultArchive(archive.archive_id);
-      await loadArchives();
+      await loadArchives(true);
     } catch (err) {
       alert(`${t('Lỗi xóa kho lưu trữ:')} ${err}`);
     }
@@ -224,6 +235,8 @@
     </div>
   </div>
 
+  <UpdateStatus {savedAt} refreshing={isLoading} failed={loadFailed} />
+
   <!-- Filters & Controls Bar -->
   <div class="flex flex-wrap items-center justify-between gap-4">
     <!-- Status Filter Buttons -->
@@ -265,7 +278,7 @@
     <button
       class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-border bg-card text-xs font-medium text-secondary hover:bg-subtle transition-colors"
       disabled={isLoading}
-      onclick={loadArchives}
+      onclick={() => loadArchives(true)}
     >
       <RefreshCw class={`h-3.5 w-3.5 ${isLoading ? 'animate-spin' : ''}`} />
       {t('Làm mới')}
@@ -274,7 +287,7 @@
 
   <!-- Archives Table -->
   <div class="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
-    {#if isLoading}
+    {#if isLoading && archives.length === 0}
       <div class="p-12 text-center text-secondary">
         <RefreshCw class="h-8 w-8 animate-spin mx-auto text-accent mb-3" />
         <p class="text-sm">{t('Đang tải danh sách kho lưu trữ...')}</p>
@@ -361,7 +374,7 @@
                     {#if arch.status.toUpperCase() === 'QUARANTINED'}
                       <button
                         class="p-1.5 rounded hover:bg-emerald-500/10 text-emerald-600 transition-colors"
-                        disabled={isRestoring}
+                        disabled={isRestoring || !isFresh}
                         onclick={() => handleFullRestore(arch)}
                         title={t('Hoàn tác khôi phục toàn bộ')}
                       >
@@ -369,6 +382,7 @@
                       </button>
                       <button
                         class="p-1.5 rounded hover:bg-red-500/10 text-red-600 transition-colors"
+                        disabled={!isFresh}
                         onclick={() => handlePurgeArchive(arch)}
                         title={t('Xóa vĩnh viễn kho này')}
                       >

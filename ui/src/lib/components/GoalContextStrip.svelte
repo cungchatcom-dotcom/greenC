@@ -3,6 +3,7 @@
   import { onMount } from 'svelte';
   import { t, formatSize } from '$lib/i18n.svelte';
   import { listDriveQuotas, type DriveQuotaStatusDto } from '$lib/api';
+  import { peek, refresh } from '$lib/cache';
   import { Target, CheckCircle2, AlertTriangle, Sparkles, SlidersHorizontal } from 'lucide-svelte';
 
   interface Props {
@@ -14,13 +15,14 @@
 
   let { mode = 'strip', refreshKey = 0, onActionCleanup, onConfigureGoal }: Props = $props();
 
-  let primaryGoal = $state<DriveQuotaStatusDto | null>(null);
-  let loaded = $state(false);
+  const pick = (list: DriveQuotaStatusDto[]) => list.find((q) => q.enabled) ?? list[0] ?? null;
+  const last = peek<DriveQuotaStatusDto[]>('quotas');
+  let primaryGoal = $state<DriveQuotaStatusDto | null>(last ? pick(last.data) : null);
+  let loaded = $state(last !== null);
 
   async function loadGoal() {
     try {
-      const list = await listDriveQuotas();
-      primaryGoal = list.find((q) => q.enabled) ?? list[0] ?? null;
+      primaryGoal = pick(await refresh('quotas', listDriveQuotas, { force: true }));
     } catch {
       primaryGoal = null;
     } finally {

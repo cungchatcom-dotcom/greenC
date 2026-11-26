@@ -20,6 +20,7 @@
     type RelocationCandidateDto,
   } from '$lib/api';
   import GuidedModal from '$lib/components/GuidedModal.svelte';
+  import { peek, refresh as rescan } from '$lib/cache';
   import {
     MessageSquare,
     Trash2,
@@ -43,6 +44,9 @@
   let drives = $state<DriveInfo[]>([]);
   let selectedDrive = $state('D');
   let isLoading = $state(false);
+  // The card may show the last result: its actions wait for a status read made now.
+  let statusFresh = $state(false);
+  let reading = 0;
   let isCleaning = $state(false);
   let isMoving = $state(false);
   let isUndoing = $state(false);
@@ -115,12 +119,17 @@
   );
 
   async function refresh() {
+    const ticket = ++reading;
     isLoading = true;
+    statusFresh = false;
+    status ??= peek<ZaloStatusDto>('zalo')?.data ?? null;
     try {
+      const drive = preferredDrive || selectedDrive;
       const [bootRes, zaloRes] = await Promise.allSettled([
         getBootstrapState(),
-        getZaloStatus(preferredDrive || selectedDrive),
+        rescan('zalo', () => getZaloStatus(drive), { force: true }),
       ]);
+      if (ticket !== reading) return;
       if (bootRes.status === 'fulfilled') {
         drives = (bootRes.value.drives ?? []).filter((d) => d.is_eligible && !d.is_system);
         const rec = preferredDrive || bootRes.value.recommended_drive || drives[0]?.drive_letter;
@@ -132,6 +141,7 @@
       }
       if (zaloRes.status === 'fulfilled') {
         status = zaloRes.value;
+        statusFresh = true;
         if (!preferredDrive && zaloRes.value.recommended_drive) {
           selectedDrive = zaloRes.value.recommended_drive;
         }
@@ -435,7 +445,7 @@
       <button
         type="button"
         onclick={handleCleanNow}
-        disabled={isCleaning || isMoving || status.total_reclaimable_bytes === 0}
+        disabled={!statusFresh || isCleaning || isMoving || status.total_reclaimable_bytes === 0}
         class="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-accent hover:bg-accent-hover text-white text-xs font-semibold shadow-sm disabled:opacity-50 transition-colors"
       >
         <Trash2 class="h-3.5 w-3.5" />
@@ -446,7 +456,7 @@
         <button
           type="button"
           onclick={handleUndoMove}
-          disabled={isUndoing || isMoving}
+          disabled={!statusFresh || isUndoing || isMoving}
           class="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-border bg-subtle hover:bg-card text-primary text-xs font-semibold disabled:opacity-50 transition-colors"
         >
           <Undo2 class="h-3.5 w-3.5" />
@@ -456,7 +466,7 @@
         <button
           type="button"
           onclick={handleClickMove}
-          disabled={isMoving || isCleaning || (status.auto_move_supported && drives.length === 0)}
+          disabled={!statusFresh || isMoving || isCleaning || (status.auto_move_supported && drives.length === 0)}
           class="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-accent text-accent hover:bg-accent/10 text-xs font-semibold disabled:opacity-50 transition-colors"
         >
           <ArrowRightLeft class="h-3.5 w-3.5" />
@@ -515,7 +525,7 @@
                   <button
                     type="button"
                     onclick={() => handleRestoreOriginal(copy)}
-                    disabled={busyOriginalId !== null || isMoving}
+                    disabled={!statusFresh || busyOriginalId !== null || isMoving}
                     class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md border border-border bg-subtle hover:bg-card text-xs font-medium text-primary disabled:opacity-50"
                   >
                     <Undo2 class="h-3.5 w-3.5" />
@@ -524,7 +534,7 @@
                   <button
                     type="button"
                     onclick={() => handlePurgeOriginal(copy)}
-                    disabled={busyOriginalId !== null || isMoving}
+                    disabled={!statusFresh || busyOriginalId !== null || isMoving}
                     class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold disabled:opacity-50"
                   >
                     <Trash2 class="h-3.5 w-3.5" />

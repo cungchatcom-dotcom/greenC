@@ -1,6 +1,8 @@
 <!-- ui/src/pages/RelocatePage.svelte -->
 <script lang="ts">
   import { onMount } from 'svelte';
+  import UpdateStatus from '$lib/components/UpdateStatus.svelte';
+  import { createLoader } from '$lib/cache';
   import { t, formatSize } from '$lib/i18n.svelte';
   import {
     scanRelocationCandidates,
@@ -59,6 +61,10 @@
 
   let isLoading = $state(false);
   let isRelocating = $state(false);
+  // Shown lists may be the last result: actions on files wait for a scan made now.
+  let savedAt = $state<number | null>(null);
+  let isFresh = $state(false);
+  let loadFailed = $state(false);
   let showAdvanced = $state(false);
   let currentTaskId = $state<string | null>(null);
   let progressState = $state<TaskProgressEvent | null>(null);
@@ -79,8 +85,31 @@
     candidates.reduce((sum, c) => sum + c.size_bytes, 0)
   );
 
-  async function loadData() {
+  interface RelocateSnapshot {
+    candidates: RelocationCandidateDto[];
+    knownFolders: KnownFolderDto[];
+    historyRecords: RelocationResultDto[];
+    recovered: RelocationResultDto[];
+  }
+
+  const loadScan = createLoader<RelocateSnapshot>({
+    show(data, at, fresh) {
+      candidates = data?.candidates ?? [];
+      knownFolders = data?.knownFolders ?? [];
+      historyRecords = data?.historyRecords ?? [];
+      if (fresh && data) interruptedRecoveries = data.recovered;
+      savedAt = at;
+      isFresh = fresh;
+    },
+    status(loading, failed) {
+      isLoading = loading;
+      loadFailed = failed;
+    },
+  });
+
+  async function loadData(force = false) {
     isLoading = true;
+    isFresh = false;
     try {
       const bootstrap = await getBootstrapState();
       isStoreBuild = Boolean(bootstrap?.is_store_build);
@@ -90,27 +119,35 @@
           targetDrive = bootstrap.recommended_drive || availableDrives[0].drive_letter;
         }
       }
-
-      // Check crash recoveries first
-      interruptedRecoveries = await recoverInterruptedRelocations();
-
-      // Parallel fetch candidates, known folders, and history
-      const [candList, kfList, histList] = await Promise.all([
-        scanRelocationCandidates(targetDrive),
-        getKnownFolders(targetDrive),
-        listRelocationHistory()
-      ]);
-
-      // Known Folders and Zalo PC have their own dedicated sections above with specialized
-      // shell/Restart-Manager flows, so hide them from the generic junction table.
-      candidates = candList.filter((c) => c.strategy !== 'known_folder' && c.id !== 'zalo');
-      knownFolders = kfList;
-      historyRecords = histList;
     } catch (err) {
-      console.error('Failed to load relocation data:', err);
-    } finally {
-      isLoading = false;
+      console.error('Failed to load drives:', err);
     }
+
+    const drive = targetDrive;
+    await loadScan(
+      `relocate.${drive}`,
+      async () => {
+        // Check crash recoveries first
+        const recovered = await recoverInterruptedRelocations();
+
+        // Parallel fetch candidates, known folders, and history
+        const [candList, kfList, histList] = await Promise.all([
+          scanRelocationCandidates(drive),
+          getKnownFolders(drive),
+          listRelocationHistory()
+        ]);
+
+        return {
+          // Known Folders and Zalo PC have their own dedicated sections above with specialized
+          // shell/Restart-Manager flows, so hide them from the generic junction table.
+          candidates: candList.filter((c) => c.strategy !== 'known_folder' && c.id !== 'zalo'),
+          knownFolders: kfList,
+          historyRecords: histList,
+          recovered
+        };
+      },
+      { force, compact: (snapshot) => ({ ...snapshot, recovered: [] }) }
+    );
   }
 
   async function handleRelocateDirectory(candidate: RelocationCandidateDto) {
@@ -131,7 +168,7 @@
     isRelocating = true;
     try {
       await relocateDirectory(candidate.id, targetDrive);
-      await loadData();
+      await loadData(true);
     } catch (err) {
       alert(t('Không chuyển được {name}', { name: candidate.name }) + ': ' + err);
     } finally {
@@ -158,7 +195,7 @@
     isRelocating = true;
     try {
       await relocateKnownFolder(kf.folder_id, targetDrive);
-      await loadData();
+      await loadData(true);
     } catch (err) {
       alert(t('Không chuyển được {name}', { name: kf.name }) + ': ' + err);
     } finally {
@@ -174,7 +211,7 @@
 
     try {
       await undoRelocation(rec.id);
-      await loadData();
+      await loadData(true);
     } catch (err) {
       alert(t('Không hoàn tác được {name}', { name: rec.app_name }) + ': ' + err);
     }
@@ -187,7 +224,7 @@
 
     try {
       await repairJunctionTarget(rec.id, newTarget);
-      await loadData();
+      await loadData(true);
     } catch (err) {
       alert(t('Lỗi sửa liên kết') + ': ' + err);
     }
@@ -276,7 +313,7 @@
       </div>
 
       <button
-        onclick={loadData}
+        onclick={() => loadData(true)}
         disabled={isLoading || isRelocating}
         class="flex items-center gap-2 bg-card border border-border hover:bg-subtle px-3 py-1.5 rounded-lg text-sm font-medium text-primary shadow-sm transition-colors"
       >
@@ -310,7 +347,9 @@
   {/if}
 
   <!-- Dedicated Zalo PC Card (Clean + Auto Move) -->
-  <ZaloCard preferredDrive={targetDrive} onChanged={loadData} />
+  <UpdateStatus {savedAt} refreshing={isLoading} failed={loadFailed} />
+
+  <ZaloCard preferredDrive={targetDrive} onChanged={() => loadData(true)} />
 
   <!-- Section 1: Windows Known Folders Cards -->
   <div class="rounded-xl border border-border bg-card p-5 shadow-sm">
@@ -355,7 +394,7 @@
             </span>
             <button
               onclick={() => handleRelocateKnownFolder(kf)}
-              disabled={kf.is_onedrive || isStoreBuild || isRelocating || kf.is_redirected}
+              disabled={kf.is_onedrive || isStoreBuild || isRelocating || kf.is_redirected || !isFresh}
               class="text-xs font-medium px-2.5 py-1 rounded-md bg-accent text-white hover:bg-accent-hover disabled:opacity-50 transition-colors"
             >
               {kf.is_redirected ? t('Đã chuyển') : t('Chuyển')}
@@ -382,7 +421,11 @@
 
     {#if mainCandidates.length === 0}
       <div class="p-8 text-center text-sm text-secondary">
-        {t('Không có dữ liệu ứng dụng lớn nào trên ổ C:.')}
+        {savedAt === null
+          ? isLoading
+            ? t('Đang tải...')
+            : t('Chưa có kết quả phân tích')
+          : t('Không có dữ liệu ứng dụng lớn nào trên ổ C:.')}
       </div>
     {:else}
       <div class="overflow-x-auto">
@@ -436,7 +479,7 @@
                 <td class="py-3 px-3 text-right">
                   <button
                     onclick={() => handleRelocateDirectory(cand)}
-                    disabled={isRelocating || cand.is_locked || (cand.strategy !== 'guided' && !cand.is_eligible)}
+                    disabled={!isFresh || isRelocating || cand.is_locked || (cand.strategy !== 'guided' && !cand.is_eligible)}
                     title={!cand.is_eligible && cand.ineligible_reason ? cand.ineligible_reason : undefined}
                     class="px-3 py-1 text-xs font-semibold rounded-md bg-accent text-white hover:bg-accent-hover disabled:opacity-50 transition-colors"
                   >
@@ -486,7 +529,7 @@
                     <td class="py-2.5 px-3 text-right">
                       <button
                         onclick={() => handleRelocateDirectory(cand)}
-                        disabled={isRelocating || cand.is_locked || !cand.is_eligible}
+                        disabled={!isFresh || isRelocating || cand.is_locked || !cand.is_eligible}
                         title={!cand.is_eligible && cand.ineligible_reason ? cand.ineligible_reason : undefined}
                         class="px-2.5 py-1 text-xs font-medium rounded-md bg-subtle hover:bg-border text-primary disabled:opacity-50 transition-colors"
                       >
@@ -555,6 +598,7 @@
                 <td class="py-3 px-3 text-right flex items-center justify-end gap-2">
                   {#if rec.health_status !== 'healthy' && rec.strategy === 'junction'}
                     <button
+                      disabled={!isFresh}
                       onclick={() => handleRepair(rec)}
                       class="px-2 py-1 text-xs font-medium rounded-md border border-border hover:bg-subtle text-accent transition-colors"
                       title={t('Sửa liên kết')}
@@ -565,7 +609,7 @@
                   {/if}
                   <button
                     onclick={() => handleUndo(rec)}
-                    disabled={rec.strategy === 'guided' || rec.status === 'undone'}
+                    disabled={!isFresh || rec.strategy === 'guided' || rec.status === 'undone'}
                     class="px-2.5 py-1 text-xs font-medium rounded-md border border-border hover:bg-subtle text-secondary hover:text-primary transition-colors disabled:opacity-40"
                     title={rec.strategy === 'guided' ? t('Đổi lại vị trí lưu trong Cài đặt của ứng dụng') : t('Hoàn tác')}
                   >
@@ -618,5 +662,5 @@
   candidate={activeGuidedCandidate}
   {targetDrive}
   onClose={() => (showGuidedModal = false)}
-  onRecheck={loadData}
+  onRecheck={() => loadData(true)}
 />
