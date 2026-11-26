@@ -14,7 +14,7 @@ members = [
 ]
 
 [workspace.package]
-version = "2.2.3"
+version = "2.3.0"
 edition = "2021"
 authors = ["GreenC Team"]
 license-file = "LICENSE"

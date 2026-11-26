@@ -21,7 +21,7 @@ GreenC **không** thu thập, lưu trữ trên máy chủ hay chia sẻ với b�
 Để phát hiện lỗi và cải thiện tốc độ quét/dọn dẹp, bản cài đặt độc lập có tuỳ chọn **gửi số đếm chẩn đoán ẩn danh** (mặc định **tắt**, chỉ đếm và gửi khi bạn chủ động chọn **Đồng ý gửi** hoặc bật trong **Cài đặt**):
 - **Các trường dữ liệu được gửi** (`POST https://greenc-log.cungchat.com/v1/counters`, tối đa khoảng 1 lần mỗi 20 giờ hoặc sau khi ứng dụng gặp sự cố sập):
   - `day`: ngày theo UTC (`YYYY-MM-DD`).
-  - `version`: phiên bản GreenC (ví dụ `2.2.3`).
+  - `version`: phiên bản GreenC (ví dụ `2.3.0`).
   - `os`: nhóm hệ điều hành (`windows10`, `windows11`, `macos`, `linux`).
   - `build`: số build Windows hoặc phiên bản chính macOS (chỉ gửi kèm sự kiện `active`, Linux là `0`).
   - `disk`: nhóm dung lượng ổ hệ thống (`lt128`, `lt256`, `lt512`, `lt1024`, `ge1024` GiB, chỉ gửi kèm sự kiện `active`).
@@ -72,7 +72,7 @@ GreenC does **not** collect, transmit, store on external servers, or sell any of
 To measure performance and fix bugs, the standalone edition offers optional **anonymous diagnostic counters** (**off by default**; nothing is counted or sent until you explicitly choose **Agree to send** or turn it on in **Settings**):
 - **Fields sent** (`POST https://greenc-log.cungchat.com/v1/counters`, at most once every ~20 hours or after a crash):
   - `day`: UTC date (`YYYY-MM-DD`).
-  - `version`: GreenC app version (e.g. `2.2.3`).
+  - `version`: GreenC app version (e.g. `2.3.0`).
   - `os`: OS family (`windows10`, `windows11`, `macos`, `linux`).
   - `build`: Windows build number or macOS major version (`active` event only; `0` on Linux).
   - `disk`: system drive capacity bucket (`lt128`, `lt256`, `lt512`, `lt1024`, `ge1024` GiB; `active` event only).

@@ -6,7 +6,7 @@
 
 - **Trang chủ & Tải về:** https://greenc.cungchat.com
 - **Nền tảng:** Windows 10 / 11 (64-bit)
-- **Phiên bản:** 2.2.3 (Rust + Tauri v2 + Svelte 5)
+- **Phiên bản:** 2.3.0 (Rust + Tauri v2 + Svelte 5)
 - **Ngôn ngữ:** Tiếng Việt & English
 - **Giấy phép:** [Apache License 2.0](LICENSE)
 
