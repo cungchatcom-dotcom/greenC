@@ -7,6 +7,8 @@ Ghi thay đổi mới vào mục **Unreleased**. Khi phát hành, `scripts/versi
 
 ## [Unreleased]
 
+## [2.2.3] - 2026-11-26
+
 ### Cải thiện
 - Các màn hình hiện ngay kết quả quét lần trước và cập nhật ngầm. Nút dọn, di chuyển, nén, khôi phục và xoá chỉ bật khi đã có kết quả vừa quét.
 - Bản đồ Space Lens tự quét ngầm khi chưa có hoặc đã cũ hơn 6 giờ.
