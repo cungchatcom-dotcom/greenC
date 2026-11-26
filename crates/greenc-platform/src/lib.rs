@@ -10,6 +10,7 @@ mod win32;
 
 pub mod app_lifecycle;
 pub mod dev_tools;
+pub mod os_release;
 pub mod traits;
 pub mod unix_parsers;
 
@@ -23,6 +24,7 @@ pub use unix::{
     handle, known_folders, mutex, power_session, reparse, restart_mgr, volume, wof_compact,
 };
 
+pub use os_release::{classify_windows, os_release};
 pub use unix_parsers::{
     detect_atime_reliability, detect_atime_reliability_from_proc_mounts, AtimeReliability,
 };
