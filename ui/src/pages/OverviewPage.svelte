@@ -8,6 +8,7 @@
     scanCleanupCandidates,
     listenTaskProgress,
     getBootstrapState,
+    diagnosticsScreen,
     type OverviewSummary,
     type SpaceNode,
     type TaskProgressEvent,
@@ -16,6 +17,7 @@
     type ReclaimableItemDto
   } from '$lib/api';
   import { createLoader, trimTree, pendingKeys } from '$lib/cache';
+  import { createScreenTimer } from '$lib/screen-timer';
   import { onFilesChanged } from '$lib/busy.svelte';
   import { DEFAULT_CLEANUP_PROFILES, cleanupKey } from '$lib/scans';
   import UpdateStatus from '$lib/components/UpdateStatus.svelte';
@@ -79,8 +81,15 @@
     loadSpace();
   }
 
+  const screenTimer = createScreenTimer((ms, cached) => {
+    void diagnosticsScreen('overview', ms, cached);
+  });
+
   const loadSummary = createLoader<OverviewSummary>({
-    show: (data) => (summary = data),
+    show: (data, _at, fresh) => {
+      summary = data;
+      if (data !== null) screenTimer.shown(fresh);
+    },
     status: (loading) => (isLoading = loading)
   });
 

@@ -8,9 +8,14 @@
     updateSettings,
     checkForUpdates,
     downloadAndInstallUpdate,
+    getDiagnosticsConsent,
+    setDiagnosticsConsent,
+    dismissDiagnosticsPrompt,
+    diagnosticsUiReady,
     type BootstrapState,
     type WatchdogAlertEvent,
     type UpdateCheckDto,
+    type DiagnosticsConsentState,
   } from "$lib/api";
   import OverviewPage from "./pages/OverviewPage.svelte";
   import CleanupPage from "./pages/CleanupPage.svelte";
@@ -19,6 +24,7 @@
   import VaultPage from "./pages/VaultPage.svelte";
   import SettingsPage from "./pages/SettingsPage.svelte";
   import FirstRunModal from "./lib/components/FirstRunModal.svelte";
+  import ConsentDialog from "./lib/components/ConsentDialog.svelte";
   import BrandLogo from "./lib/components/BrandLogo.svelte";
   import GoalContextStrip from "./lib/components/GoalContextStrip.svelte";
   import { AlertTriangle, X, Minimize2, Power, Download } from "lucide-svelte";
@@ -42,6 +48,8 @@
   let updateDismissed = $state(false);
   let installingUpdate = $state(false);
   let updateError = $state<string | null>(null);
+  let diagConsent = $state<DiagnosticsConsentState | null>(null);
+  let consentPromptHidden = $state(false);
 
   const tabDefs: ReadonlyArray<{ id: TabId; labelKey: string }> = [
     { id: "overview", labelKey: "Tổng quan" },
@@ -115,9 +123,27 @@
     }
   }
 
+  async function handleConsentChoose(granted: boolean) {
+    consentPromptHidden = true;
+    const updated = await setDiagnosticsConsent(granted);
+    if (updated) {
+      diagConsent = updated;
+    }
+  }
+
+  async function handleConsentDismiss() {
+    consentPromptHidden = true;
+    const updated = await dismissDiagnosticsPrompt();
+    if (updated) {
+      diagConsent = updated;
+    }
+  }
+
   onMount(() => {
+    void diagnosticsUiReady();
     let updateTimer: number | undefined;
-    void refreshBootstrap().then(() => {
+    void refreshBootstrap().then(async () => {
+      diagConsent = await getDiagnosticsConsent();
       // Silently auto-check GitHub releases 4s after startup ONLY for standard builds.
       // Microsoft Store builds update exclusively through Microsoft Store.
       if (bootstrap?.is_store_build) return;
@@ -379,5 +405,10 @@
     onDefer={() => {
       showFirstRun = false;
     }}
+  />
+{:else if !showFirstRun && !consentPromptHidden && diagConsent?.available && diagConsent.should_ask}
+  <ConsentDialog
+    onChoose={handleConsentChoose}
+    onDismiss={handleConsentDismiss}
   />
 {/if}

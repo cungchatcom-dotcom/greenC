@@ -935,4 +935,93 @@ export async function restoreZaloRetainedOriginal(retainedId: number): Promise<s
   }));
 }
 
+// =========================================================================
+// Opt-in Diagnostics & Local Log (all errors swallowed silently)
+// =========================================================================
+
+export interface DiagnosticsConsentState {
+  available: boolean;
+  granted: boolean;
+  should_ask: boolean;
+}
+
+const UNAVAILABLE_CONSENT: DiagnosticsConsentState = {
+  available: false,
+  granted: false,
+  should_ask: false,
+};
+
+export async function getDiagnosticsConsent(): Promise<DiagnosticsConsentState> {
+  try {
+    return await invoke<DiagnosticsConsentState>('get_diagnostics_consent');
+  } catch {
+    return UNAVAILABLE_CONSENT;
+  }
+}
+
+export async function setDiagnosticsConsent(
+  granted: boolean
+): Promise<DiagnosticsConsentState | null> {
+  try {
+    return await invoke<DiagnosticsConsentState>('set_diagnostics_consent', { granted });
+  } catch {
+    return null;
+  }
+}
+
+export async function dismissDiagnosticsPrompt(): Promise<DiagnosticsConsentState | null> {
+  try {
+    return await invoke<DiagnosticsConsentState>('dismiss_diagnostics_prompt');
+  } catch {
+    return null;
+  }
+}
+
+export async function previewDiagnostics(): Promise<string> {
+  try {
+    return await invoke<string>('preview_diagnostics');
+  } catch {
+    return '';
+  }
+}
+
+export async function diagnosticsUiReady(): Promise<void> {
+  try {
+    await invoke<void>('diagnostics_ui_ready');
+  } catch {
+    // Diagnostics must never surface errors to the user.
+  }
+}
+
+export async function diagnosticsScreen(
+  name: string,
+  ms: number,
+  cached: boolean
+): Promise<void> {
+  try {
+    await invoke<void>('diagnostics_screen', { name, ms, cached });
+  } catch {
+    // Diagnostics must never surface errors to the user.
+  }
+}
+
+export async function exportDiagnosticsLog(): Promise<string | null> {
+  try {
+    const path = await invoke<string>('export_diagnostics_log');
+    return path || null;
+  } catch {
+    return null;
+  }
+}
+
+export async function clearDiagnosticsLog(): Promise<boolean> {
+  try {
+    await invoke<void>('clear_diagnostics_log');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+
 

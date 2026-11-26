@@ -3,6 +3,7 @@
   import { onMount } from 'svelte';
   import UpdateStatus from '$lib/components/UpdateStatus.svelte';
   import { createLoader } from '$lib/cache';
+  import { createScreenTimer } from '$lib/screen-timer';
   import { fileActions, onFilesChanged } from '$lib/busy.svelte';
   import { t, formatSize, i18n } from '$lib/i18n.svelte';
   import {
@@ -11,6 +12,7 @@
     deleteVaultArchive,
     inspectVaultArchive,
     restoreVaultFilesSelective,
+    diagnosticsScreen,
     type VaultArchiveDto,
     type VaultFileItemDto,
     type VaultArchiveDetailDto,
@@ -87,11 +89,16 @@
       : []
   );
 
+  const screenTimer = createScreenTimer((ms, cached) => {
+    void diagnosticsScreen('vault', ms, cached);
+  });
+
   const loadScan = createLoader<VaultArchiveDto[]>({
     show(data, at, fresh) {
       archives = data ?? [];
       savedAt = at;
       isFresh = fresh;
+      if (data !== null) screenTimer.shown(fresh);
     },
     status(loading, failed) {
       isLoading = loading;

@@ -7,6 +7,10 @@ Ghi thay đổi mới vào mục **Unreleased**. Khi phát hành, `scripts/versi
 
 ## [Unreleased]
 
+### Thêm
+- Chẩn đoán ẩn danh khi người dùng đồng ý (mặc định tắt, không có trên bản Microsoft Store): gửi số đếm ẩn danh về tốc độ mở màn hình, quét, thao tác, mã lỗi chuẩn hoá và vị trí lỗi sập trong mã nguồn; không thu thập tên tệp, đường dẫn hay mã thiết bị.
+- Hộp thoại xin phép chẩn đoán minh bạch kèm nút **Xem dữ liệu sẽ gửi**, cùng mục **Chẩn đoán & Nhật ký cục bộ** trong Cài đặt (bật/tắt, xem JSON sẽ gửi, xuất nhật ký, xoá nhật ký).
+
 ## [2.2.3] - 2026-11-26
 
 ### Cải thiện

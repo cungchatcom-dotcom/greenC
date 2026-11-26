@@ -3,6 +3,7 @@
   import { onMount } from 'svelte';
   import UpdateStatus from '$lib/components/UpdateStatus.svelte';
   import { createLoader } from '$lib/cache';
+  import { createScreenTimer } from '$lib/screen-timer';
   import { fileActions, onFilesChanged } from '$lib/busy.svelte';
   import { t, formatSize } from '$lib/i18n.svelte';
   import {
@@ -13,6 +14,7 @@
     listCompactionHistory,
     listenTaskProgress,
     controlTask,
+    diagnosticsScreen,
     type CompactionCandidateDto,
     type CompactionResultDto,
     type CompactionHistoryDto,
@@ -73,6 +75,10 @@
     historyRecords: CompactionHistoryDto[];
   }
 
+  const screenTimer = createScreenTimer((ms, cached) => {
+    void diagnosticsScreen('compact', ms, cached);
+  });
+
   const loadScan = createLoader<CompactSnapshot>({
     show(data, at, fresh) {
       const chosen = new Map(candidates.map((c) => [c.path, c.selected]));
@@ -83,6 +89,7 @@
       historyRecords = data?.historyRecords ?? [];
       savedAt = at;
       isFresh = fresh;
+      if (data !== null) screenTimer.shown(fresh);
     },
     status(loading, failed) {
       isLoading = loading;

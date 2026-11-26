@@ -83,8 +83,8 @@ jobs:
       - name: Verify Workspace Compilation
         run: cargo check --workspace --all-targets
 
-      - name: Test UI Result Cache
-        run: node --experimental-strip-types --test ui/src/__tests__/cache.test.ts
+      - name: Test UI Result Cache & Screen Timer
+        run: node --experimental-strip-types --test ui/src/__tests__/cache.test.ts ui/src/__tests__/screen-timer.test.ts
 
       - name: Validate 50 Localization Catalogs
         run: cargo run -p greenc-i18n -- check

@@ -2,6 +2,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { fileActions } from "$lib/busy.svelte";
+  import { createScreenTimer } from "$lib/screen-timer";
   import { i18n, t, formatSize } from "$lib/i18n.svelte";
   import {
     getAppSettings,
@@ -14,11 +15,18 @@
     getBootstrapState,
     checkForUpdates,
     downloadAndInstallUpdate,
+    getDiagnosticsConsent,
+    setDiagnosticsConsent,
+    previewDiagnostics,
+    exportDiagnosticsLog,
+    clearDiagnosticsLog,
+    diagnosticsScreen,
     type AppSettingsDto,
     type QuotaRuleStatusDto,
     type DriveInfo,
     type SandboxDemoResultDto,
     type UpdateCheckDto,
+    type DiagnosticsConsentState,
   } from "$lib/api";
   import BrandLogo from "$lib/components/BrandLogo.svelte";
   import DriveQuotaCard from "$lib/components/DriveQuotaCard.svelte";
@@ -66,6 +74,15 @@
   let installingUpdate = $state(false);
   let updateResult = $state<UpdateCheckDto | null>(null);
   let updateCheckError = $state<string | null>(null);
+  let diagConsent = $state<DiagnosticsConsentState | null>(null);
+  let showDiagPreview = $state(false);
+  let diagPreviewJson = $state("");
+  let diagNotice = $state<string | null>(null);
+  let diagBusy = $state(false);
+
+  const screenTimer = createScreenTimer((ms, cached) => {
+    void diagnosticsScreen("settings", ms, cached);
+  });
 
   // Explicit draft state for Card 3 (Background Guardian & Autostart) with dedicated Save button
   let draftAutostart = $state(false);
@@ -112,11 +129,15 @@
 
   async function loadAll() {
     // Load fast settings & drives immediately without blocking on disk-walking listQuotaRules()
-    const [cfgRes, bootRes] = await Promise.allSettled([
+    const [cfgRes, bootRes, diagRes] = await Promise.allSettled([
       getAppSettings(),
       getBootstrapState(),
+      getDiagnosticsConsent(),
     ]);
 
+    if (diagRes.status === "fulfilled") {
+      diagConsent = diagRes.value;
+    }
     if (bootRes.status === "fulfilled") {
       drives = bootRes.value.drives ?? [];
     }
@@ -133,6 +154,7 @@
         cfg.data_root ||
         (drives[0]?.root ? `${drives[0].root}GreenC` : "D:\\GreenC");
       i18n.init(cfg.language, cfg.translations, cfg.theme_mode);
+      screenTimer.shown(true);
     } else {
       statusBanner = {
         kind: "err",
@@ -358,6 +380,58 @@
       statusBanner = { kind: "err", text: String(err) };
     } finally {
       demoRunning = false;
+    }
+  }
+
+  async function handleToggleDiagnostics(granted: boolean) {
+    if (diagBusy) return;
+    diagBusy = true;
+    diagNotice = null;
+    try {
+      const updated = await setDiagnosticsConsent(granted);
+      if (updated) {
+        diagConsent = updated;
+      }
+      if (showDiagPreview) {
+        diagPreviewJson = await previewDiagnostics();
+      }
+    } finally {
+      diagBusy = false;
+    }
+  }
+
+  async function handleToggleDiagPreview() {
+    showDiagPreview = !showDiagPreview;
+    if (showDiagPreview) {
+      diagPreviewJson = await previewDiagnostics();
+    }
+  }
+
+  async function handleExportDiagLog() {
+    if (diagBusy) return;
+    diagBusy = true;
+    diagNotice = null;
+    try {
+      const exportedPath = await exportDiagnosticsLog();
+      if (exportedPath) {
+        diagNotice = t("Đã xuất nhật ký tới {path}", { path: exportedPath });
+      }
+    } finally {
+      diagBusy = false;
+    }
+  }
+
+  async function handleClearDiagLog() {
+    if (diagBusy) return;
+    diagBusy = true;
+    diagNotice = null;
+    try {
+      const ok = await clearDiagnosticsLog();
+      if (ok) {
+        diagNotice = t("Đã xoá nhật ký cục bộ.");
+      }
+    } finally {
+      diagBusy = false;
     }
   }
 </script>
@@ -890,6 +964,90 @@
       </div>
     {/if}
   </section>
+
+  <!-- Card 5b: Opt-in Diagnostics & Local Log (hidden completely when unavailable, e.g. Store build) -->
+  {#if diagConsent?.available}
+    <section
+      class="rounded-xl border border-border bg-card p-5 shadow-sm space-y-4"
+    >
+      <div class="flex items-center gap-2 text-sm font-bold text-primary">
+        <Shield class="h-4 w-4 text-accent" />
+        <span>{t("Chẩn đoán & Nhật ký cục bộ")}</span>
+      </div>
+
+      <label class="flex items-center justify-between gap-4 cursor-pointer text-xs">
+        <div>
+          <div class="font-semibold text-primary">
+            {t("Gửi dữ liệu chẩn đoán ẩn danh")}
+          </div>
+          <div class="text-secondary mt-0.5">
+            {t(
+              "Chỉ gửi số đếm ẩn danh tối đa 1 lần/ngày khi bạn bật. Tắt sẽ xoá ngay dữ liệu đang chờ gửi.",
+            )}
+          </div>
+        </div>
+        <input
+          type="checkbox"
+          checked={diagConsent.granted}
+          disabled={diagBusy}
+          onchange={(e) =>
+            handleToggleDiagnostics((e.currentTarget as HTMLInputElement).checked)}
+          class="h-4 w-4 rounded border-border text-accent cursor-pointer disabled:opacity-50"
+        />
+      </label>
+
+      <div class="flex items-center flex-wrap gap-2 pt-2 border-t border-border/60">
+        <button
+          type="button"
+          onclick={handleToggleDiagPreview}
+          class="px-3 py-1.5 rounded-lg border border-border bg-subtle hover:bg-card text-xs font-medium text-primary transition-colors"
+        >
+          {showDiagPreview ? t("Ẩn dữ liệu sẽ gửi") : t("Xem dữ liệu sẽ gửi")}
+        </button>
+        <button
+          type="button"
+          disabled={diagBusy}
+          onclick={handleExportDiagLog}
+          class="px-3 py-1.5 rounded-lg border border-border bg-subtle hover:bg-card text-xs font-medium text-primary transition-colors disabled:opacity-50"
+        >
+          {t("Xuất nhật ký")}
+        </button>
+        <button
+          type="button"
+          disabled={diagBusy}
+          onclick={handleClearDiagLog}
+          class="px-3 py-1.5 rounded-lg border border-border bg-subtle hover:bg-card text-xs font-medium text-primary transition-colors disabled:opacity-50"
+        >
+          {t("Xoá nhật ký")}
+        </button>
+      </div>
+
+      {#if diagNotice}
+        <div
+          class="rounded-lg border border-accent/30 bg-accent/10 px-3 py-2 text-xs text-accent flex items-center gap-1.5"
+        >
+          <CheckCircle2 class="h-3.5 w-3.5 shrink-0" />
+          <span class="break-all">{diagNotice}</span>
+        </div>
+      {/if}
+
+      {#if showDiagPreview}
+        <div class="space-y-2 rounded-lg border border-border bg-subtle p-3 text-xs">
+          <p class="text-secondary leading-relaxed">
+            {t(
+              "Dữ liệu gồm: ngày (UTC), phiên bản ứng dụng, hệ điều hành, loại sự kiện, tên tính năng, kết quả, mã lỗi chuẩn hoá, khoảng thời gian, nhóm dung lượng ổ hệ thống và số lần.",
+            )}
+          </p>
+          {#if diagPreviewJson}
+            <pre
+              dir="ltr"
+              class="max-h-56 overflow-auto rounded border border-border bg-card p-2.5 text-[11px] font-mono text-primary ltr-isolate"
+            >{diagPreviewJson}</pre>
+          {/if}
+        </div>
+      {/if}
+    </section>
+  {/if}
 
   <!-- Card 6: About GreenC & Updates (Cùng Chat · cungchat.com) -->
   <section

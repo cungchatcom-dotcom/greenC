@@ -13,6 +13,7 @@
     executeCleanup,
     listenTaskProgress,
     controlTask,
+    diagnosticsScreen,
     type CleanupCandidateDto,
     type CleanupReportDto,
     type TaskProgressEvent,
@@ -20,6 +21,7 @@
   import ZaloCard from '$lib/components/ZaloCard.svelte';
   import UpdateStatus from '$lib/components/UpdateStatus.svelte';
   import { createLoader } from '$lib/cache';
+  import { createScreenTimer } from '$lib/screen-timer';
   import { DEFAULT_CLEANUP_PROFILES, cleanupKey } from '$lib/scans';
   import {
     Trash2,
@@ -84,11 +86,16 @@
     candidates.length > 0 && candidates.every((c) => c.selected)
   );
 
+  const screenTimer = createScreenTimer((ms, cached) => {
+    void diagnosticsScreen('cleanup', ms, cached);
+  });
+
   const loadScan = createLoader<CleanupCandidateDto[]>({
     show(data, at, fresh) {
       candidates = (data ?? []).map((c) => (unticked.has(c.id) ? { ...c, selected: false } : c));
       savedAt = at;
       isFresh = fresh;
+      if (data !== null) screenTimer.shown(fresh);
     },
     status(loading, failed) {
       isLoading = loading;
