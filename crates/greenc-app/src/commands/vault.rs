@@ -1,12 +1,15 @@
 //! Canary Vault IPC commands for archive browsing, inspection, and rollback (Tasks T035, T037).
 
+use crate::commands::diagnostics::{record_action_result, CommandFailure};
 use crate::state::AppState;
 use chrono::Utc;
 use greenc_core::config::default_vault_dir;
 use greenc_core::models::VaultStatus;
+use greenc_diagnostics::Outcome;
 use greenc_vault::canary::CanaryVerifier;
 use greenc_vault::rollback::{safe_remove_vault_artifact, RestoreOptions, RollbackEngine};
 use serde::{Deserialize, Serialize};
+use std::time::Instant;
 use tauri::State;
 
 /// DTO representing a quarantined or resolved Canary Vault archive.
@@ -62,7 +65,10 @@ pub struct VaultRestoreReportDto {
 }
 
 /// Helper to resolve archive DB ID from either numeric string ("1") or archive name ("vault_...").
-fn resolve_archive_db_id(id_str: &str, state: &AppState) -> std::result::Result<i64, String> {
+fn resolve_archive_db_id_diag(
+    id_str: &str,
+    state: &AppState,
+) -> std::result::Result<i64, CommandFailure> {
     if let Ok(num_id) = id_str.parse::<i64>() {
         return Ok(num_id);
     }
@@ -70,7 +76,7 @@ fn resolve_archive_db_id(id_str: &str, state: &AppState) -> std::result::Result<
     let archives = state
         .db
         .list_vault_archives(None)
-        .map_err(|e| format!("Database error: {}", e))?;
+        .map_err(|e| CommandFailure::from_err(&e, format!("Database error: {}", e)))?;
 
     for a in archives {
         if a.zip_path.to_string_lossy().contains(id_str)
@@ -82,7 +88,14 @@ fn resolve_archive_db_id(id_str: &str, state: &AppState) -> std::result::Result<
         }
     }
 
-    Err(format!("Archive not found for identifier: {}", id_str))
+    Err(CommandFailure::from_msg(
+        format!("Archive not found for identifier: {}", id_str),
+        "NotFound",
+    ))
+}
+
+fn resolve_archive_db_id(id_str: &str, state: &AppState) -> std::result::Result<i64, String> {
+    resolve_archive_db_id_diag(id_str, state).map_err(|f| f.message)
 }
 
 /// Retrieves all Vault archives from the database.
@@ -142,42 +155,66 @@ pub async fn restore_vault_archive(
     archive_id: String,
     state: State<'_, AppState>,
 ) -> std::result::Result<VaultRestoreReportDto, String> {
-    let db_id = resolve_archive_db_id(&archive_id, &state)?;
+    let started = Instant::now();
+    let db_id = match resolve_archive_db_id_diag(&archive_id, &state) {
+        Ok(id) => id,
+        Err(fail) => {
+            return record_action_result(&state.diagnostics, "restore", started, Err(fail), |_| {
+                Outcome::Ok
+            });
+        }
+    };
     let state_inner = state.inner().clone();
 
-    tokio::task::spawn_blocking(move || {
-        let vault_dir = state_inner
-            .settings()
-            .vault_dir(&default_vault_dir())
-            .unwrap_or_else(|_| default_vault_dir());
-        let engine = RollbackEngine::new(
-            &state_inner.db,
-            RestoreOptions {
-                vault_dir: Some(vault_dir),
-                ..Default::default()
-            },
-        );
-        let result = engine
-            .rollback_archive(db_id, "User requested 1-click restore from UI", false)
-            .map_err(|e| format!("Rollback failed: {}", e))?;
+    let join_res = tokio::task::spawn_blocking(
+        move || -> std::result::Result<VaultRestoreReportDto, CommandFailure> {
+            let vault_dir = state_inner
+                .settings()
+                .vault_dir(&default_vault_dir())
+                .unwrap_or_else(|_| default_vault_dir());
+            let engine = RollbackEngine::new(
+                &state_inner.db,
+                RestoreOptions {
+                    vault_dir: Some(vault_dir),
+                    ..Default::default()
+                },
+            );
+            let result = engine
+                .rollback_archive(db_id, "User requested 1-click restore from UI", false)
+                .map_err(|e| CommandFailure::from_err(&e, format!("Rollback failed: {}", e)))?;
 
-        let restored_paths: Vec<String> = result
-            .restored_paths
-            .into_iter()
-            .map(|p| p.to_string_lossy().to_string())
-            .collect();
+            let restored_paths: Vec<String> = result
+                .restored_paths
+                .into_iter()
+                .map(|p| p.to_string_lossy().to_string())
+                .collect();
 
-        Ok(VaultRestoreReportDto {
-            archive_id,
-            success: true,
-            restored_count: result.restored_count,
-            restored_bytes: result.restored_bytes,
-            restored_paths,
-            message: format!("Khôi phục thành công {} tệp tin", result.restored_count),
-        })
+            Ok(VaultRestoreReportDto {
+                archive_id,
+                success: true,
+                restored_count: result.restored_count,
+                restored_bytes: result.restored_bytes,
+                restored_paths,
+                message: format!("Khôi phục thành công {} tệp tin", result.restored_count),
+            })
+        },
+    )
+    .await;
+
+    let diag_res = match join_res {
+        Ok(inner) => inner,
+        Err(e) => Err(CommandFailure::from_msg(
+            format!("Task execution error: {}", e),
+            "unknown",
+        )),
+    };
+    record_action_result(&state.diagnostics, "restore", started, diag_res, |r| {
+        if r.success {
+            Outcome::Ok
+        } else {
+            Outcome::Failed
+        }
     })
-    .await
-    .map_err(|e| format!("Task execution error: {}", e))?
 }
 
 /// Permanently purges an archive from disk and sets status to PURGED.
@@ -186,34 +223,45 @@ pub async fn delete_vault_archive(
     archive_id: String,
     state: State<'_, AppState>,
 ) -> std::result::Result<bool, String> {
-    let db_id = resolve_archive_db_id(&archive_id, &state)?;
-    let archive = state
-        .db
-        .get_vault_archive(db_id)
-        .map_err(|e| format!("Database error: {}", e))?
-        .ok_or_else(|| format!("Archive not found for ID {}", db_id))?;
+    let started = Instant::now();
+    let res: std::result::Result<bool, CommandFailure> = (|| {
+        let db_id = resolve_archive_db_id_diag(&archive_id, &state)?;
+        let archive = state
+            .db
+            .get_vault_archive(db_id)
+            .map_err(|e| CommandFailure::from_err(&e, format!("Database error: {}", e)))?
+            .ok_or_else(|| {
+                CommandFailure::from_msg(format!("Archive not found for ID {}", db_id), "NotFound")
+            })?;
 
-    // Delete .zip and .manifest.json strictly inside vault_dir (never trust raw DB paths).
-    let vault_dir = state
-        .settings()
-        .vault_dir(&default_vault_dir())
-        .map_err(|e| format!("Failed to resolve vault_dir: {}", e))?;
-    safe_remove_vault_artifact(&archive.zip_path, &vault_dir, ".zip")
-        .map_err(|e| format!("Refused to delete archive zip: {}", e))?;
-    safe_remove_vault_artifact(&archive.manifest_path, &vault_dir, ".manifest.json")
-        .map_err(|e| format!("Refused to delete archive manifest: {}", e))?;
+        // Delete .zip and .manifest.json strictly inside vault_dir (never trust raw DB paths).
+        let vault_dir = state
+            .settings()
+            .vault_dir(&default_vault_dir())
+            .map_err(|e| CommandFailure::from_err(&e, format!("Failed to resolve vault_dir: {}", e)))?;
+        safe_remove_vault_artifact(&archive.zip_path, &vault_dir, ".zip")
+            .map_err(|e| CommandFailure::from_err(&e, format!("Refused to delete archive zip: {}", e)))?;
+        safe_remove_vault_artifact(&archive.manifest_path, &vault_dir, ".manifest.json")
+            .map_err(|e| CommandFailure::from_err(&e, format!("Refused to delete archive manifest: {}", e)))?;
 
-    // Update database status to PURGED
-    state
-        .db
-        .update_vault_status(
-            db_id,
-            VaultStatus::Purged.as_str(),
-            "Xóa thủ công bởi người dùng",
-        )
-        .map_err(|e| format!("Failed to update database status: {}", e))?;
+        // Update database status to PURGED
+        state
+            .db
+            .update_vault_status(
+                db_id,
+                VaultStatus::Purged.as_str(),
+                "Xóa thủ công bởi người dùng",
+            )
+            .map_err(|e| {
+                CommandFailure::from_err(&e, format!("Failed to update database status: {}", e))
+            })?;
 
-    Ok(true)
+        Ok(true)
+    })();
+
+    record_action_result(&state.diagnostics, "vault_delete", started, res, |_| {
+        Outcome::Ok
+    })
 }
 
 /// Inspects archive files and details for drill-down modal inspection.
@@ -285,54 +333,98 @@ pub async fn restore_vault_files_selective(
     rel_arcnames: Vec<String>,
     state: State<'_, AppState>,
 ) -> std::result::Result<VaultRestoreReportDto, String> {
-    let db_id = resolve_archive_db_id(&archive_id, &state)?;
-    let all_files = state
-        .db
-        .get_vault_files(db_id)
-        .map_err(|e| format!("Database error: {}", e))?;
+    let started = Instant::now();
+    let prep: std::result::Result<(i64, Vec<i64>), CommandFailure> = (|| {
+        let db_id = resolve_archive_db_id_diag(&archive_id, &state)?;
+        let all_files = state
+            .db
+            .get_vault_files(db_id)
+            .map_err(|e| CommandFailure::from_err(&e, format!("Database error: {}", e)))?;
 
-    let file_ids: Vec<i64> = all_files
-        .iter()
-        .filter(|f| rel_arcnames.contains(&f.rel_arcname))
-        .filter_map(|f| f.id)
-        .collect();
-
-    if file_ids.is_empty() {
-        return Err("Không tìm thấy tệp tin nào tương ứng trong kho lưu trữ".to_string());
-    }
-
-    let state_inner = state.inner().clone();
-    tokio::task::spawn_blocking(move || {
-        let vault_dir = state_inner
-            .settings()
-            .vault_dir(&default_vault_dir())
-            .unwrap_or_else(|_| default_vault_dir());
-        let engine = RollbackEngine::new(
-            &state_inner.db,
-            RestoreOptions {
-                vault_dir: Some(vault_dir),
-                ..Default::default()
-            },
-        );
-        let result = engine
-            .restore_files_selective(db_id, &file_ids)
-            .map_err(|e| format!("Lỗi khôi phục chọn lọc: {}", e))?;
-
-        let restored_paths: Vec<String> = result
-            .restored_paths
-            .into_iter()
-            .map(|p| p.to_string_lossy().to_string())
+        let file_ids: Vec<i64> = all_files
+            .iter()
+            .filter(|f| rel_arcnames.contains(&f.rel_arcname))
+            .filter_map(|f| f.id)
             .collect();
 
-        Ok(VaultRestoreReportDto {
-            archive_id,
-            success: true,
-            restored_count: result.restored_count,
-            restored_bytes: result.restored_bytes,
-            restored_paths,
-            message: format!("Đã khôi phục {} tệp tin thành công", result.restored_count),
-        })
-    })
-    .await
-    .map_err(|e| format!("Task execution error: {}", e))?
+        if file_ids.is_empty() {
+            return Err(CommandFailure::from_msg(
+                "Không tìm thấy tệp tin nào tương ứng trong kho lưu trữ",
+                "NotFound",
+            ));
+        }
+        Ok((db_id, file_ids))
+    })();
+
+    let (db_id, file_ids) = match prep {
+        Ok(v) => v,
+        Err(fail) => {
+            return record_action_result(
+                &state.diagnostics,
+                "restore_selective",
+                started,
+                Err(fail),
+                |_| Outcome::Ok,
+            );
+        }
+    };
+
+    let state_inner = state.inner().clone();
+    let join_res = tokio::task::spawn_blocking(
+        move || -> std::result::Result<VaultRestoreReportDto, CommandFailure> {
+            let vault_dir = state_inner
+                .settings()
+                .vault_dir(&default_vault_dir())
+                .unwrap_or_else(|_| default_vault_dir());
+            let engine = RollbackEngine::new(
+                &state_inner.db,
+                RestoreOptions {
+                    vault_dir: Some(vault_dir),
+                    ..Default::default()
+                },
+            );
+            let result = engine
+                .restore_files_selective(db_id, &file_ids)
+                .map_err(|e| {
+                    CommandFailure::from_err(&e, format!("Lỗi khôi phục chọn lọc: {}", e))
+                })?;
+
+            let restored_paths: Vec<String> = result
+                .restored_paths
+                .into_iter()
+                .map(|p| p.to_string_lossy().to_string())
+                .collect();
+
+            Ok(VaultRestoreReportDto {
+                archive_id,
+                success: true,
+                restored_count: result.restored_count,
+                restored_bytes: result.restored_bytes,
+                restored_paths,
+                message: format!("Đã khôi phục {} tệp tin thành công", result.restored_count),
+            })
+        },
+    )
+    .await;
+
+    let diag_res = match join_res {
+        Ok(inner) => inner,
+        Err(e) => Err(CommandFailure::from_msg(
+            format!("Task execution error: {}", e),
+            "unknown",
+        )),
+    };
+    record_action_result(
+        &state.diagnostics,
+        "restore_selective",
+        started,
+        diag_res,
+        |r| {
+            if r.success {
+                Outcome::Ok
+            } else {
+                Outcome::Failed
+            }
+        },
+    )
 }

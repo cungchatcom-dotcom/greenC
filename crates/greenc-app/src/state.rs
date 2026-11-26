@@ -1,12 +1,17 @@
 use greenc_core::error::Result;
 use greenc_core::task::{is_read_only_scan, TaskControl};
+use greenc_diagnostics::{Diagnostics, Env};
 use greenc_i18n::catalog::Catalog;
+use greenc_platform::traits::Win32VolumeApi;
+use greenc_platform::volume::{get_system_drive_root, NativeWin32VolumeApi};
 use greenc_storage::db::GreenCDb;
 use greenc_storage::settings::AppSettings;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
+use std::time::Instant;
 use tauri::{AppHandle, Emitter};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,10 +44,30 @@ pub struct WatchdogAlertEvent {
 pub struct AppState {
     pub db: Arc<GreenCDb>,
     pub catalog: Arc<Catalog>,
+    pub diagnostics: Arc<Diagnostics>,
+    pub started_at: Instant,
+    pub start_recorded: Arc<AtomicBool>,
+    start_minimized: Arc<AtomicBool>,
     pub active_tasks: Arc<RwLock<HashMap<String, Arc<TaskControl>>>>,
     pub app_handle: Arc<RwLock<Option<AppHandle>>>,
     pub app_dir: PathBuf,
     busy_marker: Arc<Mutex<Option<greenc_platform::BusyMarker>>>,
+}
+
+pub fn open_diagnostics_for_app_dir(app_dir: &Path) -> Arc<Diagnostics> {
+    let (os, build) = greenc_platform::os_release();
+    let sys_root = get_system_drive_root();
+    let system_disk_bytes = NativeWin32VolumeApi
+        .get_disk_free_space(Path::new(&sys_root))
+        .ok()
+        .map(|(total, _free)| total);
+    let env = Env {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        os: os.to_string(),
+        build,
+        system_disk_bytes,
+    };
+    Arc::new(Diagnostics::open(app_dir.join("diagnostics"), env))
 }
 
 impl std::fmt::Debug for AppState {
@@ -56,6 +81,12 @@ impl std::fmt::Debug for AppState {
 
 impl AppState {
     pub fn new(db_path: PathBuf) -> Result<Self> {
+        let app_dir = db_path.parent().unwrap_or(&db_path).to_path_buf();
+        let diagnostics = open_diagnostics_for_app_dir(&app_dir);
+        Self::new_with_diagnostics(db_path, diagnostics)
+    }
+
+    pub fn new_with_diagnostics(db_path: PathBuf, diagnostics: Arc<Diagnostics>) -> Result<Self> {
         let db = Arc::new(GreenCDb::open(&db_path)?);
         let catalog = Arc::new(Catalog::load_embedded());
         let app_dir = db_path.parent().unwrap_or(&db_path).to_path_buf();
@@ -63,11 +94,23 @@ impl AppState {
         Ok(Self {
             db,
             catalog,
+            diagnostics,
+            started_at: Instant::now(),
+            start_recorded: Arc::new(AtomicBool::new(false)),
+            start_minimized: Arc::new(AtomicBool::new(false)),
             active_tasks: Arc::new(RwLock::new(HashMap::new())),
             app_handle: Arc::new(RwLock::new(None)),
             app_dir,
             busy_marker: Arc::new(Mutex::new(None)),
         })
+    }
+
+    pub fn set_start_minimized(&self, minimized: bool) {
+        self.start_minimized.store(minimized, Ordering::SeqCst);
+    }
+
+    pub fn is_start_minimized(&self) -> bool {
+        self.start_minimized.load(Ordering::SeqCst)
     }
 
     pub fn set_app_handle(&self, handle: AppHandle) {

@@ -1,6 +1,8 @@
 //! Overview and bootstrap Tauri v2 IPC command implementations (Task T024).
 
+use crate::commands::diagnostics::{record_scan_result, CommandFailure};
 use crate::state::{AppState, TaskProgressEvent};
+use greenc_diagnostics::Outcome;
 #[cfg(all(windows, feature = "store"))]
 use greenc_core::config::STORE_STARTUP_TASK_ID;
 use greenc_core::config::{
@@ -361,6 +363,7 @@ pub async fn scan_space_lens(
     drive: char,
     max_depth: Option<u8>,
 ) -> std::result::Result<SpaceNode, String> {
+    let started = Instant::now();
     let drive_letter = drive.to_ascii_uppercase();
     let drives_list = list_drives_native().unwrap_or_default();
     let matched_drive = drives_list.iter().find(|d| d.drive_letter == drive_letter);
@@ -468,17 +471,16 @@ pub async fn scan_space_lens(
     let root_path_clone = root_path.clone();
     let task_ctrl_clone = Arc::clone(&task_control);
 
-    let scan_result = tokio::task::spawn_blocking(move || -> Result<SpaceNode> {
+    let join_res = tokio::task::spawn_blocking(move || -> Result<SpaceNode> {
         walk_directory_parallel(Path::new(&root_path_clone), &task_ctrl_clone, depth)
     })
-    .await
-    .map_err(|e| format!("Scan task failed: {}", e))?;
+    .await;
 
     // Unregister task
     state.unregister_task(&task_id);
 
-    match scan_result {
-        Ok(node) => {
+    let diag_res = match join_res {
+        Ok(Ok(node)) => {
             let final_event = TaskProgressEvent {
                 task_id,
                 kind: "space_lens".to_string(),
@@ -497,7 +499,7 @@ pub async fn scan_space_lens(
             let _ = app.emit("greenc://task-progress", &final_event);
             Ok(node)
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             let error_event = TaskProgressEvent {
                 task_id,
                 kind: "space_lens".to_string(),
@@ -514,9 +516,17 @@ pub async fn scan_space_lens(
                 eta_seconds: 0,
             };
             let _ = app.emit("greenc://task-progress", &error_event);
-            Err(e.to_string())
+            Err(CommandFailure::from_err(&e, e.to_string()))
         }
-    }
+        Err(e) => Err(CommandFailure::from_msg(
+            format!("Scan task failed: {}", e),
+            "unknown",
+        )),
+    };
+
+    record_scan_result(&state.diagnostics, "space_lens", started, diag_res, |_| {
+        Outcome::Ok
+    })
 }
 
 /// 5. reveal_in_explorer

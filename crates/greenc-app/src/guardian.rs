@@ -15,6 +15,7 @@ use greenc_core::models::{
     CleanCandidate, DriveQuota, FileManifestItem, QuotaLevel, QuotaRule, RelocationHealthStatus,
 };
 use greenc_core::task::TaskControl;
+use greenc_diagnostics::{Event, Outcome};
 use greenc_platform::dev_tools::{DevToolProbe, NativeDevToolProbe};
 use greenc_platform::handle::{query_file_identity, NativeFileLockProbe};
 use greenc_platform::power_session::{NativePowerSessionApi, PowerSessionApi};
@@ -366,21 +367,71 @@ impl BackgroundGuardian {
                     ..Default::default()
                 },
             );
-            if let Ok(restores) = rollback_engine.run_watchdog_cycle(deps.proc_probe.as_ref()) {
-                for res in restores {
-                    report.auto_rollbacks_triggered += 1;
-                    pending_alerts.push(WatchdogAlertEvent {
-                        kind: "auto_rollback".to_string(),
-                        severity: "warning".to_string(),
-                        title: guardian_state.catalog.tr(
-                            &locale,
-                            "Đã tự khôi phục 1 gói dữ liệu cho ứng dụng.",
-                            &[],
-                        ),
-                        detail: res.reason,
-                        archive_id: Some(res.archive_id),
-                    });
+            let has_expired_vault = guardian_state
+                .db
+                .list_vault_archives(Some("QUARANTINED"))
+                .ok()
+                .is_some_and(|list| {
+                    let now_utc = chrono::Utc::now();
+                    list.iter().any(|a| a.expires_at <= now_utc)
+                });
+            let purged_before = if has_expired_vault {
+                guardian_state
+                    .db
+                    .list_vault_archives(Some("PURGED"))
+                    .map(|v| v.len())
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+            let vault_purge_started = Instant::now();
+            match rollback_engine.run_watchdog_cycle(deps.proc_probe.as_ref()) {
+                Ok(restores) => {
+                    if has_expired_vault {
+                        let purged_after = guardian_state
+                            .db
+                            .list_vault_archives(Some("PURGED"))
+                            .map(|v| v.len())
+                            .unwrap_or(0);
+                        if purged_after > purged_before {
+                            guardian_state.diagnostics.record(
+                                Event::Action {
+                                    name: "guard_purge",
+                                    outcome: Outcome::Ok,
+                                    code: "",
+                                    ms: vault_purge_started.elapsed().as_millis() as u64,
+                                },
+                                chrono::Utc::now(),
+                            );
+                        }
+                    }
+                    for res in restores {
+                        report.auto_rollbacks_triggered += 1;
+                        pending_alerts.push(WatchdogAlertEvent {
+                            kind: "auto_rollback".to_string(),
+                            severity: "warning".to_string(),
+                            title: guardian_state.catalog.tr(
+                                &locale,
+                                "Đã tự khôi phục 1 gói dữ liệu cho ứng dụng.",
+                                &[],
+                            ),
+                            detail: res.reason,
+                            archive_id: Some(res.archive_id),
+                        });
+                    }
                 }
+                Err(err) if has_expired_vault => {
+                    guardian_state.diagnostics.record(
+                        Event::Action {
+                            name: "guard_purge",
+                            outcome: Outcome::Failed,
+                            code: &err.diagnostic_code(),
+                            ms: vault_purge_started.elapsed().as_millis() as u64,
+                        },
+                        chrono::Utc::now(),
+                    );
+                }
+                Err(_) => {}
             }
 
             // Check 3: Live Junction Health Monitor
@@ -416,15 +467,39 @@ impl BackgroundGuardian {
 
             // Check 3b: Auto-purge expired Zalo retained originals ONLY when health watch passed
             // AND 24-hour retention elapsed AND live junction remains healthy.
-            if let Ok(purged_zalo) =
-                greenc_relocate::zalo_move::ZaloRelocator::purge_expired_originals(
-                    &guardian_state.db,
-                    deps.reparse_api.as_ref(),
-                    chrono::Utc::now(),
-                )
-            {
-                for rec in purged_zalo {
-                    report.bytes_reclaimed = report.bytes_reclaimed.saturating_add(rec.size_bytes);
+            let zalo_purge_started = Instant::now();
+            match greenc_relocate::zalo_move::ZaloRelocator::purge_expired_originals(
+                &guardian_state.db,
+                deps.reparse_api.as_ref(),
+                chrono::Utc::now(),
+            ) {
+                Ok(purged_zalo) => {
+                    if !purged_zalo.is_empty() {
+                        guardian_state.diagnostics.record(
+                            Event::Action {
+                                name: "guard_purge",
+                                outcome: Outcome::Ok,
+                                code: "",
+                                ms: zalo_purge_started.elapsed().as_millis() as u64,
+                            },
+                            chrono::Utc::now(),
+                        );
+                    }
+                    for rec in purged_zalo {
+                        report.bytes_reclaimed =
+                            report.bytes_reclaimed.saturating_add(rec.size_bytes);
+                    }
+                }
+                Err(err) => {
+                    guardian_state.diagnostics.record(
+                        Event::Action {
+                            name: "guard_purge",
+                            outcome: Outcome::Failed,
+                            code: &err.diagnostic_code(),
+                            ms: zalo_purge_started.elapsed().as_millis() as u64,
+                        },
+                        chrono::Utc::now(),
+                    );
                 }
             }
 
@@ -460,6 +535,7 @@ impl BackgroundGuardian {
                     }
                     report.rules_evaluated += 1;
 
+                    let rule_started = Instant::now();
                     match enforce_single_quota_rule(
                         &rule,
                         &vault_dir,
@@ -468,6 +544,15 @@ impl BackgroundGuardian {
                         &ctrl_worker,
                     ) {
                         Ok(freed) if freed > 0 => {
+                            guardian_state.diagnostics.record(
+                                Event::Action {
+                                    name: "guard_clean",
+                                    outcome: Outcome::Ok,
+                                    code: "",
+                                    ms: rule_started.elapsed().as_millis() as u64,
+                                },
+                                chrono::Utc::now(),
+                            );
                             report.rules_enforced += 1;
                             report.bytes_reclaimed += freed;
                             let today = chrono::Local::now()
@@ -482,10 +567,28 @@ impl BackgroundGuardian {
                         }
                         Ok(_) => {}
                         Err(GreenCError::Cancelled) => {
+                            guardian_state.diagnostics.record(
+                                Event::Action {
+                                    name: "guard_clean",
+                                    outcome: Outcome::Cancelled,
+                                    code: "Cancelled",
+                                    ms: rule_started.elapsed().as_millis() as u64,
+                                },
+                                chrono::Utc::now(),
+                            );
                             report.preempted_by_foreground = true;
                             break;
                         }
                         Err(err) => {
+                            guardian_state.diagnostics.record(
+                                Event::Action {
+                                    name: "guard_clean",
+                                    outcome: Outcome::Failed,
+                                    code: &err.diagnostic_code(),
+                                    ms: rule_started.elapsed().as_millis() as u64,
+                                },
+                                chrono::Utc::now(),
+                            );
                             tracing::debug!(
                                 "QuotaRule '{}' skipped this tick: {err}",
                                 rule.app_name
@@ -525,6 +628,7 @@ impl BackgroundGuardian {
                         .unwrap_or(false),
                     ..Default::default()
                 };
+                let quota_started = Instant::now();
                 match run_guard_for_quota(
                     &quota,
                     &vault_dir,
@@ -538,6 +642,19 @@ impl BackgroundGuardian {
                     Ok(out) => {
                         quota_clean_ref.lock().insert(key, Instant::now());
                         if out.logical_bytes > 0 {
+                            guardian_state.diagnostics.record(
+                                Event::Action {
+                                    name: "guard_clean",
+                                    outcome: if out.target_reached {
+                                        Outcome::Ok
+                                    } else {
+                                        Outcome::Partial
+                                    },
+                                    code: "",
+                                    ms: quota_started.elapsed().as_millis() as u64,
+                                },
+                                chrono::Utc::now(),
+                            );
                             report.drive_quota_cleanups += 1;
                             report.bytes_reclaimed += out.logical_bytes;
                             let today = chrono::Local::now()
@@ -592,10 +709,28 @@ impl BackgroundGuardian {
                         }
                     }
                     Err(GreenCError::Cancelled) => {
+                        guardian_state.diagnostics.record(
+                            Event::Action {
+                                name: "guard_clean",
+                                outcome: Outcome::Cancelled,
+                                code: "Cancelled",
+                                ms: quota_started.elapsed().as_millis() as u64,
+                            },
+                            chrono::Utc::now(),
+                        );
                         report.preempted_by_foreground = true;
                         break;
                     }
                     Err(err) => {
+                        guardian_state.diagnostics.record(
+                            Event::Action {
+                                name: "guard_clean",
+                                outcome: Outcome::Failed,
+                                code: &err.diagnostic_code(),
+                                ms: quota_started.elapsed().as_millis() as u64,
+                            },
+                            chrono::Utc::now(),
+                        );
                         quota_clean_ref.lock().insert(key, Instant::now());
                         tracing::debug!(
                             "Drive quota {} skipped this tick: {err}",

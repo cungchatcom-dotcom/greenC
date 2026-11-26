@@ -7,6 +7,7 @@ license-file.workspace = true
 
 [dependencies]
 greenc-core.workspace = true
+greenc-diagnostics.workspace = true
 greenc-platform.workspace = true
 greenc-storage.workspace = true
 greenc-i18n.workspace = true
@@ -30,6 +31,7 @@ default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
 store = [
     "greenc-core/store",
+    "greenc-diagnostics/store",
     "greenc-platform/store",
     "greenc-storage/store",
     "greenc-vault/store",

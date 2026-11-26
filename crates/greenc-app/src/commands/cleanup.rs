@@ -1,8 +1,10 @@
 //! Safe cleanup commands and candidate evaluation (Tasks T030, T036).
 
+use crate::commands::diagnostics::{record_action_result, record_scan_result, CommandFailure};
 use crate::state::{AppState, TaskProgressEvent};
 use greenc_core::config::{default_vault_dir, sandbox_demo_dir, MIN_VAULT_RESERVE_BYTES};
 use greenc_core::task::TaskControl;
+use greenc_diagnostics::Outcome;
 use greenc_platform::handle::NativeFileLockProbe;
 use greenc_platform::volume::NativeWin32VolumeApi;
 use greenc_vault::archiver::{ArchiveOptions, ArchiverPipeline};
@@ -12,7 +14,7 @@ use greenc_vault::profiles::PresetProfiles;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 use tauri::State;
 
 /// Discovered cleanup candidate proposal presented to the user.
@@ -70,6 +72,7 @@ pub async fn scan_cleanup_candidates(
     profile_ids: Option<Vec<String>>,
     state: State<'_, AppState>,
 ) -> std::result::Result<Vec<CleanupCandidateDto>, String> {
+    let started = Instant::now();
     // Fast-path: Explicit empty profile selection returns empty result immediately
     let active_profiles = match profile_ids {
         None => vec![
@@ -82,7 +85,9 @@ pub async fn scan_cleanup_candidates(
             "old_versions".to_string(),
         ],
         Some(ids) if ids.is_empty() => {
-            return Ok(Vec::new());
+            return record_scan_result(&state.diagnostics, "cleanup", started, Ok(Vec::new()), |_| {
+                Outcome::Ok
+            });
         }
         Some(ids) => ids,
     };
@@ -93,13 +98,14 @@ pub async fn scan_cleanup_candidates(
 
     let state_inner = state.inner().clone();
     let task_id_worker = task_id.clone();
-    let result = tokio::task::spawn_blocking(move || {
+    let task_ctrl_worker = Arc::clone(&task_ctrl);
+    let join_res = tokio::task::spawn_blocking(move || {
         let mut candidate_dtos = Vec::new();
         let total_profiles = active_profiles.len();
         let lock_probe = NativeFileLockProbe;
 
         for (idx, pid) in active_profiles.iter().enumerate() {
-            if task_ctrl.is_cancelled() {
+            if task_ctrl_worker.is_cancelled() {
                 break;
             }
 
@@ -125,7 +131,8 @@ pub async fn scan_cleanup_candidates(
                 eta_seconds: 0,
             });
 
-            let candidates = PresetProfiles::scan_profile_candidates(pid, &task_ctrl, &lock_probe);
+            let candidates =
+                PresetProfiles::scan_profile_candidates(pid, &task_ctrl_worker, &lock_probe);
             let profile_meta = PresetProfiles::get_by_id(pid);
 
             if !candidates.is_empty() {
@@ -229,11 +236,19 @@ pub async fn scan_cleanup_candidates(
 
         candidate_dtos
     })
-    .await
-    .map_err(|e| format!("Task failed: {}", e))?;
+    .await;
 
     state.unregister_task(&task_id);
-    Ok(result)
+    let cancelled = task_ctrl.is_cancelled();
+    let diag_res = join_res
+        .map_err(|e| CommandFailure::from_msg(format!("Task failed: {}", e), "unknown"));
+    record_scan_result(&state.diagnostics, "cleanup", started, diag_res, |_| {
+        if cancelled {
+            Outcome::Cancelled
+        } else {
+            Outcome::Ok
+        }
+    })
 }
 
 /// Executes safe cleanup for the selected candidate groups.
@@ -244,8 +259,18 @@ pub async fn execute_cleanup(
     permanent: bool,
     state: State<'_, AppState>,
 ) -> std::result::Result<CleanupReportDto, String> {
+    let started = Instant::now();
     if candidate_ids.is_empty() {
-        return Err("Không có mục nào được chọn để dọn dẹp".to_string());
+        return record_action_result(
+            &state.diagnostics,
+            "cleanup",
+            started,
+            Err(CommandFailure::from_msg(
+                "Không có mục nào được chọn để dọn dẹp",
+                "PreconditionBlocked",
+            )),
+            |_| Outcome::Ok,
+        );
     }
 
     let task_id = format!("cleanup-exec-{}", chrono::Utc::now().timestamp_millis());
@@ -254,7 +279,8 @@ pub async fn execute_cleanup(
 
     let state_inner = state.inner().clone();
     let task_id_worker = task_id.clone();
-    let result = tokio::task::spawn_blocking(move || {
+    let join_res = tokio::task::spawn_blocking(
+        move || -> std::result::Result<CleanupReportDto, CommandFailure> {
         let lock_probe = NativeFileLockProbe;
         let volume_api = NativeWin32VolumeApi;
 
@@ -401,7 +427,7 @@ pub async fn execute_cleanup(
                         });
                     },
                 )
-                .map_err(|e| format!("Lỗi tạo kho an toàn: {}", e))?;
+                .map_err(|e| CommandFailure::from_err(&e, format!("Lỗi tạo kho an toàn: {}", e)))?;
 
             // Persist manifest to SQLite
             let zip_p = vault_dir.join(format!("{}.zip", manifest.archive_id));
@@ -468,7 +494,7 @@ pub async fn execute_cleanup(
 
         let clean_res = cleaner
             .unlink_archived_items(&manifest_items, &snapshots)
-            .map_err(|e| format!("Lỗi xóa tệp tin: {}", e))?;
+            .map_err(|e| CommandFailure::from_err(&e, format!("Lỗi xóa tệp tin: {}", e)))?;
 
         let skipped_dtos = clean_res
             .skipped_items
@@ -514,11 +540,25 @@ pub async fn execute_cleanup(
             error_message: None,
         })
     })
-    .await
-    .map_err(|e| format!("Cleanup task error: {}", e))?;
+    .await;
 
     state.unregister_task(&task_id);
-    result
+    let diag_res = match join_res {
+        Ok(inner) => inner,
+        Err(e) => Err(CommandFailure::from_msg(
+            format!("Cleanup task error: {}", e),
+            "unknown",
+        )),
+    };
+    record_action_result(&state.diagnostics, "cleanup", started, diag_res, |r| {
+        if !r.success {
+            Outcome::Failed
+        } else if r.skipped_locked_files_count > 0 || !r.skipped_items.is_empty() {
+            Outcome::Partial
+        } else {
+            Outcome::Ok
+        }
+    })
 }
 
 /// Controls an active background task (pause, resume, cancel).

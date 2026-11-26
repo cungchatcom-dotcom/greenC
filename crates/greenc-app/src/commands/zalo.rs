@@ -1,10 +1,12 @@
 //! Tauri v2 IPC commands for Zalo PC status, safe cache/old-version cleanup, and
 //! automatic chat-data relocation.
 
+use crate::commands::diagnostics::{record_action_result, CommandFailure};
 use crate::state::{AppState, TaskProgressEvent};
 use greenc_core::config::default_vault_dir;
 use greenc_core::models::{RegenerableCacheMode, RelocationStatus};
 use greenc_core::task::TaskControl;
+use greenc_diagnostics::Outcome;
 use greenc_platform::app_lifecycle::{AppLifecycleApi, NativeAppLifecycleApi};
 use greenc_platform::traits::{
     NativeFileLockProbe, NativeProcessServiceProbe, NativeReparsePointApi, NativeShellFolderApi,
@@ -28,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 use tauri::State;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -358,6 +360,7 @@ pub async fn clean_zalo_now(
     enable_vault: Option<bool>,
     state: State<'_, AppState>,
 ) -> std::result::Result<ZaloCleanupResultDto, String> {
+    let started = Instant::now();
     let task_id = format!("zalo-clean-{}", chrono::Utc::now().timestamp_millis());
     let task_ctrl = Arc::new(TaskControl::new());
     state.register_task(task_id.clone(), Arc::clone(&task_ctrl));
@@ -365,7 +368,8 @@ pub async fn clean_zalo_now(
     let state_inner = state.inner().clone();
     let task_id_worker = task_id.clone();
 
-    let res = tokio::task::spawn_blocking(move || {
+    let join_res = tokio::task::spawn_blocking(
+        move || -> std::result::Result<ZaloCleanupResultDto, CommandFailure> {
         let lifecycle = NativeAppLifecycleApi;
         let proc_probe = NativeProcessServiceProbe;
         let lock_probe = NativeFileLockProbe;
@@ -380,7 +384,9 @@ pub async fn clean_zalo_now(
             now,
             ..Default::default()
         })
-        .ok_or_else(|| "Không tìm thấy dữ liệu Zalo PC trên máy".to_string())?;
+        .ok_or_else(|| {
+            CommandFailure::from_msg("Không tìm thấy dữ liệu Zalo PC trên máy", "NotFound")
+        })?;
 
         state_inner.emit_progress(&TaskProgressEvent {
             task_id: task_id_worker.clone(),
@@ -425,7 +431,7 @@ pub async fn clean_zalo_now(
             },
             &task_ctrl,
         )
-        .map_err(|e| format!("Không dọn được Zalo: {e}"))?;
+        .map_err(|e| CommandFailure::from_err(&e, format!("Không dọn được Zalo: {e}")))?;
 
         state_inner.emit_progress(&TaskProgressEvent {
             task_id: task_id_worker,
@@ -459,11 +465,23 @@ pub async fn clean_zalo_now(
             locked_notice: report.locked_notice,
         })
     })
-    .await
-    .map_err(|e| format!("Zalo clean join error: {e}"))?;
+    .await;
 
     state.unregister_task(&task_id);
-    res
+    let diag_res = match join_res {
+        Ok(inner) => inner,
+        Err(e) => Err(CommandFailure::from_msg(
+            format!("Zalo clean join error: {e}"),
+            "unknown",
+        )),
+    };
+    record_action_result(&state.diagnostics, "zalo_clean", started, diag_res, |r| {
+        if r.locked_skipped_files > 0 {
+            Outcome::Partial
+        } else {
+            Outcome::Ok
+        }
+    })
 }
 
 /// Automatically moves Zalo chat data (`<ROOT>\Zalo Data`) to another fixed NTFS drive.
@@ -473,6 +491,7 @@ pub async fn move_zalo_data(
     reopen_zalo: Option<bool>,
     state: State<'_, AppState>,
 ) -> std::result::Result<ZaloMoveResultDto, String> {
+    let started = Instant::now();
     let task_id = format!("zalo-move-{}", chrono::Utc::now().timestamp_millis());
     let task_ctrl = Arc::new(TaskControl::new());
     state.register_task(task_id.clone(), Arc::clone(&task_ctrl));
@@ -480,7 +499,8 @@ pub async fn move_zalo_data(
     let state_inner = state.inner().clone();
     let task_id_worker = task_id.clone();
 
-    let res = tokio::task::spawn_blocking(move || {
+    let join_res = tokio::task::spawn_blocking(
+        move || -> std::result::Result<ZaloMoveResultDto, CommandFailure> {
         let drive_char = {
             let trimmed = target_drive.trim();
             let bytes = trimmed.as_bytes();
@@ -500,7 +520,7 @@ pub async fn move_zalo_data(
                 None
             }
         }
-        .ok_or_else(|| "Chưa chọn ổ đĩa đích hợp lệ".to_string())?;
+        .ok_or_else(|| CommandFailure::from_msg("Chưa chọn ổ đĩa đích hợp lệ", "InvalidPath"))?;
 
         let lifecycle = NativeAppLifecycleApi;
         let proc_probe = NativeProcessServiceProbe;
@@ -516,7 +536,7 @@ pub async fn move_zalo_data(
             known_relocated_sources,
             ..Default::default()
         })
-        .ok_or_else(|| "Không tìm thấy cài đặt Zalo PC".to_string())?;
+        .ok_or_else(|| CommandFailure::from_msg("Không tìm thấy cài đặt Zalo PC", "NotFound"))?;
 
         let opts = ZaloMoveOptions {
             target_drive: drive_char,
@@ -561,7 +581,7 @@ pub async fn move_zalo_data(
                 });
             },
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| CommandFailure::from_err(&e, e.to_string()))?;
 
         Ok(ZaloMoveResultDto {
             record_id: report.record_id,
@@ -587,11 +607,23 @@ pub async fn move_zalo_data(
             message: report.message,
         })
     })
-    .await
-    .map_err(|e| format!("Zalo move join error: {e}"))?;
+    .await;
 
     state.unregister_task(&task_id);
-    res
+    let diag_res = match join_res {
+        Ok(inner) => inner,
+        Err(e) => Err(CommandFailure::from_msg(
+            format!("Zalo move join error: {e}"),
+            "unknown",
+        )),
+    };
+    record_action_result(&state.diagnostics, "zalo_move", started, diag_res, |r| {
+        if r.auto_rolled_back || r.status == "failed" {
+            Outcome::Failed
+        } else {
+            Outcome::Ok
+        }
+    })
 }
 
 /// Explicitly deletes a temporarily retained Zalo original copy (`.greenc-original.<uuid>`).
@@ -600,17 +632,31 @@ pub async fn purge_zalo_retained_original(
     retained_id: i64,
     state: State<'_, AppState>,
 ) -> std::result::Result<String, String> {
+    let started = Instant::now();
     let state_inner = state.inner().clone();
-    tokio::task::spawn_blocking(move || {
-        let reparse = NativeReparsePointApi;
-        let rec = ZaloRelocator::purge_retained_original(retained_id, &state_inner.db, &reparse)
-            .map_err(|e| e.to_string())?;
-        Ok(rec
-            .detail
-            .unwrap_or_else(|| "Đã xoá bản gốc giữ tạm thành công.".to_string()))
+    let join_res = tokio::task::spawn_blocking(
+        move || -> std::result::Result<String, CommandFailure> {
+            let reparse = NativeReparsePointApi;
+            let rec =
+                ZaloRelocator::purge_retained_original(retained_id, &state_inner.db, &reparse)
+                    .map_err(|e| CommandFailure::from_err(&e, e.to_string()))?;
+            Ok(rec
+                .detail
+                .unwrap_or_else(|| "Đã xoá bản gốc giữ tạm thành công.".to_string()))
+        },
+    )
+    .await;
+
+    let diag_res = match join_res {
+        Ok(inner) => inner,
+        Err(e) => Err(CommandFailure::from_msg(
+            format!("Lỗi tác vụ xoá bản gốc Zalo: {e}"),
+            "unknown",
+        )),
+    };
+    record_action_result(&state.diagnostics, "zalo_purge", started, diag_res, |_| {
+        Outcome::Ok
     })
-    .await
-    .map_err(|e| format!("Lỗi tác vụ xoá bản gốc Zalo: {e}"))?
 }
 
 /// Explicitly restores a temporarily retained Zalo original copy back to its original path,
@@ -620,26 +666,39 @@ pub async fn restore_zalo_retained_original(
     retained_id: i64,
     state: State<'_, AppState>,
 ) -> std::result::Result<String, String> {
+    let started = Instant::now();
     let state_inner = state.inner().clone();
-    tokio::task::spawn_blocking(move || {
-        let reparse = NativeReparsePointApi;
-        let lock_probe = NativeFileLockProbe;
-        let proc_probe = NativeProcessServiceProbe;
-        let lifecycle = NativeAppLifecycleApi;
-        let rec = ZaloRelocator::restore_retained_original(
-            retained_id,
-            &state_inner.db,
-            &reparse,
-            &lock_probe,
-            &proc_probe,
-            &lifecycle,
-            greenc_platform::app_lifecycle::DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT,
-        )
-        .map_err(|e| e.to_string())?;
-        Ok(rec
-            .detail
-            .unwrap_or_else(|| "Đã khôi phục bản gốc Zalo về vị trí cũ an toàn.".to_string()))
+    let join_res = tokio::task::spawn_blocking(
+        move || -> std::result::Result<String, CommandFailure> {
+            let reparse = NativeReparsePointApi;
+            let lock_probe = NativeFileLockProbe;
+            let proc_probe = NativeProcessServiceProbe;
+            let lifecycle = NativeAppLifecycleApi;
+            let rec = ZaloRelocator::restore_retained_original(
+                retained_id,
+                &state_inner.db,
+                &reparse,
+                &lock_probe,
+                &proc_probe,
+                &lifecycle,
+                greenc_platform::app_lifecycle::DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT,
+            )
+            .map_err(|e| CommandFailure::from_err(&e, e.to_string()))?;
+            Ok(rec
+                .detail
+                .unwrap_or_else(|| "Đã khôi phục bản gốc Zalo về vị trí cũ an toàn.".to_string()))
+        },
+    )
+    .await;
+
+    let diag_res = match join_res {
+        Ok(inner) => inner,
+        Err(e) => Err(CommandFailure::from_msg(
+            format!("Lỗi tác vụ khôi phục bản gốc Zalo: {e}"),
+            "unknown",
+        )),
+    };
+    record_action_result(&state.diagnostics, "zalo_restore", started, diag_res, |_| {
+        Outcome::Ok
     })
-    .await
-    .map_err(|e| format!("Lỗi tác vụ khôi phục bản gốc Zalo: {e}"))?
 }

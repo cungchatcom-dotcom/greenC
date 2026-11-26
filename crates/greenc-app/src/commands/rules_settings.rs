@@ -1,6 +1,7 @@
 //! Background `QuotaRule` management, live 50-locale & theme `SettingsPatch` updates,
 //! verified `change_data_root` (`move_vault`), and isolated `run_sandbox_demo` (Tasks T062, T065, T066).
 
+use crate::commands::diagnostics::{record_action_result, CommandFailure};
 use crate::guardian::measure_quota_rule_usage;
 use crate::state::{AppState, TaskProgressEvent};
 use chrono::Utc;
@@ -13,6 +14,7 @@ use greenc_core::config::{
 };
 use greenc_core::models::{CleanCandidate, QuotaRule};
 use greenc_core::task::TaskControl;
+use greenc_diagnostics::Outcome;
 use greenc_i18n::catalog::LANGUAGES;
 use greenc_i18n::format::{decimal_separator, is_rtl};
 use greenc_platform::handle::NativeFileLockProbe;
@@ -30,7 +32,7 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 use tauri::{AppHandle, State};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -363,35 +365,65 @@ pub async fn change_data_root(
     new_root: String,
     state: State<'_, AppState>,
 ) -> std::result::Result<MoveVaultReportDto, String> {
-    let trimmed = new_root.trim();
-    if trimmed.is_empty() {
-        return Err("Đường dẫn ổ lưu trữ mới không hợp lệ".to_string());
-    }
+    let started = Instant::now();
+    let prep: std::result::Result<(PathBuf, u64), CommandFailure> = (|| {
+        let trimmed = new_root.trim();
+        if trimmed.is_empty() {
+            return Err(CommandFailure::from_msg(
+                "Đường dẫn ổ lưu trữ mới không hợp lệ",
+                "InvalidPath",
+            ));
+        }
 
-    let target_letter = trimmed
-        .chars()
-        .next()
-        .ok_or_else(|| "Không xác định được ký tự ổ đĩa".to_string())?
-        .to_ascii_uppercase();
+        let target_letter = trimmed
+            .chars()
+            .next()
+            .ok_or_else(|| {
+                CommandFailure::from_msg("Không xác định được ký tự ổ đĩa", "InvalidPath")
+            })?
+            .to_ascii_uppercase();
 
-    let drives = list_drives_native().map_err(|e| e.to_string())?;
-    let drive_info = drives
-        .iter()
-        .find(|d| d.drive_letter == target_letter)
-        .ok_or_else(|| format!("Không tìm thấy ổ đĩa '{target_letter}:'"))?;
+        let drives =
+            list_drives_native().map_err(|e| CommandFailure::from_err(&e, e.to_string()))?;
+        let drive_info = drives
+            .iter()
+            .find(|d| d.drive_letter == target_letter)
+            .ok_or_else(|| {
+                CommandFailure::from_msg(
+                    format!("Không tìm thấy ổ đĩa '{target_letter}:'"),
+                    "NotFound",
+                )
+            })?;
 
-    if !drive_info.is_eligible {
-        return Err(format!(
-            "Ổ đĩa '{target_letter}:' không đủ điều kiện: {}",
-            drive_info
-                .ineligible_reason
-                .as_deref()
-                .unwrap_or("Không phải ổ NTFS cố định")
-        ));
-    }
+        if !drive_info.is_eligible {
+            return Err(CommandFailure::from_msg(
+                format!(
+                    "Ổ đĩa '{target_letter}:' không đủ điều kiện: {}",
+                    drive_info
+                        .ineligible_reason
+                        .as_deref()
+                        .unwrap_or("Không phải ổ NTFS cố định")
+                ),
+                "PreconditionBlocked",
+            ));
+        }
 
-    let free_bytes = drive_info.free_bytes;
-    let new_root_path = PathBuf::from(trimmed);
+        Ok((PathBuf::from(trimmed), drive_info.free_bytes))
+    })();
+
+    let (new_root_path, free_bytes) = match prep {
+        Ok(v) => v,
+        Err(fail) => {
+            return record_action_result(
+                &state.diagnostics,
+                "vault_move",
+                started,
+                Err(fail),
+                |_| Outcome::Ok,
+            );
+        }
+    };
+
     let task_id = format!("move-vault-{}", Utc::now().timestamp_millis());
     let task_ctrl = Arc::new(TaskControl::new());
     state.register_task(task_id.clone(), Arc::clone(&task_ctrl));
@@ -399,18 +431,31 @@ pub async fn change_data_root(
     let state_inner = state.inner().clone();
     let task_id_worker = task_id.clone();
 
-    let result =
-        tokio::task::spawn_blocking(move || -> std::result::Result<MoveVaultReportDto, String> {
+    let join_res =
+        tokio::task::spawn_blocking(
+            move || -> std::result::Result<MoveVaultReportDto, CommandFailure> {
             let new_vault_dir = new_root_path.join("Vault");
             let new_apps_dir = new_root_path.join("Apps");
             let new_moving_dir = new_root_path.join("Moving");
 
-            std::fs::create_dir_all(&new_vault_dir)
-                .map_err(|e| format!("Không thể tạo thư mục {:?}: {e}", new_vault_dir))?;
-            std::fs::create_dir_all(&new_apps_dir)
-                .map_err(|e| format!("Không thể tạo thư mục {:?}: {e}", new_apps_dir))?;
-            std::fs::create_dir_all(&new_moving_dir)
-                .map_err(|e| format!("Không thể tạo thư mục {:?}: {e}", new_moving_dir))?;
+            std::fs::create_dir_all(&new_vault_dir).map_err(|e| {
+                CommandFailure::from_msg(
+                    format!("Không thể tạo thư mục {:?}: {e}", new_vault_dir),
+                    "Io",
+                )
+            })?;
+            std::fs::create_dir_all(&new_apps_dir).map_err(|e| {
+                CommandFailure::from_msg(
+                    format!("Không thể tạo thư mục {:?}: {e}", new_apps_dir),
+                    "Io",
+                )
+            })?;
+            std::fs::create_dir_all(&new_moving_dir).map_err(|e| {
+                CommandFailure::from_msg(
+                    format!("Không thể tạo thư mục {:?}: {e}", new_moving_dir),
+                    "Io",
+                )
+            })?;
 
             state_inner.emit_progress(&TaskProgressEvent {
                 task_id: task_id_worker.clone(),
@@ -434,13 +479,15 @@ pub async fn change_data_root(
                 free_bytes,
                 Some(&task_ctrl),
             )
-            .map_err(|e| format!("Không thể di chuyển Kho dự phòng: {e}"))?;
+            .map_err(|e| {
+                CommandFailure::from_err(&e, format!("Không thể di chuyển Kho dự phòng: {e}"))
+            })?;
 
             if summary.errors.is_empty() {
                 state_inner
                     .settings()
                     .set_data_root(&new_root_path)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| CommandFailure::from_err(&e, e.to_string()))?;
             }
 
             state_inner.emit_progress(&TaskProgressEvent {
@@ -468,11 +515,23 @@ pub async fn change_data_root(
                 success,
             })
         })
-        .await
-        .map_err(|e| format!("Move vault task join error: {e}"))?;
+        .await;
 
     state.unregister_task(&task_id);
-    result
+    let diag_res = match join_res {
+        Ok(inner) => inner,
+        Err(e) => Err(CommandFailure::from_msg(
+            format!("Move vault task join error: {e}"),
+            "unknown",
+        )),
+    };
+    record_action_result(&state.diagnostics, "vault_move", started, diag_res, |r| {
+        if r.success {
+            Outcome::Ok
+        } else {
+            Outcome::Failed
+        }
+    })
 }
 
 /// Lists all configured rolling `QuotaRule` entries with live folder byte usage.

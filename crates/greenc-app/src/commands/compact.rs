@@ -1,7 +1,9 @@
 //! Tauri v2 IPC commands for WOF CompactOS and VHDX Compaction (Tasks T051, T052).
 
+use crate::commands::diagnostics::{record_action_result, record_scan_result, CommandFailure};
 use crate::state::{AppState, TaskProgressEvent};
 use greenc_core::task::TaskControl;
+use greenc_diagnostics::Outcome;
 use greenc_platform::traits::{
     NativeCompactionApi, NativeFileLockProbe, NativeProcessServiceProbe, WofAlgorithm,
 };
@@ -10,6 +12,7 @@ use greenc_relocate::vhdx::VhdxCompactor;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 use tauri::State;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,13 +70,15 @@ pub async fn scan_compaction_candidates(
     target_path: Option<String>,
     state: State<'_, AppState>,
 ) -> std::result::Result<Vec<CompactionCandidateDto>, String> {
+    let started = Instant::now();
     let task_id = format!("compact-scan-{}", chrono::Utc::now().timestamp_millis());
     let task_ctrl = Arc::new(TaskControl::new());
     state.register_task(task_id.clone(), task_ctrl.clone());
 
     let state_inner = state.inner().clone();
     let task_id_worker = task_id.clone();
-    let result = tokio::task::spawn_blocking(move || {
+    let join_res = tokio::task::spawn_blocking(
+        move || -> std::result::Result<Vec<CompactionCandidateDto>, CommandFailure> {
         state_inner.emit_progress(&TaskProgressEvent {
             task_id: task_id_worker.clone(),
             kind: "compact_scan".to_string(),
@@ -195,11 +200,19 @@ pub async fn scan_compaction_candidates(
 
         Ok(dtos)
     })
-    .await
-    .map_err(|e| format!("Task execution join error: {e}"))?;
+    .await;
 
     state.unregister_task(&task_id);
-    result
+    let diag_res = match join_res {
+        Ok(inner) => inner,
+        Err(e) => Err(CommandFailure::from_msg(
+            format!("Task execution join error: {e}"),
+            "unknown",
+        )),
+    };
+    record_scan_result(&state.diagnostics, "compact", started, diag_res, |_| {
+        Outcome::Ok
+    })
 }
 
 /// Compacts specified directories in-place using WOF CompactOS.
@@ -209,13 +222,16 @@ pub async fn compact_files(
     algorithm: Option<String>,
     state: State<'_, AppState>,
 ) -> std::result::Result<CompactionResultDto, String> {
+    let started = Instant::now();
     let task_id = format!("compact-exec-{}", chrono::Utc::now().timestamp_millis());
     let task_ctrl = Arc::new(TaskControl::new());
     state.register_task(task_id.clone(), task_ctrl.clone());
 
     let state_inner = state.inner().clone();
     let task_id_worker = task_id.clone();
-    let result = tokio::task::spawn_blocking(move || {
+    let task_ctrl_worker = Arc::clone(&task_ctrl);
+    let join_res = tokio::task::spawn_blocking(
+        move || -> std::result::Result<CompactionResultDto, CommandFailure> {
         let algo = match algorithm.as_deref() {
             Some("XPRESS4K") => WofAlgorithm::Xpress4k,
             Some("XPRESS16K") => WofAlgorithm::Xpress16k,
@@ -237,7 +253,7 @@ pub async fn compact_files(
         let mut total_after = 0u64;
 
         for path_str in &target_paths {
-            if task_ctrl.is_cancelled() {
+            if task_ctrl_worker.is_cancelled() {
                 break;
             }
 
@@ -251,7 +267,7 @@ pub async fn compact_files(
                 &state_inner.db,
                 &compaction_api,
                 &lock_probe,
-                &task_ctrl,
+                &task_ctrl_worker,
                 move |cur_b, cur_f| {
                     state_prog.emit_progress(&TaskProgressEvent {
                         task_id: task_id_inner.clone(),
@@ -270,7 +286,7 @@ pub async fn compact_files(
                     });
                 },
             )
-            .map_err(|e| format!("Lỗi thu gọn {}: {}", path_str, e))?;
+            .map_err(|e| CommandFailure::from_err(&e, format!("Lỗi thu gọn {}: {}", path_str, e)))?;
 
             total_files_compacted += rec.file_count;
             total_logical += rec.logical_bytes;
@@ -318,11 +334,28 @@ pub async fn compact_files(
             error_message: None,
         })
     })
-    .await
-    .map_err(|e| format!("Task execution join error: {e}"))?;
+    .await;
 
     state.unregister_task(&task_id);
-    result
+    let cancelled = task_ctrl.is_cancelled();
+    let diag_res = match join_res {
+        Ok(inner) => inner,
+        Err(e) => Err(CommandFailure::from_msg(
+            format!("Task execution join error: {e}"),
+            "unknown",
+        )),
+    };
+    record_action_result(&state.diagnostics, "compact", started, diag_res, |r| {
+        if cancelled {
+            Outcome::Cancelled
+        } else if !r.success {
+            Outcome::Failed
+        } else if r.files_skipped > 0 {
+            Outcome::Partial
+        } else {
+            Outcome::Ok
+        }
+    })
 }
 
 /// Decompresses files back to standard uncompressed NTFS format.
@@ -331,19 +364,22 @@ pub async fn uncompact_files(
     target_paths: Vec<String>,
     state: State<'_, AppState>,
 ) -> std::result::Result<CompactionResultDto, String> {
+    let started = Instant::now();
     let task_id = format!("uncompact-exec-{}", chrono::Utc::now().timestamp_millis());
     let task_ctrl = Arc::new(TaskControl::new());
     state.register_task(task_id.clone(), task_ctrl.clone());
 
     let state_inner = state.inner().clone();
     let task_id_worker = task_id.clone();
-    let result = tokio::task::spawn_blocking(move || {
+    let task_ctrl_worker = Arc::clone(&task_ctrl);
+    let join_res = tokio::task::spawn_blocking(
+        move || -> std::result::Result<CompactionResultDto, CommandFailure> {
         let compaction_api = NativeCompactionApi;
         let mut total_uncompacted = 0u64;
         let mut failed_files = 0usize;
 
         for path_str in &target_paths {
-            if task_ctrl.is_cancelled() {
+            if task_ctrl_worker.is_cancelled() {
                 break;
             }
             let path = PathBuf::from(path_str);
@@ -351,9 +387,9 @@ pub async fn uncompact_files(
                 &path,
                 &state_inner.db,
                 &compaction_api,
-                &task_ctrl,
+                &task_ctrl_worker,
             )
-            .map_err(|e| format!("Lỗi giải nén {}: {}", path_str, e))?;
+            .map_err(|e| CommandFailure::from_err(&e, format!("Lỗi giải nén {}: {}", path_str, e)))?;
             failed_files += report.failed.len();
             total_uncompacted += 1;
         }
@@ -377,11 +413,28 @@ pub async fn uncompact_files(
             }),
         })
     })
-    .await
-    .map_err(|e| format!("Task execution join error: {e}"))?;
+    .await;
 
     state.unregister_task(&task_id);
-    result
+    let cancelled = task_ctrl.is_cancelled();
+    let diag_res = match join_res {
+        Ok(inner) => inner,
+        Err(e) => Err(CommandFailure::from_msg(
+            format!("Task execution join error: {e}"),
+            "unknown",
+        )),
+    };
+    record_action_result(&state.diagnostics, "uncompact", started, diag_res, |r| {
+        if cancelled {
+            Outcome::Cancelled
+        } else if !r.success {
+            Outcome::Failed
+        } else if r.files_skipped > 0 {
+            Outcome::Partial
+        } else {
+            Outcome::Ok
+        }
+    })
 }
 
 /// Compacts a virtual disk (.vhdx) after verifying host process safety.
@@ -390,13 +443,15 @@ pub async fn compact_vhdx(
     vhdx_path: String,
     state: State<'_, AppState>,
 ) -> std::result::Result<CompactionResultDto, String> {
+    let started = Instant::now();
     let task_id = format!("compact-vhdx-{}", chrono::Utc::now().timestamp_millis());
     let task_ctrl = Arc::new(TaskControl::new());
     state.register_task(task_id.clone(), task_ctrl.clone());
 
     let state_inner = state.inner().clone();
     let task_id_worker = task_id.clone();
-    let result = tokio::task::spawn_blocking(move || {
+    let join_res = tokio::task::spawn_blocking(
+        move || -> std::result::Result<CompactionResultDto, CommandFailure> {
         let compaction_api = NativeCompactionApi;
         let proc_probe = NativeProcessServiceProbe;
         let path = PathBuf::from(&vhdx_path);
@@ -419,7 +474,7 @@ pub async fn compact_vhdx(
 
         let rec =
             VhdxCompactor::compact_vhdx_image(&path, &state_inner.db, &compaction_api, &proc_probe)
-                .map_err(|e| format!("Lỗi thu gọn VHDX: {e}"))?;
+                .map_err(|e| CommandFailure::from_err(&e, format!("Lỗi thu gọn VHDX: {e}")))?;
 
         let reclaimed = rec
             .physical_before_bytes
@@ -463,11 +518,23 @@ pub async fn compact_vhdx(
             error_message: None,
         })
     })
-    .await
-    .map_err(|e| format!("Task execution join error: {e}"))?;
+    .await;
 
     state.unregister_task(&task_id);
-    result
+    let diag_res = match join_res {
+        Ok(inner) => inner,
+        Err(e) => Err(CommandFailure::from_msg(
+            format!("Task execution join error: {e}"),
+            "unknown",
+        )),
+    };
+    record_action_result(&state.diagnostics, "compact_vhdx", started, diag_res, |r| {
+        if r.success {
+            Outcome::Ok
+        } else {
+            Outcome::Failed
+        }
+    })
 }
 
 /// Lists all historical compaction records from the database.

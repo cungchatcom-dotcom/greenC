@@ -1,5 +1,6 @@
 pub mod cleanup;
 pub mod compact;
+pub mod diagnostics;
 pub mod drive_quota;
 pub mod history;
 pub mod overview;

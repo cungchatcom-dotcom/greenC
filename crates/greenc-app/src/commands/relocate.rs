@@ -1,7 +1,9 @@
 //! Tauri v2 IPC commands for Multi-Strategy Relocation and Recovery (Tasks T047, T048).
 
+use crate::commands::diagnostics::{record_action_result, record_scan_result, CommandFailure};
 use crate::state::{AppState, TaskProgressEvent};
 use greenc_core::task::TaskControl;
+use greenc_diagnostics::Outcome;
 use greenc_platform::traits::{
     NativeFileLockProbe, NativeProcessServiceProbe, NativeReparsePointApi, NativeShellFolderApi,
     NativeWin32VolumeApi,
@@ -13,6 +15,7 @@ use greenc_relocate::recovery::RecoveryService;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 use tauri::State;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,13 +72,15 @@ pub async fn scan_relocation_candidates(
     target_drive: Option<String>,
     state: State<'_, AppState>,
 ) -> std::result::Result<Vec<RelocationCandidateDto>, String> {
+    let started = Instant::now();
     let task_id = format!("relocate-scan-{}", chrono::Utc::now().timestamp_millis());
     let task_ctrl = Arc::new(TaskControl::new());
     state.register_task(task_id.clone(), task_ctrl.clone());
 
     let state_inner = state.inner().clone();
     let task_id_worker = task_id.clone();
-    let result = tokio::task::spawn_blocking(move || {
+    let join_res = tokio::task::spawn_blocking(
+        move || -> std::result::Result<Vec<RelocationCandidateDto>, CommandFailure> {
         state_inner.emit_progress(&TaskProgressEvent {
             task_id: task_id_worker.clone(),
             kind: "relocate_scan".to_string(),
@@ -147,11 +152,19 @@ pub async fn scan_relocation_candidates(
 
         Ok(dtos)
     })
-    .await
-    .map_err(|e| format!("Task execution join error: {e}"))?;
+    .await;
 
     state.unregister_task(&task_id);
-    result
+    let diag_res = match join_res {
+        Ok(inner) => inner,
+        Err(e) => Err(CommandFailure::from_msg(
+            format!("Task execution join error: {e}"),
+            "unknown",
+        )),
+    };
+    record_scan_result(&state.diagnostics, "relocate", started, diag_res, |_| {
+        Outcome::Ok
+    })
 }
 
 /// Relocates a candidate directory to target drive using 4-phase transaction.
@@ -161,17 +174,19 @@ pub async fn relocate_directory(
     target_drive: String,
     state: State<'_, AppState>,
 ) -> std::result::Result<RelocationResultDto, String> {
+    let started = Instant::now();
     let task_id = format!("relocate-exec-{}", chrono::Utc::now().timestamp_millis());
     let task_ctrl = Arc::new(TaskControl::new());
     state.register_task(task_id.clone(), task_ctrl.clone());
 
     let state_inner = state.inner().clone();
     let task_id_worker = task_id.clone();
-    let result = tokio::task::spawn_blocking(move || {
+    let join_res = tokio::task::spawn_blocking(
+        move || -> std::result::Result<RelocationResultDto, CommandFailure> {
         let drive_char = target_drive
             .chars()
             .next()
-            .ok_or_else(|| "Chưa chọn ổ đĩa hợp lệ".to_string())?;
+            .ok_or_else(|| CommandFailure::from_msg("Chưa chọn ổ đĩa hợp lệ", "InvalidPath"))?;
 
         let vol_api = NativeWin32VolumeApi;
         let shell_api = NativeShellFolderApi;
@@ -201,7 +216,9 @@ pub async fn relocate_directory(
                     ..Default::default()
                 },
             )
-            .ok_or_else(|| "Không tìm thấy cài đặt Zalo PC".to_string())?;
+            .ok_or_else(|| {
+                CommandFailure::from_msg("Không tìm thấy cài đặt Zalo PC", "NotFound")
+            })?;
 
             let opts = greenc_relocate::zalo_move::ZaloMoveOptions {
                 target_drive: drive_char.to_ascii_uppercase(),
@@ -244,7 +261,7 @@ pub async fn relocate_directory(
                     });
                 },
             )
-            .map_err(|err| format!("Lỗi khi di chuyển: {err}"))?;
+            .map_err(|err| CommandFailure::from_err(&err, format!("Lỗi khi di chuyển: {err}")))?;
 
             return Ok(RelocationResultDto {
                 id: report.record_id,
@@ -279,7 +296,12 @@ pub async fn relocate_directory(
         let candidate = candidates
             .into_iter()
             .find(|c| c.id == candidate_id)
-            .ok_or_else(|| format!("Không tìm thấy mục di chuyển: {}", candidate_id))?;
+            .ok_or_else(|| {
+                CommandFailure::from_msg(
+                    format!("Không tìm thấy mục di chuyển: {}", candidate_id),
+                    "NotFound",
+                )
+            })?;
 
         let state_progress = state_inner.clone();
         let task_id_clone = task_id_worker.clone();
@@ -358,14 +380,29 @@ pub async fn relocate_directory(
                     error_message: None,
                 })
             }
-            Err(err) => Err(format!("Lỗi khi di chuyển: {err}")),
+            Err(err) => Err(CommandFailure::from_err(
+                &err,
+                format!("Lỗi khi di chuyển: {err}"),
+            )),
         }
     })
-    .await
-    .map_err(|e| format!("Task execution join error: {e}"))?;
+    .await;
 
     state.unregister_task(&task_id);
-    result
+    let diag_res = match join_res {
+        Ok(inner) => inner,
+        Err(e) => Err(CommandFailure::from_msg(
+            format!("Task execution join error: {e}"),
+            "unknown",
+        )),
+    };
+    record_action_result(&state.diagnostics, "relocate", started, diag_res, |r| {
+        if r.success {
+            Outcome::Ok
+        } else {
+            Outcome::Failed
+        }
+    })
 }
 
 /// Enumerates Windows Known Folders and reports current paths and redirection status.
@@ -424,53 +461,69 @@ pub async fn relocate_known_folder(
 
     #[cfg(not(feature = "store"))]
     {
+        let started = Instant::now();
         let task_id = format!("relocate-kf-{}", chrono::Utc::now().timestamp_millis());
         let task_ctrl = Arc::new(TaskControl::new());
         state.register_task(task_id.clone(), task_ctrl.clone());
 
         let state_inner = state.inner().clone();
-        let result = tokio::task::spawn_blocking(move || {
-            let drive_char = target_drive
-                .chars()
-                .next()
-                .ok_or_else(|| "Chưa chọn ổ đĩa hợp lệ".to_string())?;
+        let join_res = tokio::task::spawn_blocking(
+            move || -> std::result::Result<RelocationResultDto, CommandFailure> {
+                let drive_char = target_drive.chars().next().ok_or_else(|| {
+                    CommandFailure::from_msg("Chưa chọn ổ đĩa hợp lệ", "InvalidPath")
+                })?;
 
-            let shell_api = NativeShellFolderApi;
-            let vol_api = NativeWin32VolumeApi;
+                let shell_api = NativeShellFolderApi;
+                let vol_api = NativeWin32VolumeApi;
 
-            let rec = KnownFolderService::relocate_known_folder(
-                &folder_id,
-                drive_char,
-                None,
-                &state_inner.db,
-                &shell_api,
-                &vol_api,
-                &task_ctrl,
-                |_, _| {},
-            )
-            .map_err(|e| format!("Lỗi chuyển thư mục hệ thống: {e}"))?;
+                let rec = KnownFolderService::relocate_known_folder(
+                    &folder_id,
+                    drive_char,
+                    None,
+                    &state_inner.db,
+                    &shell_api,
+                    &vol_api,
+                    &task_ctrl,
+                    |_, _| {},
+                )
+                .map_err(|e| {
+                    CommandFailure::from_err(&e, format!("Lỗi chuyển thư mục hệ thống: {e}"))
+                })?;
 
-            Ok(RelocationResultDto {
-                id: rec.id,
-                candidate_id: rec.app_id,
-                app_name: rec.app_name,
-                strategy: rec.strategy.as_str().to_string(),
-                source_path: rec.source_path.to_string_lossy().to_string(),
-                target_path: rec.target_path.to_string_lossy().to_string(),
-                size_bytes: rec.size_bytes,
-                status: rec.status.as_str().to_string(),
-                health_status: rec.health_status.as_str().to_string(),
-                detail: rec.detail,
-                created_at: rec.created_at.to_rfc3339(),
-                success: true,
-                error_message: None,
-            })
-        })
-        .await
-        .map_err(|e| format!("Task execution join error: {e}"))?;
+                Ok(RelocationResultDto {
+                    id: rec.id,
+                    candidate_id: rec.app_id,
+                    app_name: rec.app_name,
+                    strategy: rec.strategy.as_str().to_string(),
+                    source_path: rec.source_path.to_string_lossy().to_string(),
+                    target_path: rec.target_path.to_string_lossy().to_string(),
+                    size_bytes: rec.size_bytes,
+                    status: rec.status.as_str().to_string(),
+                    health_status: rec.health_status.as_str().to_string(),
+                    detail: rec.detail,
+                    created_at: rec.created_at.to_rfc3339(),
+                    success: true,
+                    error_message: None,
+                })
+            },
+        )
+        .await;
 
         state.unregister_task(&task_id);
-        result
+        let diag_res = match join_res {
+            Ok(inner) => inner,
+            Err(e) => Err(CommandFailure::from_msg(
+                format!("Task execution join error: {e}"),
+                "unknown",
+            )),
+        };
+        record_action_result(&state.diagnostics, "known_folder", started, diag_res, |r| {
+            if r.success {
+                Outcome::Ok
+            } else {
+                Outcome::Failed
+            }
+        })
     }
 }
 
@@ -479,40 +532,56 @@ pub async fn relocate_known_folder(
 pub async fn recover_interrupted_relocations(
     state: State<'_, AppState>,
 ) -> std::result::Result<Vec<RelocationResultDto>, String> {
+    let started = Instant::now();
     let state_inner = state.inner().clone();
     // A `moving` record may belong to a move that is still running (the window can be closed and
     // reopened meanwhile); recovering it would delete the copy being written.
     if state_inner.has_foreground_tasks() {
         return Ok(Vec::new());
     }
-    tokio::task::spawn_blocking(move || {
-        let reparse = NativeReparsePointApi;
-        let recovered = RecoveryService::recover_interrupted(&state_inner.db, &reparse)
-            .map_err(|e| format!("Lỗi khôi phục sau sự cố: {e}"))?;
+    let join_res = tokio::task::spawn_blocking(
+        move || -> std::result::Result<Vec<RelocationResultDto>, CommandFailure> {
+            let reparse = NativeReparsePointApi;
+            let recovered = RecoveryService::recover_interrupted(&state_inner.db, &reparse)
+                .map_err(|e| CommandFailure::from_err(&e, format!("Lỗi khôi phục sau sự cố: {e}")))?;
 
-        let dtos: Vec<RelocationResultDto> = recovered
-            .into_iter()
-            .map(|r| RelocationResultDto {
-                id: r.id,
-                candidate_id: r.app_id,
-                app_name: r.app_name,
-                strategy: r.strategy.as_str().to_string(),
-                source_path: r.source_path.to_string_lossy().to_string(),
-                target_path: r.target_path.to_string_lossy().to_string(),
-                size_bytes: r.size_bytes,
-                status: r.status.as_str().to_string(),
-                health_status: r.health_status.as_str().to_string(),
-                detail: r.detail,
-                created_at: r.created_at.to_rfc3339(),
-                success: true,
-                error_message: None,
-            })
-            .collect();
+            let dtos: Vec<RelocationResultDto> = recovered
+                .into_iter()
+                .map(|r| RelocationResultDto {
+                    id: r.id,
+                    candidate_id: r.app_id,
+                    app_name: r.app_name,
+                    strategy: r.strategy.as_str().to_string(),
+                    source_path: r.source_path.to_string_lossy().to_string(),
+                    target_path: r.target_path.to_string_lossy().to_string(),
+                    size_bytes: r.size_bytes,
+                    status: r.status.as_str().to_string(),
+                    health_status: r.health_status.as_str().to_string(),
+                    detail: r.detail,
+                    created_at: r.created_at.to_rfc3339(),
+                    success: true,
+                    error_message: None,
+                })
+                .collect();
 
-        Ok(dtos)
+            Ok(dtos)
+        },
+    )
+    .await;
+
+    let diag_res = match join_res {
+        Ok(inner) => inner,
+        Err(e) => Err(CommandFailure::from_msg(
+            format!("Task join error: {e}"),
+            "unknown",
+        )),
+    };
+    if diag_res.as_ref().is_ok_and(Vec::is_empty) {
+        return Ok(Vec::new());
+    }
+    record_action_result(&state.diagnostics, "recovery", started, diag_res, |_| {
+        Outcome::Ok
     })
-    .await
-    .map_err(|e| format!("Task join error: {e}"))?
 }
 
 /// Lists all completed and active relocation records with live health checks.
@@ -568,12 +637,14 @@ pub async fn undo_relocation(
     record_id: i64,
     state: State<'_, AppState>,
 ) -> std::result::Result<RelocationResultDto, String> {
+    let started = Instant::now();
     let task_id = format!("relocate-undo-{}", chrono::Utc::now().timestamp_millis());
     let task_ctrl = Arc::new(TaskControl::new());
     state.register_task(task_id.clone(), task_ctrl.clone());
 
     let state_inner = state.inner().clone();
-    let result = tokio::task::spawn_blocking(move || {
+    let join_res = tokio::task::spawn_blocking(
+        move || -> std::result::Result<RelocationResultDto, CommandFailure> {
         let vol_api = NativeWin32VolumeApi;
         let reparse = NativeReparsePointApi;
         let shell_api = NativeShellFolderApi;
@@ -591,9 +662,12 @@ pub async fn undo_relocation(
                 &lifecycle,
                 &["ZaloCall.exe"],
             ) {
-                return Err(format!(
-                    "Không thể hoàn tác: {}",
-                    greenc_platform::app_lifecycle::ZALO_ACTIVE_CALL_MESSAGE
+                return Err(CommandFailure::from_msg(
+                    format!(
+                        "Không thể hoàn tác: {}",
+                        greenc_platform::app_lifecycle::ZALO_ACTIVE_CALL_MESSAGE
+                    ),
+                    "PreconditionBlocked",
                 ));
             }
             let session = greenc_platform::app_lifecycle::AppLifecycleApi::graceful_shutdown(
@@ -602,7 +676,7 @@ pub async fn undo_relocation(
                 greenc_scanner::zalo::ZALO_PROCESS_NAMES,
                 greenc_platform::app_lifecycle::DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT,
             )
-            .map_err(|e| format!("Không thể hoàn tác: {e}"))?;
+            .map_err(|e| CommandFailure::from_err(&e, format!("Không thể hoàn tác: {e}")))?;
             shutdown_session = Some(session);
         }
 
@@ -625,7 +699,8 @@ pub async fn undo_relocation(
             }
         }
 
-        let undone_rec = undo_res.map_err(|e| format!("Không thể hoàn tác: {e}"))?;
+        let undone_rec =
+            undo_res.map_err(|e| CommandFailure::from_err(&e, format!("Không thể hoàn tác: {e}")))?;
 
         Ok(RelocationResultDto {
             id: undone_rec.id,
@@ -643,11 +718,23 @@ pub async fn undo_relocation(
             error_message: None,
         })
     })
-    .await
-    .map_err(|e| format!("Task execution join error: {e}"))?;
+    .await;
 
     state.unregister_task(&task_id);
-    result
+    let diag_res = match join_res {
+        Ok(inner) => inner,
+        Err(e) => Err(CommandFailure::from_msg(
+            format!("Task execution join error: {e}"),
+            "unknown",
+        )),
+    };
+    record_action_result(&state.diagnostics, "relocate_undo", started, diag_res, |r| {
+        if r.success {
+            Outcome::Ok
+        } else {
+            Outcome::Failed
+        }
+    })
 }
 
 /// Repairs a broken junction whose target drive or folder was modified.
@@ -657,30 +744,51 @@ pub async fn repair_junction_target(
     new_target_path: String,
     state: State<'_, AppState>,
 ) -> std::result::Result<RelocationResultDto, String> {
+    let started = Instant::now();
     let state_inner = state.inner().clone();
-    tokio::task::spawn_blocking(move || {
-        let reparse = NativeReparsePointApi;
-        let target = PathBuf::from(new_target_path);
-        let rec =
-            RecoveryService::repair_junction_target(record_id, &target, &state_inner.db, &reparse)
-                .map_err(|e| format!("Lỗi sửa liên kết: {e}"))?;
+    let join_res = tokio::task::spawn_blocking(
+        move || -> std::result::Result<RelocationResultDto, CommandFailure> {
+            let reparse = NativeReparsePointApi;
+            let target = PathBuf::from(new_target_path);
+            let rec = RecoveryService::repair_junction_target(
+                record_id,
+                &target,
+                &state_inner.db,
+                &reparse,
+            )
+            .map_err(|e| CommandFailure::from_err(&e, format!("Lỗi sửa liên kết: {e}")))?;
 
-        Ok(RelocationResultDto {
-            id: rec.id,
-            candidate_id: rec.app_id,
-            app_name: rec.app_name,
-            strategy: rec.strategy.as_str().to_string(),
-            source_path: rec.source_path.to_string_lossy().to_string(),
-            target_path: rec.target_path.to_string_lossy().to_string(),
-            size_bytes: rec.size_bytes,
-            status: rec.status.as_str().to_string(),
-            health_status: rec.health_status.as_str().to_string(),
-            detail: rec.detail,
-            created_at: rec.created_at.to_rfc3339(),
-            success: true,
-            error_message: None,
-        })
+            Ok(RelocationResultDto {
+                id: rec.id,
+                candidate_id: rec.app_id,
+                app_name: rec.app_name,
+                strategy: rec.strategy.as_str().to_string(),
+                source_path: rec.source_path.to_string_lossy().to_string(),
+                target_path: rec.target_path.to_string_lossy().to_string(),
+                size_bytes: rec.size_bytes,
+                status: rec.status.as_str().to_string(),
+                health_status: rec.health_status.as_str().to_string(),
+                detail: rec.detail,
+                created_at: rec.created_at.to_rfc3339(),
+                success: true,
+                error_message: None,
+            })
+        },
+    )
+    .await;
+
+    let diag_res = match join_res {
+        Ok(inner) => inner,
+        Err(e) => Err(CommandFailure::from_msg(
+            format!("Task join error: {e}"),
+            "unknown",
+        )),
+    };
+    record_action_result(&state.diagnostics, "link_repair", started, diag_res, |r| {
+        if r.success {
+            Outcome::Ok
+        } else {
+            Outcome::Failed
+        }
     })
-    .await
-    .map_err(|e| format!("Task join error: {e}"))?
 }

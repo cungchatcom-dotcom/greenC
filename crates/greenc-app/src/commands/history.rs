@@ -1,12 +1,15 @@
 //! Daily disk delta timeline and per-day folder/actor attribution IPC commands (Task T056).
 
+use crate::commands::diagnostics::{record_scan_result, CommandFailure};
 use crate::state::{AppState, TaskProgressEvent};
 use greenc_core::models::WriteReasonCode;
 use greenc_core::task::TaskControl;
+use greenc_diagnostics::Outcome;
 use greenc_scanner::attribution::reason_label_key;
 use greenc_scanner::tracker::DiskTracker;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use std::time::Instant;
 use tauri::State;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -131,6 +134,7 @@ pub async fn scan_drive_history(
     days_back: Option<u32>,
     state: State<'_, AppState>,
 ) -> std::result::Result<DriveHistoryDto, String> {
+    let started = Instant::now();
     let days = days_back.unwrap_or(14).clamp(7, 90);
     let drive_norm = DiskTracker::normalize_drive(&drive);
     let task_id = format!(
@@ -146,8 +150,9 @@ pub async fn scan_drive_history(
     let drive_for_worker = drive_norm.clone();
     let task_id_for_worker = task_id.clone();
 
-    let result =
-        tokio::task::spawn_blocking(move || -> std::result::Result<DriveHistoryDto, String> {
+    let join_res =
+        tokio::task::spawn_blocking(
+            move || -> std::result::Result<DriveHistoryDto, CommandFailure> {
             state_inner.emit_progress(&TaskProgressEvent {
                 task_id: task_id_for_worker.clone(),
                 kind: "scan_drive_history".to_string(),
@@ -170,7 +175,9 @@ pub async fn scan_drive_history(
             let tracker = DiskTracker::new(Arc::clone(&state_inner.db));
             let snapshots = tracker
                 .scan_drive_history(&drive_for_worker, days, Some(&task_ctrl))
-                .map_err(|e| format!("Failed to scan drive history: {e}"))?;
+                .map_err(|e| {
+                    CommandFailure::from_err(&e, format!("Failed to scan drive history: {e}"))
+                })?;
 
             let locale = current_locale(&state_inner);
             let snapshot_dtos: Vec<DailySnapshotDto> = snapshots
@@ -222,11 +229,19 @@ pub async fn scan_drive_history(
                 latest_drilldown,
             })
         })
-        .await
-        .map_err(|e| format!("History scan join error: {e}"))?;
+        .await;
 
     state.unregister_task(&task_id);
-    result
+    let diag_res = match join_res {
+        Ok(inner) => inner,
+        Err(e) => Err(CommandFailure::from_msg(
+            format!("History scan join error: {e}"),
+            "unknown",
+        )),
+    };
+    record_scan_result(&state.diagnostics, "history", started, diag_res, |_| {
+        Outcome::Ok
+    })
 }
 
 /// Queries the instant folder/reason and process/service culprit breakdown for a clicked day bar.
