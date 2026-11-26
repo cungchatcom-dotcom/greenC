@@ -13,6 +13,7 @@ use sha2::{Digest, Sha256};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 use zip::write::SimpleFileOptions;
 use zip::{ZipArchive, ZipWriter};
@@ -177,12 +178,17 @@ impl CanaryVerifier {
         let pre_sha256 = format!("{:02x}", hasher.finalize());
 
         // 2. Compress into sandbox probe zip
-        let probe_zip_path = sandbox_dir.join(format!(
-            "probe_{}_{}.zip",
+        // Names of its own: scans run at the same time and share this folder.
+        static PROBES: AtomicU64 = AtomicU64::new(0);
+        let probe_id = format!(
+            "{}_{}_{}_{}",
             &pre_sha256[..8],
-            Utc::now().timestamp_millis()
-        ));
-        let restore_dest_path = sandbox_dir.join("restored_canary.bin");
+            Utc::now().timestamp_millis(),
+            std::process::id(),
+            PROBES.fetch_add(1, Ordering::Relaxed)
+        );
+        let probe_zip_path = sandbox_dir.join(format!("probe_{probe_id}.zip"));
+        let restore_dest_path = sandbox_dir.join(format!("restored_{probe_id}.bin"));
 
         let res = (|| -> Result<()> {
             let zip_file = File::create(&probe_zip_path)?;

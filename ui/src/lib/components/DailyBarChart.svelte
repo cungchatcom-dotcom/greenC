@@ -1,6 +1,9 @@
 <!-- ui/src/lib/components/DailyBarChart.svelte (Task T057) -->
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { t, formatSignedSize } from '$lib/i18n.svelte';
+  import { createLoader } from '$lib/cache';
+  import UpdateStatus from './UpdateStatus.svelte';
   import {
     scanDriveHistory,
     getDailyDrilldown,
@@ -8,7 +11,8 @@
     type DailySnapshotDto,
     type DailyDrilldownDto,
     type ActorWriteDto,
-    type FolderGrowthDto
+    type FolderGrowthDto,
+    type DriveHistoryDto
   } from '$lib/api';
   import QuotaRuleModal, { type QuotaRulePrefill } from './QuotaRuleModal.svelte';
   import {
@@ -43,22 +47,43 @@
     return peak;
   });
 
-  async function loadHistory(days: 7 | 14 | 30 = daysBack) {
-    daysBack = days;
-    isLoadingHistory = true;
-    try {
-      const res = await scanDriveHistory(drive, days);
-      snapshots = res.snapshots;
-      selectedDate = res.selected_date;
-      drilldown = res.latest_drilldown;
-    } catch (err) {
-      console.error('Failed to scan drive history:', err);
-    } finally {
-      isLoadingHistory = false;
+  let savedAt = $state<number | null>(null);
+  let loadFailed = $state(false);
+  // The day the user chose stays chosen when the newer history arrives.
+  let pickedDay: string | null = null;
+  let shownKey = '';
+
+  const loadScan = createLoader<DriveHistoryDto>({
+    show(data, at) {
+      snapshots = data?.snapshots ?? [];
+      savedAt = at;
+      if (pickedDay && snapshots.some((s) => s.date === pickedDay)) {
+        // Read the chosen day again: the scan may have changed it.
+        if (data && !isLoadingDrilldown) selectDay(pickedDay);
+        return;
+      }
+      selectedDate = data?.selected_date ?? null;
+      drilldown = data?.latest_drilldown ?? null;
+    },
+    status(loading, failed) {
+      isLoadingHistory = loading;
+      loadFailed = failed;
     }
+  });
+
+  function loadHistory(days: 7 | 14 | 30 = daysBack, force = false) {
+    daysBack = days;
+    const target = drive;
+    const key = `history.${target}.${days}`;
+    if (key !== shownKey) {
+      shownKey = key;
+      pickedDay = null;
+    }
+    return loadScan(key, () => scanDriveHistory(target, days), { force });
   }
 
   async function selectDay(date: string) {
+    pickedDay = date;
     selectedDate = date;
     isLoadingDrilldown = true;
     try {
@@ -98,7 +123,7 @@
 
   $effect(() => {
     if (drive) {
-      loadHistory(daysBack);
+      untrack(() => loadHistory(daysBack));
     }
   });
 </script>
@@ -137,7 +162,7 @@
 
       <button
         type="button"
-        onclick={() => loadHistory(daysBack)}
+        onclick={() => loadHistory(daysBack, true)}
         disabled={isLoadingHistory}
         class="p-1.5 rounded-lg border border-border bg-card text-secondary hover:text-primary hover:bg-subtle disabled:opacity-50"
         title={t('Quét lại lịch sử')}
@@ -154,6 +179,8 @@
   {/if}
 
   <!-- Interactive Signed Daily Bar Chart -->
+  <UpdateStatus {savedAt} refreshing={isLoadingHistory} failed={loadFailed} />
+
   {#if snapshots.length === 0 && !isLoadingHistory}
     <div class="py-8 text-center text-xs text-secondary bg-subtle/50 rounded-lg border border-border/60">
       {t('Chưa có dữ liệu biến động theo ngày cho ổ này.')}

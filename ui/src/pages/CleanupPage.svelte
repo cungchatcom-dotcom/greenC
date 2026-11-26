@@ -1,6 +1,12 @@
 <!-- ui/src/pages/CleanupPage.svelte -->
+<script module lang="ts">
+  // Groups the user unticked. Only their own clicks change this, whatever list is shown.
+  const unticked = new Set<string>();
+</script>
+
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { fileActions, onFilesChanged } from '$lib/busy.svelte';
   import { t, formatSize } from '$lib/i18n.svelte';
   import {
     scanCleanupCandidates,
@@ -12,6 +18,9 @@
     type TaskProgressEvent,
   } from '$lib/api';
   import ZaloCard from '$lib/components/ZaloCard.svelte';
+  import UpdateStatus from '$lib/components/UpdateStatus.svelte';
+  import { createLoader } from '$lib/cache';
+  import { DEFAULT_CLEANUP_PROFILES, cleanupKey } from '$lib/scans';
   import {
     Trash2,
     ShieldCheck,
@@ -30,6 +39,12 @@
   // State via Svelte 5 Runes
   let candidates = $state<CleanupCandidateDto[]>([]);
   let isLoading = $state(false);
+  // The list may be the last result: cleaning waits until a scan made now has arrived.
+  let savedAt = $state<number | null>(null);
+  let isFresh = $state(false);
+  let loadFailed = $state(false);
+  // Actions wait for a scan made now and for any other file action to end.
+  let canAct = $derived(isFresh && fileActions.running === 0);
   let isExecuting = $state(false);
   let enableVault = $state(true);
   let isPermanent = $state(false);
@@ -46,15 +61,7 @@
     { id: 'orphan_radar', name: 'Mồ côi' },
   ];
 
-  let selectedProfileIds = $state<string[]>([
-    'windows_temp',
-    'browser_cache',
-    'chat_media',
-    'crash_dumps',
-    'package_managers',
-    'app_logs',
-    'old_versions',
-  ]);
+  let selectedProfileIds = $state<string[]>([...DEFAULT_CLEANUP_PROFILES]);
 
   // Telemetry & Progress state
   let currentTaskId = $state<string | null>(null);
@@ -77,15 +84,21 @@
     candidates.length > 0 && candidates.every((c) => c.selected)
   );
 
-  async function triggerScan() {
-    isLoading = true;
-    try {
-      candidates = await scanCleanupCandidates(selectedProfileIds);
-    } catch (err) {
-      console.error(t('Lỗi quét dọn dẹp:'), err);
-    } finally {
-      isLoading = false;
-    }
+  const loadScan = createLoader<CleanupCandidateDto[]>({
+    show(data, at, fresh) {
+      candidates = (data ?? []).map((c) => (unticked.has(c.id) ? { ...c, selected: false } : c));
+      savedAt = at;
+      isFresh = fresh;
+    },
+    status(loading, failed) {
+      isLoading = loading;
+      loadFailed = failed;
+    },
+  });
+
+  function triggerScan(force = false) {
+    const profiles = [...selectedProfileIds];
+    return loadScan(cleanupKey(profiles), () => scanCleanupCandidates(profiles), { force });
   }
 
   function toggleProfileFilter(profileId: string) {
@@ -97,15 +110,21 @@
     triggerScan();
   }
 
+  function setSelected(cand: CleanupCandidateDto, selected: boolean) {
+    cand.selected = selected;
+    if (selected) unticked.delete(cand.id);
+    else unticked.add(cand.id);
+  }
+
   function toggleSelectAll() {
     const nextState = !isAllSelected;
     for (const c of candidates) {
-      c.selected = nextState;
+      setSelected(c, nextState);
     }
   }
 
   function toggleCandidate(cand: CleanupCandidateDto) {
-    cand.selected = !cand.selected;
+    setSelected(cand, !cand.selected);
   }
 
   async function handleStartCleanup() {
@@ -137,8 +156,6 @@
       const report = await executeCleanup(selectedIds, enableVault, isPermanent);
       cleanupReport = report;
       showReportModal = true;
-      // Re-scan after cleanup completes
-      await triggerScan();
     } catch (err) {
       alert(t('Không dọn được: {errors}', { errors: String(err) }));
     } finally {
@@ -147,6 +164,8 @@
       currentTaskId = null;
     }
   }
+
+  onFilesChanged(() => triggerScan(true));
 
   async function handleCancelTask() {
     if (currentTaskId) {
@@ -193,12 +212,14 @@
     <button
       class="ml-auto inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-border bg-card text-xs font-medium text-secondary hover:bg-subtle transition-colors"
       disabled={isLoading || isExecuting}
-      onclick={triggerScan}
+      onclick={() => triggerScan(true)}
     >
       <RefreshCw class={`h-3.5 w-3.5 ${isLoading ? 'animate-spin' : ''}`} />
       {t('Quét lại')}
     </button>
   </div>
+
+  <UpdateStatus {savedAt} refreshing={isLoading} failed={loadFailed} />
 
   <!-- Reclaimable Space Summary Card -->
   <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -261,7 +282,7 @@
 
         <button
           class="ml-auto inline-flex items-center gap-2 px-5 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:bg-accent/90 shadow transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-          disabled={selectedCandidates.length === 0 || isExecuting || isLoading}
+          disabled={selectedCandidates.length === 0 || isExecuting || isLoading || !canAct}
           onclick={handleStartCleanup}
         >
           <Trash2 class="h-4 w-4" />
@@ -272,7 +293,7 @@
   </div>
 
   <!-- Zalo PC Quick Card -->
-  <ZaloCard onChanged={triggerScan} />
+  <ZaloCard />
 
   <!-- Candidates Table -->
   <div class="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
@@ -298,12 +319,12 @@
       </span>
     </div>
 
-    {#if isLoading}
+    {#if isLoading && candidates.length === 0}
       <div class="p-12 text-center text-secondary">
         <RefreshCw class="h-8 w-8 animate-spin mx-auto text-accent mb-3" />
         <p class="text-sm">{t('Đang quét phân tích ứng dụng và kiểm tra khóa tệp tin...')}</p>
       </div>
-    {:else if candidates.length === 0}
+    {:else if candidates.length === 0 && !loadFailed}
       <div class="p-12 text-center text-secondary">
         <CheckCircle class="h-8 w-8 text-emerald-500 mx-auto mb-2" />
         <p class="text-sm font-medium text-primary">{t('Hệ thống sạch sẽ')}</p>

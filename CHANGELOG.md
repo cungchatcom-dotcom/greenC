@@ -7,6 +7,17 @@ Ghi thay đổi mới vào mục **Unreleased**. Khi phát hành, `scripts/versi
 
 ## [Unreleased]
 
+### Cải thiện
+- Các màn hình hiện ngay kết quả quét lần trước và cập nhật ngầm. Nút dọn, di chuyển, nén, khôi phục và xoá chỉ bật khi đã có kết quả vừa quét.
+- Bản đồ Space Lens tự quét ngầm khi chưa có hoặc đã cũ hơn 6 giờ.
+
+### Sửa
+- Bảng "Có thể giải phóng" ở Tổng quan luôn trống.
+- Bản đồ Space Lens để hở khoảng trắng.
+- Hai lượt quét dọn dẹp chạy cùng lúc có thể báo nhầm Canary không đạt.
+- Trong lúc đang quét, GreenC không còn bỏ qua việc khôi phục tác vụ di chuyển dở và việc canh gác nền.
+- Đang thao tác trên tệp thì các nút thao tác khác bị khoá, kể cả khi chuyển qua lại giữa các màn hình.
+
 ## [2.2.2] - 2026-11-25
 
 ### Sửa (quan trọng: có thể mất tệp ở các bản trước)

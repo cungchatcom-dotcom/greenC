@@ -2,6 +2,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { changingFiles } from './busy.svelte';
 
 export interface DriveInfo {
   root: string;
@@ -290,11 +291,11 @@ export async function executeCleanup(
   enableVault: boolean,
   permanent: boolean
 ): Promise<CleanupReportDto> {
-  return await invoke<CleanupReportDto>('execute_cleanup', {
+  return await changingFiles(() => invoke<CleanupReportDto>('execute_cleanup', {
     candidateIds,
     enableVault,
     permanent,
-  });
+  }));
 }
 
 // Vault Commands
@@ -305,11 +306,11 @@ export async function getVaultArchives(): Promise<VaultArchiveDto[]> {
 export async function restoreVaultArchive(
   archiveId: string
 ): Promise<VaultRestoreReportDto> {
-  return await invoke<VaultRestoreReportDto>('restore_vault_archive', { archiveId });
+  return await changingFiles(() => invoke<VaultRestoreReportDto>('restore_vault_archive', { archiveId }));
 }
 
 export async function deleteVaultArchive(archiveId: string): Promise<boolean> {
-  return await invoke<boolean>('delete_vault_archive', { archiveId });
+  return await changingFiles(() => invoke<boolean>('delete_vault_archive', { archiveId }));
 }
 
 export async function inspectVaultArchive(
@@ -322,10 +323,10 @@ export async function restoreVaultFilesSelective(
   archiveId: string,
   relArcnames: string[]
 ): Promise<VaultRestoreReportDto> {
-  return await invoke<VaultRestoreReportDto>('restore_vault_files_selective', {
+  return await changingFiles(() => invoke<VaultRestoreReportDto>('restore_vault_files_selective', {
     archiveId,
     relArcnames,
-  });
+  }));
 }
 
 // =========================================================================
@@ -389,10 +390,10 @@ export async function relocateDirectory(
   candidateId: string,
   targetDrive: string
 ): Promise<RelocationResultDto> {
-  return await invoke<RelocationResultDto>('relocate_directory', {
+  return await changingFiles(() => invoke<RelocationResultDto>('relocate_directory', {
     candidateId,
     targetDrive,
-  });
+  }));
 }
 
 export async function getKnownFolders(targetDrive?: string): Promise<KnownFolderDto[]> {
@@ -405,10 +406,10 @@ export async function relocateKnownFolder(
   folderId: string,
   targetDrive: string
 ): Promise<RelocationResultDto> {
-  return await invoke<RelocationResultDto>('relocate_known_folder', {
+  return await changingFiles(() => invoke<RelocationResultDto>('relocate_known_folder', {
     folderId,
     targetDrive,
-  });
+  }));
 }
 
 export async function recoverInterruptedRelocations(): Promise<RelocationResultDto[]> {
@@ -420,17 +421,17 @@ export async function listRelocationHistory(): Promise<RelocationResultDto[]> {
 }
 
 export async function undoRelocation(recordId: number): Promise<RelocationResultDto> {
-  return await invoke<RelocationResultDto>('undo_relocation', { recordId });
+  return await changingFiles(() => invoke<RelocationResultDto>('undo_relocation', { recordId }));
 }
 
 export async function repairJunctionTarget(
   recordId: number,
   newTargetPath: string
 ): Promise<RelocationResultDto> {
-  return await invoke<RelocationResultDto>('repair_junction_target', {
+  return await changingFiles(() => invoke<RelocationResultDto>('repair_junction_target', {
     recordId,
     newTargetPath,
-  });
+  }));
 }
 
 // =========================================================================
@@ -495,24 +496,24 @@ export async function compactFiles(
   targetPaths: string[],
   algorithm?: string
 ): Promise<CompactionResultDto> {
-  return await invoke<CompactionResultDto>('compact_files', {
+  return await changingFiles(() => invoke<CompactionResultDto>('compact_files', {
     targetPaths,
     algorithm: algorithm ?? null,
-  });
+  }));
 }
 
 export async function uncompactFiles(
   targetPaths: string[]
 ): Promise<CompactionResultDto> {
-  return await invoke<CompactionResultDto>('uncompact_files', {
+  return await changingFiles(() => invoke<CompactionResultDto>('uncompact_files', {
     targetPaths,
-  });
+  }));
 }
 
 export async function compactVhdx(vhdxPath: string): Promise<CompactionResultDto> {
-  return await invoke<CompactionResultDto>('compact_vhdx', {
+  return await changingFiles(() => invoke<CompactionResultDto>('compact_vhdx', {
     vhdxPath,
-  });
+  }));
 }
 
 export async function listCompactionHistory(): Promise<CompactionHistoryDto[]> {
@@ -690,7 +691,7 @@ export async function updateSettings(patch: SettingsPatchDto): Promise<AppSettin
 }
 
 export async function changeDataRoot(newRoot: string): Promise<MoveVaultReportDto> {
-  return await invoke<MoveVaultReportDto>('change_data_root', { newRoot });
+  return await changingFiles(() => invoke<MoveVaultReportDto>('change_data_root', { newRoot }));
 }
 
 export async function listQuotaRules(): Promise<QuotaRuleStatusDto[]> {
@@ -907,31 +908,31 @@ export async function getZaloStatus(targetDrive?: string): Promise<ZaloStatusDto
 }
 
 export async function cleanZaloNow(enableVault: boolean = true): Promise<ZaloCleanupResultDto> {
-  return await invoke<ZaloCleanupResultDto>('clean_zalo_now', {
+  return await changingFiles(() => invoke<ZaloCleanupResultDto>('clean_zalo_now', {
     enableVault,
-  });
+  }));
 }
 
 export async function moveZaloData(
   targetDrive: string,
   reopenZalo: boolean = true
 ): Promise<ZaloMoveResultDto> {
-  return await invoke<ZaloMoveResultDto>('move_zalo_data', {
+  return await changingFiles(() => invoke<ZaloMoveResultDto>('move_zalo_data', {
     targetDrive,
     reopenZalo,
-  });
+  }));
 }
 
 export async function purgeZaloRetainedOriginal(retainedId: number): Promise<string> {
-  return await invoke<string>('purge_zalo_retained_original', {
+  return await changingFiles(() => invoke<string>('purge_zalo_retained_original', {
     retainedId,
-  });
+  }));
 }
 
 export async function restoreZaloRetainedOriginal(retainedId: number): Promise<string> {
-  return await invoke<string>('restore_zalo_retained_original', {
+  return await changingFiles(() => invoke<string>('restore_zalo_retained_original', {
     retainedId,
-  });
+  }));
 }
 
 

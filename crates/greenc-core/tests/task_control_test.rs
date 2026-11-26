@@ -90,3 +90,33 @@ fn test_progress_throttling() {
     reporter.report("scanning", "final.txt", 1000, 100, true);
     assert_eq!(call_count.load(Ordering::SeqCst), count + 1);
 }
+
+#[test]
+fn read_only_scans_are_told_apart_from_work_on_files() {
+    for id in [
+        "space-lens-C-1",
+        "cleanup-scan-1",
+        "relocate-scan-1",
+        "compact-scan-1",
+    ] {
+        assert!(greenc_core::task::is_read_only_scan(id), "{id}");
+    }
+    for id in [
+        "cleanup-exec-1",
+        "relocate-exec-1",
+        "relocate-kf-1",
+        "relocate-undo-1",
+        "compact-exec-1",
+        "uncompact-exec-1",
+        "compact-vhdx-1",
+        "zalo-clean-1",
+        "zalo-move-1",
+        "move-vault-1",
+        // Rewrites the history database.
+        "history-scan-C-1",
+        // Anything unknown counts as work on files.
+        "something-new-1",
+    ] {
+        assert!(!greenc_core::task::is_read_only_scan(id), "{id}");
+    }
+}

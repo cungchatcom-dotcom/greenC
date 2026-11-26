@@ -1,6 +1,9 @@
 <!-- ui/src/pages/CompactPage.svelte -->
 <script lang="ts">
   import { onMount } from 'svelte';
+  import UpdateStatus from '$lib/components/UpdateStatus.svelte';
+  import { createLoader } from '$lib/cache';
+  import { fileActions, onFilesChanged } from '$lib/busy.svelte';
   import { t, formatSize } from '$lib/i18n.svelte';
   import {
     scanCompactionCandidates,
@@ -40,6 +43,12 @@
 
   let isLoading = $state(false);
   let isCompacting = $state(false);
+  // Shown lists may be the last result: actions on files wait for a scan made now.
+  let savedAt = $state<number | null>(null);
+  let isFresh = $state(false);
+  let loadFailed = $state(false);
+  // Actions wait for a scan made now and for any other file action to end.
+  let canAct = $derived(isFresh && fileActions.running === 0);
   let currentTaskId = $state<string | null>(null);
   let progressState = $state<TaskProgressEvent | null>(null);
   let lastResult = $state<CompactionResultDto | null>(null);
@@ -59,20 +68,40 @@
     selectedWof.reduce((sum, c) => sum + c.estimated_reclaimable_bytes, 0)
   );
 
-  async function loadData() {
-    isLoading = true;
-    try {
-      const [candList, histList] = await Promise.all([
-        scanCompactionCandidates(),
-        listCompactionHistory(),
-      ]);
-      candidates = candList;
-      historyRecords = histList;
-    } catch (err) {
-      console.error('Failed to scan compaction data:', err);
-    } finally {
-      isLoading = false;
-    }
+  interface CompactSnapshot {
+    candidates: CompactionCandidateDto[];
+    historyRecords: CompactionHistoryDto[];
+  }
+
+  const loadScan = createLoader<CompactSnapshot>({
+    show(data, at, fresh) {
+      const chosen = new Map(candidates.map((c) => [c.path, c.selected]));
+      candidates = (data?.candidates ?? []).map((c) => ({
+        ...c,
+        selected: chosen.get(c.path) ?? c.selected
+      }));
+      historyRecords = data?.historyRecords ?? [];
+      savedAt = at;
+      isFresh = fresh;
+    },
+    status(loading, failed) {
+      isLoading = loading;
+      loadFailed = failed;
+    },
+  });
+
+  function loadData(force = false) {
+    return loadScan(
+      'compact',
+      async () => {
+        const [candList, histList] = await Promise.all([
+          scanCompactionCandidates(),
+          listCompactionHistory(),
+        ]);
+        return { candidates: candList, historyRecords: histList };
+      },
+      { force }
+    );
   }
 
   function toggleSelectAllWof() {
@@ -97,7 +126,6 @@
     try {
       const res = await compactFiles(paths, selectedAlgorithm);
       lastResult = res;
-      await loadData();
     } catch (err) {
       alert(t('Có lỗi') + ': ' + err);
     } finally {
@@ -112,7 +140,6 @@
 
     try {
       await uncompactFiles([cand.path]);
-      await loadData();
     } catch (err) {
       alert(t('Có lỗi') + ': ' + err);
     }
@@ -130,7 +157,6 @@
     try {
       const res = await compactVhdx(cand.path);
       lastResult = res;
-      await loadData();
     } catch (err) {
       alert(t('Có lỗi') + ': ' + err);
     } finally {
@@ -139,6 +165,8 @@
       currentTaskId = null;
     }
   }
+
+  onFilesChanged(() => loadData(true));
 
   async function handleCancelTask() {
     if (currentTaskId) {
@@ -177,7 +205,7 @@
 
     <div class="flex items-center gap-3">
       <button
-        onclick={loadData}
+        onclick={() => loadData(true)}
         disabled={isLoading || isCompacting}
         class="flex items-center gap-2 bg-card border border-border hover:bg-subtle px-3 py-1.5 rounded-lg text-sm font-medium text-primary shadow-sm transition-colors"
       >
@@ -214,6 +242,8 @@
     </button>
   </div>
 
+  <UpdateStatus {savedAt} refreshing={isLoading} failed={loadFailed} />
+
   {#if activeTab === 'wof'}
     <!-- WOF Compaction Tab -->
     <div class="rounded-xl border border-border bg-card p-5 shadow-sm space-y-5">
@@ -247,7 +277,7 @@
 
           <button
             onclick={handleCompactSelected}
-            disabled={selectedWof.length === 0 || isCompacting}
+            disabled={selectedWof.length === 0 || isCompacting || !canAct}
             class="px-4 py-2 rounded-lg bg-accent text-white text-sm font-semibold hover:bg-accent-hover disabled:opacity-50 transition-colors shadow-sm flex items-center gap-2"
           >
             <Sparkles class="h-4 w-4" />
@@ -308,6 +338,7 @@
                   <td class="py-3 px-3 text-right">
                     {#if cand.is_compacted}
                       <button
+                        disabled={!canAct}
                         onclick={() => handleUncompact(cand)}
                         class="px-2.5 py-1 text-xs font-medium rounded border border-border hover:bg-subtle text-secondary hover:text-primary transition-colors"
                       >
@@ -368,7 +399,7 @@
                 {/if}
                 <button
                   onclick={() => handleCompactVhdxItem(vhdx)}
-                  disabled={isCompacting || vhdx.is_locked}
+                  disabled={isCompacting || vhdx.is_locked || !canAct}
                   class="px-4 py-2 text-xs font-semibold rounded-lg bg-accent text-white hover:bg-accent-hover disabled:opacity-50 transition-colors shadow-sm"
                 >
                   {t('Thu gọn')}

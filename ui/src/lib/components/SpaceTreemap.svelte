@@ -1,5 +1,6 @@
 <!-- ui/src/lib/components/SpaceTreemap.svelte -->
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { t, formatSize } from '$lib/i18n.svelte';
   import { revealInExplorer, type SpaceNode } from '$lib/api';
   import { Folder, File, ChevronRight, ExternalLink, Copy, Check } from 'lucide-svelte';
@@ -15,14 +16,26 @@
   // Navigation State
   let currentNode = $state<SpaceNode | null>(null);
   let breadcrumbStack = $state<SpaceNode[]>([]);
-  let previousRootNode = $state<SpaceNode | null>(null);
+  let previousRootNode: SpaceNode | null = null;
 
   // Synchronize state when rootNode changes (drive switch, re-scan, or reset)
   $effect(() => {
     if (rootNode !== previousRootNode) {
       previousRootNode = rootNode;
-      currentNode = rootNode;
-      breadcrumbStack = rootNode ? [rootNode] : [];
+      // A newer map of the same drive keeps the folder the user has opened.
+      const opened = untrack(() => breadcrumbStack.map((n) => n.path));
+      const stack = rootNode ? [rootNode] : [];
+      if (rootNode && opened[0] === rootNode.path) {
+        for (const path of opened.slice(1)) {
+          const next: SpaceNode | undefined = stack[stack.length - 1].children.find(
+            (c) => c.path === path && c.children.length > 0
+          );
+          if (!next) break;
+          stack.push(next);
+        }
+      }
+      currentNode = stack.at(-1) ?? null;
+      breadcrumbStack = stack;
       // Clear transient overlays
       tooltip = { x: 0, y: 0, visible: false, node: null };
       contextMenu = { x: 0, y: 0, visible: false, node: null };
@@ -94,7 +107,8 @@
       squarify(children.slice(1), newRow, box, totalBytes, result);
     } else {
       const remainingBox = layoutRow(row, box, totalBytes, result);
-      squarify(children, [], remainingBox, totalBytes, result);
+      const rowBytes = row.reduce((sum, item) => sum + item.physical_bytes, 0);
+      squarify(children, [], remainingBox, totalBytes - rowBytes, result);
     }
   }
 
@@ -257,7 +271,7 @@
     bind:clientWidth={containerWidth}
     bind:clientHeight={containerHeight}
   >
-    {#if isLoading}
+    {#if isLoading && layoutRects.length === 0}
       <div class="absolute inset-0 z-20 flex flex-col items-center justify-center bg-card/70 backdrop-blur-sm gap-2">
         <div class="h-8 w-8 animate-spin rounded-full border-2 border-accent border-t-transparent"></div>
         <span class="text-xs text-secondary">{t('Đang phân tích không gian đĩa...')}</span>
