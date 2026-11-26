@@ -15,7 +15,8 @@
 
   let { mode = 'strip', refreshKey = 0, onActionCleanup, onConfigureGoal }: Props = $props();
 
-  const pick = (list: DriveQuotaStatusDto[]) => list.find((q) => q.enabled) ?? list[0] ?? null;
+  const pick = (list: DriveQuotaStatusDto[]) =>
+    Array.isArray(list) ? (list.find((q) => q.enabled) ?? list[0] ?? null) : null;
   const last = peek<DriveQuotaStatusDto[]>('quotas');
   let primaryGoal = $state<DriveQuotaStatusDto | null>(last ? pick(last.data) : null);
   let loaded = $state(last !== null);

@@ -21,6 +21,8 @@
   } from '$lib/api';
   import GuidedModal from '$lib/components/GuidedModal.svelte';
   import { peek, refresh as rescan } from '$lib/cache';
+  import { fileActions, onFilesChanged } from '$lib/busy.svelte';
+  import { untrack } from 'svelte';
   import {
     MessageSquare,
     Trash2,
@@ -35,10 +37,9 @@
 
   interface Props {
     preferredDrive?: string;
-    onChanged?: () => void;
   }
 
-  let { preferredDrive = undefined, onChanged = undefined }: Props = $props();
+  let { preferredDrive = undefined }: Props = $props();
 
   let status = $state<ZaloStatusDto | null>(null);
   let drives = $state<DriveInfo[]>([]);
@@ -47,6 +48,9 @@
   // The card may show the last result: its actions wait for a status read made now.
   let statusFresh = $state(false);
   let reading = 0;
+  let canAct = $derived(statusFresh && fileActions.running === 0);
+  // The drive the shown status was read for.
+  let readDrive = untrack(() => preferredDrive);
   let isCleaning = $state(false);
   let isMoving = $state(false);
   let isUndoing = $state(false);
@@ -125,6 +129,7 @@
     status ??= peek<ZaloStatusDto>('zalo')?.data ?? null;
     try {
       const drive = preferredDrive || selectedDrive;
+      readDrive = preferredDrive;
       const [bootRes, zaloRes] = await Promise.allSettled([
         getBootstrapState(),
         rescan('zalo', () => getZaloStatus(drive), { force: true }),
@@ -180,8 +185,6 @@
       } else {
         feedback = { kind: 'ok', text: t('Zalo hiện không có tệp bộ đệm hoặc bản cũ cần dọn.') };
       }
-      await refresh();
-      onChanged?.();
     } catch (err) {
       feedback = { kind: 'err', text: String(err) };
     } finally {
@@ -191,7 +194,7 @@
 
   function handleClickMove() {
     feedback = null;
-    if (!status) return;
+    if (!status || !canAct) return;
     if (!status.auto_move_supported) {
       showGuidedFallback = true;
       return;
@@ -228,8 +231,6 @@
           ? t('Đã ở ổ {drive}, không cần chuyển.', { drive: res.target_drive })
           : t('Đã chuyển dữ liệu Zalo sang ổ {drive}: thành công.', { drive: selectedDrive }),
       };
-      await refresh();
-      onChanged?.();
     } catch (err) {
       feedback = {
         kind: 'err',
@@ -251,8 +252,6 @@
     try {
       await undoRelocation(status.active_relocation_id);
       feedback = { kind: 'ok', text: t('Đã hoàn tác dữ liệu Zalo về vị trí cũ.') };
-      await refresh();
-      onChanged?.();
     } catch (err) {
       feedback = { kind: 'err', text: String(err) };
     } finally {
@@ -306,8 +305,6 @@
     try {
       const msg = await purgeZaloRetainedOriginal(copy.id);
       feedback = { kind: 'ok', text: msg };
-      await refresh();
-      onChanged?.();
     } catch (err) {
       feedback = { kind: 'err', text: String(err) };
     } finally {
@@ -329,14 +326,19 @@
     try {
       const msg = await restoreZaloRetainedOriginal(copy.id);
       feedback = { kind: 'ok', text: msg };
-      await refresh();
-      onChanged?.();
     } catch (err) {
       feedback = { kind: 'err', text: String(err) };
     } finally {
       busyOriginalId = null;
     }
   }
+
+  onFilesChanged(refresh);
+
+  // Space estimates belong to a target drive: read again when the user picks another one.
+  $effect(() => {
+    if (preferredDrive !== readDrive) untrack(refresh);
+  });
 
   onMount(() => {
     refresh();
@@ -445,7 +447,7 @@
       <button
         type="button"
         onclick={handleCleanNow}
-        disabled={!statusFresh || isCleaning || isMoving || status.total_reclaimable_bytes === 0}
+        disabled={!canAct || isCleaning || isMoving || status.total_reclaimable_bytes === 0}
         class="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-accent hover:bg-accent-hover text-white text-xs font-semibold shadow-sm disabled:opacity-50 transition-colors"
       >
         <Trash2 class="h-3.5 w-3.5" />
@@ -456,7 +458,7 @@
         <button
           type="button"
           onclick={handleUndoMove}
-          disabled={!statusFresh || isUndoing || isMoving}
+          disabled={!canAct || isUndoing || isMoving}
           class="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-border bg-subtle hover:bg-card text-primary text-xs font-semibold disabled:opacity-50 transition-colors"
         >
           <Undo2 class="h-3.5 w-3.5" />
@@ -466,7 +468,7 @@
         <button
           type="button"
           onclick={handleClickMove}
-          disabled={!statusFresh || isMoving || isCleaning || (status.auto_move_supported && drives.length === 0)}
+          disabled={!canAct || isMoving || isCleaning || (status.auto_move_supported && drives.length === 0)}
           class="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-accent text-accent hover:bg-accent/10 text-xs font-semibold disabled:opacity-50 transition-colors"
         >
           <ArrowRightLeft class="h-3.5 w-3.5" />
@@ -525,7 +527,7 @@
                   <button
                     type="button"
                     onclick={() => handleRestoreOriginal(copy)}
-                    disabled={!statusFresh || busyOriginalId !== null || isMoving}
+                    disabled={!canAct || busyOriginalId !== null || isMoving}
                     class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md border border-border bg-subtle hover:bg-card text-xs font-medium text-primary disabled:opacity-50"
                   >
                     <Undo2 class="h-3.5 w-3.5" />
@@ -534,7 +536,7 @@
                   <button
                     type="button"
                     onclick={() => handlePurgeOriginal(copy)}
-                    disabled={!statusFresh || busyOriginalId !== null || isMoving}
+                    disabled={!canAct || busyOriginalId !== null || isMoving}
                     class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold disabled:opacity-50"
                   >
                     <Trash2 class="h-3.5 w-3.5" />
@@ -570,7 +572,8 @@
             <button
               type="button"
               onclick={handleClickMove}
-              class="px-2.5 py-1 rounded-md bg-accent text-white font-semibold"
+              disabled={!canAct}
+              class="px-2.5 py-1 rounded-md bg-accent text-white font-semibold disabled:opacity-50"
             >
               {t('Thử lại')}
             </button>
@@ -694,7 +697,7 @@
         <button
           type="button"
           onclick={handleConfirmMove}
-          disabled={Boolean(status.space_estimate && !status.space_estimate.can_proceed)}
+          disabled={!canAct || Boolean(status.space_estimate && !status.space_estimate.can_proceed)}
           class="px-4 py-2 rounded-lg bg-accent hover:bg-accent-hover text-white text-xs font-semibold disabled:opacity-50"
         >
           {t('Chuyển sang ổ khác')}

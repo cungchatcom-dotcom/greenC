@@ -15,7 +15,8 @@
     type CleanupCandidateDto,
     type ReclaimableItemDto
   } from '$lib/api';
-  import { createLoader, trimTree } from '$lib/cache';
+  import { createLoader, trimTree, pendingKeys } from '$lib/cache';
+  import { onFilesChanged } from '$lib/busy.svelte';
   import { DEFAULT_CLEANUP_PROFILES, cleanupKey } from '$lib/scans';
   import UpdateStatus from '$lib/components/UpdateStatus.svelte';
   import SpaceTreemap from '$lib/components/SpaceTreemap.svelte';
@@ -127,7 +128,8 @@
     return loadSpaceMap(`space.${drive}`, () => scanSpaceLens(drive), {
       force,
       maxAgeMs: SPACE_MAX_AGE_MS,
-      cacheOnly: !force && isHidden(),
+      // A walk of another drive is still running: do not start a second one by itself.
+      cacheOnly: !force && (isHidden() || pendingKeys('space.').some((k) => k !== `space.${drive}`)),
       compact: (tree) => trimTree(tree)
     });
   }
@@ -143,6 +145,11 @@
   function triggerSpaceScan() {
     return loadSpace(true);
   }
+
+  onFilesChanged(() => {
+    loadOverview();
+    loadReclaimable();
+  });
 
   function onVisibilityChange() {
     if (isHidden()) return;

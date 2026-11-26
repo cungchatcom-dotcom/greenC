@@ -13,7 +13,7 @@ let quota = Infinity;
   removeItem: (k: string) => void disk.delete(k),
 };
 
-const { peek, refresh, isPending, createLoader, trimTree, forgetMemory } = await import('../lib/cache.ts');
+const { peek, refresh, isPending, createLoader, trimTree, forgetMemory, markFilesChanged } = await import('../lib/cache.ts');
 
 function deferred<T>() {
   let resolve!: (v: T) => void;
@@ -149,4 +149,70 @@ test('a large folder tree is stored trimmed to its biggest folders', async () =>
   assert.equal(peek<typeof root>('tree')!.data.children.length, 500);
   forgetMemory();
   assert.equal(peek<typeof root>('tree')!.data.children.length, 19);
+});
+
+test('an older answer is not replaced by even older data when the newer scan failed', async () => {
+  await refresh('k', async () => 'last week');
+  const slow = deferred<string>();
+  const a = refresh('k', () => slow.promise);
+  await assert.rejects(refresh('k', async () => Promise.reject(new Error('boom')), { force: true }));
+  slow.resolve('just scanned');
+  assert.equal(await a, 'just scanned');
+});
+
+test('an older failure does not pass old data off as an answer', async () => {
+  await refresh('k', async () => 'last week');
+  const slow = deferred<string>();
+  const a = refresh('k', () => slow.promise);
+  const failing = assert.rejects(a);
+  await assert.rejects(refresh('k', async () => Promise.reject(new Error('boom')), { force: true }));
+  slow.reject(new Error('also boom'));
+  await failing;
+});
+
+test('a scan that overlapped a change to the files is not fresh', async () => {
+  const slow = deferred<string>();
+  const { log, load } = recorder<string>();
+  const a = load('k', () => slow.promise);
+  markFilesChanged();
+  slow.resolve('before the change');
+  await a;
+  assert.equal(log.at(-2), 'show "before the change" old');
+});
+
+test('after a change to the files nobody joins a scan that started earlier', async () => {
+  const before = deferred<string>();
+  const a = refresh('k', () => before.promise);
+  markFilesChanged();
+  assert.equal(isPending('k'), false);
+  assert.equal(await refresh('k', async () => 'after'), 'after');
+  before.resolve('before');
+  assert.equal(await a, 'after');
+  assert.equal(peek('k')?.data, 'after');
+});
+
+test('after a change to the files a recent result is scanned again', async () => {
+  await refresh('k', async () => 'recent');
+  markFilesChanged();
+  let runs = 0;
+  const { load } = recorder<string>();
+  await load('k', async () => (runs++, 'x'), { maxAgeMs: 60_000 });
+  assert.equal(runs, 1);
+});
+
+test('a view can drop the answer it is waiting for before asking the next one', async () => {
+  const slow = deferred<string>();
+  const { log, load } = recorder<string>();
+  const a = load('drive-d', () => slow.promise);
+  load.drop();
+  slow.resolve('D');
+  await a;
+  assert.ok(!log.includes('show "D" fresh'));
+});
+
+test('an empty stored entry is ignored', async () => {
+  await refresh('k', async () => 1);
+  for (const key of disk.keys()) disk.set(key, '{"data":null,"savedAt":1}');
+  forgetMemory();
+  assert.equal(peek('k'), null);
 });

@@ -1,6 +1,12 @@
 <!-- ui/src/pages/CleanupPage.svelte -->
+<script module lang="ts">
+  // Groups the user unticked. Only their own clicks change this, whatever list is shown.
+  const unticked = new Set<string>();
+</script>
+
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { fileActions, onFilesChanged } from '$lib/busy.svelte';
   import { t, formatSize } from '$lib/i18n.svelte';
   import {
     scanCleanupCandidates,
@@ -37,6 +43,8 @@
   let savedAt = $state<number | null>(null);
   let isFresh = $state(false);
   let loadFailed = $state(false);
+  // Actions wait for a scan made now and for any other file action to end.
+  let canAct = $derived(isFresh && fileActions.running === 0);
   let isExecuting = $state(false);
   let enableVault = $state(true);
   let isPermanent = $state(false);
@@ -78,7 +86,6 @@
 
   const loadScan = createLoader<CleanupCandidateDto[]>({
     show(data, at, fresh) {
-      const unticked = new Set(candidates.filter((c) => !c.selected).map((c) => c.id));
       candidates = (data ?? []).map((c) => (unticked.has(c.id) ? { ...c, selected: false } : c));
       savedAt = at;
       isFresh = fresh;
@@ -103,15 +110,21 @@
     triggerScan();
   }
 
+  function setSelected(cand: CleanupCandidateDto, selected: boolean) {
+    cand.selected = selected;
+    if (selected) unticked.delete(cand.id);
+    else unticked.add(cand.id);
+  }
+
   function toggleSelectAll() {
     const nextState = !isAllSelected;
     for (const c of candidates) {
-      c.selected = nextState;
+      setSelected(c, nextState);
     }
   }
 
   function toggleCandidate(cand: CleanupCandidateDto) {
-    cand.selected = !cand.selected;
+    setSelected(cand, !cand.selected);
   }
 
   async function handleStartCleanup() {
@@ -143,8 +156,6 @@
       const report = await executeCleanup(selectedIds, enableVault, isPermanent);
       cleanupReport = report;
       showReportModal = true;
-      // Re-scan after cleanup completes
-      await triggerScan(true);
     } catch (err) {
       alert(t('Không dọn được: {errors}', { errors: String(err) }));
     } finally {
@@ -153,6 +164,8 @@
       currentTaskId = null;
     }
   }
+
+  onFilesChanged(() => triggerScan(true));
 
   async function handleCancelTask() {
     if (currentTaskId) {
@@ -269,7 +282,7 @@
 
         <button
           class="ml-auto inline-flex items-center gap-2 px-5 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:bg-accent/90 shadow transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-          disabled={selectedCandidates.length === 0 || isExecuting || isLoading || !isFresh}
+          disabled={selectedCandidates.length === 0 || isExecuting || isLoading || !canAct}
           onclick={handleStartCleanup}
         >
           <Trash2 class="h-4 w-4" />
@@ -280,7 +293,7 @@
   </div>
 
   <!-- Zalo PC Quick Card -->
-  <ZaloCard onChanged={() => triggerScan(true)} />
+  <ZaloCard />
 
   <!-- Candidates Table -->
   <div class="rounded-xl border border-border bg-card shadow-sm overflow-hidden">

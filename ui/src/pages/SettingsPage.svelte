@@ -1,6 +1,7 @@
 <!-- ui/src/pages/SettingsPage.svelte (Task T066) -->
 <script lang="ts">
   import { onMount } from "svelte";
+  import { fileActions } from "$lib/busy.svelte";
   import { i18n, t, formatSize } from "$lib/i18n.svelte";
   import {
     getAppSettings,
@@ -520,7 +521,7 @@
       <button
         type="button"
         onclick={handleMoveDataRoot}
-        disabled={isMovingVault}
+        disabled={isMovingVault || fileActions.running > 0}
         class="px-4 py-2 rounded-lg bg-accent hover:bg-accent-hover text-white text-xs font-semibold shadow-sm disabled:opacity-50"
       >
         {isMovingVault ? t("Đang di chuyển...") : t("Đổi vị trí lưu")}

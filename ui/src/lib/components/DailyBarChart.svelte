@@ -57,7 +57,11 @@
     show(data, at) {
       snapshots = data?.snapshots ?? [];
       savedAt = at;
-      if (pickedDay && snapshots.some((s) => s.date === pickedDay)) return;
+      if (pickedDay && snapshots.some((s) => s.date === pickedDay)) {
+        // Read the chosen day again: the scan may have changed it.
+        if (data && !isLoadingDrilldown) selectDay(pickedDay);
+        return;
+      }
       selectedDate = data?.selected_date ?? null;
       drilldown = data?.latest_drilldown ?? null;
     },
@@ -67,7 +71,7 @@
     }
   });
 
-  function loadHistory(days: 7 | 14 | 30 = daysBack) {
+  function loadHistory(days: 7 | 14 | 30 = daysBack, force = false) {
     daysBack = days;
     const target = drive;
     const key = `history.${target}.${days}`;
@@ -75,7 +79,7 @@
       shownKey = key;
       pickedDay = null;
     }
-    return loadScan(key, () => scanDriveHistory(target, days), { force: true });
+    return loadScan(key, () => scanDriveHistory(target, days), { force });
   }
 
   async function selectDay(date: string) {
@@ -158,7 +162,7 @@
 
       <button
         type="button"
-        onclick={() => loadHistory(daysBack)}
+        onclick={() => loadHistory(daysBack, true)}
         disabled={isLoadingHistory}
         class="p-1.5 rounded-lg border border-border bg-card text-secondary hover:text-primary hover:bg-subtle disabled:opacity-50"
         title={t('Quét lại lịch sử')}

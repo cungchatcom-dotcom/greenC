@@ -3,6 +3,7 @@
   import { onMount } from 'svelte';
   import UpdateStatus from '$lib/components/UpdateStatus.svelte';
   import { createLoader } from '$lib/cache';
+  import { fileActions, onFilesChanged } from '$lib/busy.svelte';
   import { t, formatSize, i18n } from '$lib/i18n.svelte';
   import {
     getVaultArchives,
@@ -41,6 +42,8 @@
   let savedAt = $state<number | null>(null);
   let isFresh = $state(false);
   let loadFailed = $state(false);
+  // Actions wait for a scan made now and for any other file action to end.
+  let canAct = $derived(isFresh && fileActions.running === 0);
   let statusFilter = $state<'ALL' | 'QUARANTINED' | 'ROLLED_BACK' | 'PURGED'>('ALL');
 
   // Inspection Modal State
@@ -100,6 +103,8 @@
     return loadScan('vault', getVaultArchives, { force });
   }
 
+  onFilesChanged(() => loadArchives(true));
+
   async function handleFullRestore(archive: VaultArchiveDto) {
     const confirmRestore = confirm(
       t('Bạn có chắc chắn muốn khôi phục toàn bộ {count} tệp tin từ kho "{name}"?', {
@@ -114,7 +119,6 @@
       const res = await restoreVaultArchive(archive.archive_id);
       restoreReport = res;
       alert(t('Đã khôi phục {count} tệp về vị trí cũ.', { count: res.restored_count }));
-      await loadArchives(true);
     } catch (err) {
       alert(`${t('Lỗi khôi phục:')} ${err}`);
     } finally {
@@ -132,7 +136,6 @@
 
     try {
       await deleteVaultArchive(archive.archive_id);
-      await loadArchives(true);
     } catch (err) {
       alert(`${t('Lỗi xóa kho lưu trữ:')} ${err}`);
     }
@@ -374,7 +377,7 @@
                     {#if arch.status.toUpperCase() === 'QUARANTINED'}
                       <button
                         class="p-1.5 rounded hover:bg-emerald-500/10 text-emerald-600 transition-colors"
-                        disabled={isRestoring || !isFresh}
+                        disabled={isRestoring || !canAct}
                         onclick={() => handleFullRestore(arch)}
                         title={t('Hoàn tác khôi phục toàn bộ')}
                       >
@@ -382,7 +385,7 @@
                       </button>
                       <button
                         class="p-1.5 rounded hover:bg-red-500/10 text-red-600 transition-colors"
-                        disabled={!isFresh}
+                        disabled={!canAct}
                         onclick={() => handlePurgeArchive(arch)}
                         title={t('Xóa vĩnh viễn kho này')}
                       >
@@ -445,7 +448,7 @@
             </span>
             <button
               class="px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-xs font-medium hover:bg-emerald-700 disabled:opacity-50"
-              disabled={selectedFileArcnames.length === 0 || isRestoring}
+              disabled={selectedFileArcnames.length === 0 || isRestoring || fileActions.running > 0}
               onclick={handleSelectiveRestore}
             >
               {t('Khôi phục tệp đã chọn')}

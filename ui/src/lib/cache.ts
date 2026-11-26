@@ -32,6 +32,11 @@ export interface LoadOptions<T> extends RefreshOptions<T> {
 const memory = new Map<string, Cached<unknown>>();
 const running = new Map<string, Promise<unknown>>();
 const generation = new Map<string, number>();
+// Generation of the run that wrote what memory holds.
+const written = new Map<string, number>();
+// Counts changes to the user's files; a scan that overlapped one does not describe them.
+let epoch = 0;
+let changedAt = 0;
 let pruned = false;
 
 const clone = <T>(value: T): T =>
@@ -60,7 +65,7 @@ function read<T>(key: string): Cached<T> | null {
     const raw = storage()?.getItem(PREFIX + key);
     if (!raw) return null;
     const entry = JSON.parse(raw) as Cached<T>;
-    if (typeof entry?.savedAt !== 'number' || entry.data === undefined) return null;
+    if (typeof entry?.savedAt !== 'number' || entry.data == null) return null;
     memory.set(key, entry);
     return entry;
   } catch {
@@ -105,19 +110,21 @@ export function refresh<T>(
   const mine = (generation.get(key) ?? 0) + 1;
   generation.set(key, mine);
   const superseded = () => generation.get(key) !== mine;
-  // A newer forced run replaces this one: its answer is the one to hand out.
-  const newest = (): Promise<T> | T | undefined =>
-    (running.get(key) as Promise<T> | undefined) ?? (memory.get(key)?.data as T | undefined);
+  // A newer run replaces this one: its answer is the one to hand out, if it has one.
+  const newer = (): Promise<T> | T | undefined =>
+    (running.get(key) as Promise<T> | undefined) ??
+    ((written.get(key) ?? 0) > mine ? (memory.get(key)?.data as T) : undefined);
 
   const run: Promise<T> = new Promise<T>((resolve) => resolve(fetcher()))
     .then(
       (data) => {
-        if (superseded()) return newest() ?? data;
+        if (superseded()) return newer() ?? data;
         write(key, data, options.compact);
+        written.set(key, mine);
         return data;
       },
       (error) => {
-        const other = superseded() ? newest() : undefined;
+        const other = superseded() ? newer() : undefined;
         if (other !== undefined) return other;
         throw error;
       }
@@ -130,6 +137,17 @@ export function refresh<T>(
 }
 
 /**
+ * Call before and after anything that moves, deletes or restores the user's files: scans made
+ * earlier no longer count as current, and nobody joins one that is still running.
+ */
+export function markFilesChanged(): void {
+  epoch++;
+  changedAt = Date.now();
+  for (const key of running.keys()) generation.set(key, (generation.get(key) ?? 0) + 1);
+  running.clear();
+}
+
+/**
  * Loads one view: shows the last result, then the new one. Answers that arrive after the view
  * moved on to another key are remembered but not shown.
  */
@@ -138,18 +156,20 @@ export function createLoader<T>(view: {
   status: (loading: boolean, failed: boolean) => void;
 }) {
   let latest = 0;
-  return async function load(
+  async function load(
     key: string,
     fetcher: () => Promise<T>,
     options: LoadOptions<T> = {}
   ): Promise<void> {
     const ticket = ++latest;
+    const started = epoch;
     const last = peek<T>(key);
     const recent =
       !!last &&
       !options.force &&
       !isPending(key) &&
       options.maxAgeMs !== undefined &&
+      last.savedAt > changedAt &&
       Date.now() - last.savedAt < options.maxAgeMs;
     view.show(last?.data ?? null, last?.savedAt ?? null, recent);
     if (recent || (options.cacheOnly && !isPending(key))) {
@@ -160,14 +180,22 @@ export function createLoader<T>(view: {
     try {
       const data = await refresh(key, fetcher, options);
       if (ticket !== latest) return;
-      view.show(data, memory.get(key)?.savedAt ?? Date.now(), true);
+      view.show(data, memory.get(key)?.savedAt ?? Date.now(), started === epoch);
       view.status(false, false);
     } catch (error) {
       if (ticket !== latest) return;
       console.error(`Failed to refresh ${key}:`, error);
       view.status(false, true);
     }
-  };
+  }
+  /** Ignore the answers still on their way (the view is about to ask for something else). */
+  load.drop = () => void latest++;
+  return load;
+}
+
+/** Keys that start with `prefix` and have a scan running. */
+export function pendingKeys(prefix: string): string[] {
+  return [...running.keys()].filter((key) => key.startsWith(prefix));
 }
 
 interface TreeNode {
@@ -200,4 +228,6 @@ export function forgetMemory(): void {
   memory.clear();
   running.clear();
   generation.clear();
+  written.clear();
+  changedAt = 0;
 }

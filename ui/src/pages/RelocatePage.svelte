@@ -3,13 +3,13 @@
   import { onMount } from 'svelte';
   import UpdateStatus from '$lib/components/UpdateStatus.svelte';
   import { createLoader } from '$lib/cache';
+  import { fileActions, onFilesChanged, recoveries, recoverOnce } from '$lib/busy.svelte';
   import { t, formatSize } from '$lib/i18n.svelte';
   import {
     scanRelocationCandidates,
     relocateDirectory,
     getKnownFolders,
     relocateKnownFolder,
-    recoverInterruptedRelocations,
     listRelocationHistory,
     undoRelocation,
     repairJunctionTarget,
@@ -54,7 +54,6 @@
   let candidates = $state<RelocationCandidateDto[]>([]);
   let knownFolders = $state<KnownFolderDto[]>([]);
   let historyRecords = $state<RelocationResultDto[]>([]);
-  let interruptedRecoveries = $state<RelocationResultDto[]>([]);
   let availableDrives = $state<DriveInfo[]>([]);
   let targetDrive = $state('D');
   let isStoreBuild = $state(false);
@@ -65,6 +64,8 @@
   let savedAt = $state<number | null>(null);
   let isFresh = $state(false);
   let loadFailed = $state(false);
+  // Actions wait for a scan made now and for any other file action to end.
+  let canAct = $derived(isFresh && fileActions.running === 0);
   let showAdvanced = $state(false);
   let currentTaskId = $state<string | null>(null);
   let progressState = $state<TaskProgressEvent | null>(null);
@@ -89,7 +90,6 @@
     candidates: RelocationCandidateDto[];
     knownFolders: KnownFolderDto[];
     historyRecords: RelocationResultDto[];
-    recovered: RelocationResultDto[];
   }
 
   const loadScan = createLoader<RelocateSnapshot>({
@@ -97,7 +97,6 @@
       candidates = data?.candidates ?? [];
       knownFolders = data?.knownFolders ?? [];
       historyRecords = data?.historyRecords ?? [];
-      if (fresh && data) interruptedRecoveries = data.recovered;
       savedAt = at;
       isFresh = fresh;
     },
@@ -108,6 +107,7 @@
   });
 
   async function loadData(force = false) {
+    loadScan.drop();
     isLoading = true;
     isFresh = false;
     try {
@@ -128,7 +128,7 @@
       `relocate.${drive}`,
       async () => {
         // Check crash recoveries first
-        const recovered = await recoverInterruptedRelocations();
+        await recoverOnce();
 
         // Parallel fetch candidates, known folders, and history
         const [candList, kfList, histList] = await Promise.all([
@@ -142,11 +142,10 @@
           // shell/Restart-Manager flows, so hide them from the generic junction table.
           candidates: candList.filter((c) => c.strategy !== 'known_folder' && c.id !== 'zalo'),
           knownFolders: kfList,
-          historyRecords: histList,
-          recovered
+          historyRecords: histList
         };
       },
-      { force, compact: (snapshot) => ({ ...snapshot, recovered: [] }) }
+      { force }
     );
   }
 
@@ -168,7 +167,6 @@
     isRelocating = true;
     try {
       await relocateDirectory(candidate.id, targetDrive);
-      await loadData(true);
     } catch (err) {
       alert(t('Không chuyển được {name}', { name: candidate.name }) + ': ' + err);
     } finally {
@@ -195,7 +193,6 @@
     isRelocating = true;
     try {
       await relocateKnownFolder(kf.folder_id, targetDrive);
-      await loadData(true);
     } catch (err) {
       alert(t('Không chuyển được {name}', { name: kf.name }) + ': ' + err);
     } finally {
@@ -211,7 +208,6 @@
 
     try {
       await undoRelocation(rec.id);
-      await loadData(true);
     } catch (err) {
       alert(t('Không hoàn tác được {name}', { name: rec.app_name }) + ': ' + err);
     }
@@ -224,11 +220,12 @@
 
     try {
       await repairJunctionTarget(rec.id, newTarget);
-      await loadData(true);
     } catch (err) {
       alert(t('Lỗi sửa liên kết') + ': ' + err);
     }
   }
+
+  onFilesChanged(() => loadData(true));
 
   async function handleCancelTask() {
     if (currentTaskId) {
@@ -324,7 +321,7 @@
   </div>
 
   <!-- Interrupted Recovery Alert Banner -->
-  {#if interruptedRecoveries.length > 0}
+  {#if recoveries.list.length > 0}
     <div class="rounded-xl border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/50 p-4 shadow-sm flex items-center justify-between">
       <div class="flex items-center gap-3">
         <AlertTriangle class="h-5 w-5 text-amber-600 dark:text-amber-400 shrink-0" />
@@ -333,12 +330,12 @@
             {t('Bị gián đoạn, đã khôi phục về vị trí cũ')}
           </h4>
           <p class="text-xs text-amber-800 dark:text-amber-300 mt-0.5">
-            {t('Phát hiện {count} tác vụ di chuyển chưa hoàn tất do tắt máy đột ngột. GreenC đã tự động hoàn trả an toàn.', { count: interruptedRecoveries.length })}
+            {t('Phát hiện {count} tác vụ di chuyển chưa hoàn tất do tắt máy đột ngột. GreenC đã tự động hoàn trả an toàn.', { count: recoveries.list.length })}
           </p>
         </div>
       </div>
       <button
-        onclick={() => (interruptedRecoveries = [])}
+        onclick={() => (recoveries.list = [])}
         class="text-xs font-medium px-3 py-1.5 rounded-md bg-amber-200/60 dark:bg-amber-900/60 text-amber-900 dark:text-amber-200 hover:bg-amber-300 transition-colors"
       >
         {t('Đóng')}
@@ -349,7 +346,7 @@
   <!-- Dedicated Zalo PC Card (Clean + Auto Move) -->
   <UpdateStatus {savedAt} refreshing={isLoading} failed={loadFailed} />
 
-  <ZaloCard preferredDrive={targetDrive} onChanged={() => loadData(true)} />
+  <ZaloCard preferredDrive={targetDrive} />
 
   <!-- Section 1: Windows Known Folders Cards -->
   <div class="rounded-xl border border-border bg-card p-5 shadow-sm">
@@ -394,7 +391,7 @@
             </span>
             <button
               onclick={() => handleRelocateKnownFolder(kf)}
-              disabled={kf.is_onedrive || isStoreBuild || isRelocating || kf.is_redirected || !isFresh}
+              disabled={kf.is_onedrive || isStoreBuild || isRelocating || kf.is_redirected || !canAct}
               class="text-xs font-medium px-2.5 py-1 rounded-md bg-accent text-white hover:bg-accent-hover disabled:opacity-50 transition-colors"
             >
               {kf.is_redirected ? t('Đã chuyển') : t('Chuyển')}
@@ -479,7 +476,7 @@
                 <td class="py-3 px-3 text-right">
                   <button
                     onclick={() => handleRelocateDirectory(cand)}
-                    disabled={!isFresh || isRelocating || cand.is_locked || (cand.strategy !== 'guided' && !cand.is_eligible)}
+                    disabled={!canAct || isRelocating || cand.is_locked || (cand.strategy !== 'guided' && !cand.is_eligible)}
                     title={!cand.is_eligible && cand.ineligible_reason ? cand.ineligible_reason : undefined}
                     class="px-3 py-1 text-xs font-semibold rounded-md bg-accent text-white hover:bg-accent-hover disabled:opacity-50 transition-colors"
                   >
@@ -529,7 +526,7 @@
                     <td class="py-2.5 px-3 text-right">
                       <button
                         onclick={() => handleRelocateDirectory(cand)}
-                        disabled={!isFresh || isRelocating || cand.is_locked || !cand.is_eligible}
+                        disabled={!canAct || isRelocating || cand.is_locked || !cand.is_eligible}
                         title={!cand.is_eligible && cand.ineligible_reason ? cand.ineligible_reason : undefined}
                         class="px-2.5 py-1 text-xs font-medium rounded-md bg-subtle hover:bg-border text-primary disabled:opacity-50 transition-colors"
                       >
@@ -598,7 +595,7 @@
                 <td class="py-3 px-3 text-right flex items-center justify-end gap-2">
                   {#if rec.health_status !== 'healthy' && rec.strategy === 'junction'}
                     <button
-                      disabled={!isFresh}
+                      disabled={!canAct}
                       onclick={() => handleRepair(rec)}
                       class="px-2 py-1 text-xs font-medium rounded-md border border-border hover:bg-subtle text-accent transition-colors"
                       title={t('Sửa liên kết')}
@@ -609,7 +606,7 @@
                   {/if}
                   <button
                     onclick={() => handleUndo(rec)}
-                    disabled={!isFresh || rec.strategy === 'guided' || rec.status === 'undone'}
+                    disabled={!canAct || rec.strategy === 'guided' || rec.status === 'undone'}
                     class="px-2.5 py-1 text-xs font-medium rounded-md border border-border hover:bg-subtle text-secondary hover:text-primary transition-colors disabled:opacity-40"
                     title={rec.strategy === 'guided' ? t('Đổi lại vị trí lưu trong Cài đặt của ứng dụng') : t('Hoàn tác')}
                   >

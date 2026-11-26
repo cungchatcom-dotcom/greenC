@@ -1,5 +1,5 @@
 use greenc_core::error::Result;
-use greenc_core::task::TaskControl;
+use greenc_core::task::{is_read_only_scan, TaskControl};
 use greenc_i18n::catalog::Catalog;
 use greenc_storage::db::GreenCDb;
 use greenc_storage::settings::AppSettings;
@@ -102,9 +102,11 @@ impl AppState {
         }
     }
 
+    /// `true` while a task works on the user's files. Read-only scans, which screens start by
+    /// themselves, do not count.
     pub fn has_foreground_tasks(&self) -> bool {
         if let Ok(tasks) = self.active_tasks.read() {
-            !tasks.is_empty()
+            tasks.keys().any(|id| !is_read_only_scan(id))
         } else {
             false
         }

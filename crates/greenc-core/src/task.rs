@@ -5,6 +5,19 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+/// `true` for tasks that only read: they must not hold back crash recovery or the guardian,
+/// which wait while the user's files are being worked on. Unknown ids count as work.
+pub fn is_read_only_scan(task_id: &str) -> bool {
+    [
+        "space-lens-",
+        "cleanup-scan-",
+        "relocate-scan-",
+        "compact-scan-",
+    ]
+    .iter()
+    .any(|prefix| task_id.starts_with(prefix))
+}
+
 /// Real-time progress payload broadcasted to UI and CLI.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskProgress {
