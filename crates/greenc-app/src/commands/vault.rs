@@ -238,11 +238,15 @@ pub async fn delete_vault_archive(
         let vault_dir = state
             .settings()
             .vault_dir(&default_vault_dir())
-            .map_err(|e| CommandFailure::from_err(&e, format!("Failed to resolve vault_dir: {}", e)))?;
-        safe_remove_vault_artifact(&archive.zip_path, &vault_dir, ".zip")
-            .map_err(|e| CommandFailure::from_err(&e, format!("Refused to delete archive zip: {}", e)))?;
-        safe_remove_vault_artifact(&archive.manifest_path, &vault_dir, ".manifest.json")
-            .map_err(|e| CommandFailure::from_err(&e, format!("Refused to delete archive manifest: {}", e)))?;
+            .map_err(|e| {
+                CommandFailure::from_err(&e, format!("Failed to resolve vault_dir: {}", e))
+            })?;
+        safe_remove_vault_artifact(&archive.zip_path, &vault_dir, ".zip").map_err(|e| {
+            CommandFailure::from_err(&e, format!("Refused to delete archive zip: {}", e))
+        })?;
+        safe_remove_vault_artifact(&archive.manifest_path, &vault_dir, ".manifest.json").map_err(
+            |e| CommandFailure::from_err(&e, format!("Refused to delete archive manifest: {}", e)),
+        )?;
 
         // Update database status to PURGED
         state

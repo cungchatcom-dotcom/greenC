@@ -1665,6 +1665,7 @@ version = "2.2.3"
 dependencies = [
  "chrono",
  "greenc-core",
+ "greenc-diagnostics",
  "greenc-i18n",
  "greenc-platform",
  "greenc-relocate",

@@ -161,7 +161,9 @@ mod tests {
                 "Io",
             ),
             (
-                GreenCError::Json(serde_json::from_str::<serde_json::Value>("not-json").unwrap_err()),
+                GreenCError::Json(
+                    serde_json::from_str::<serde_json::Value>("not-json").unwrap_err(),
+                ),
                 "Json",
             ),
         ];

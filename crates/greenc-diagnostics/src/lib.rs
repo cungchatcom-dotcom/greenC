@@ -300,7 +300,8 @@ mod standard {
 
         fn prune_queue_for(&mut self, now: DateTime<Utc>) {
             let today = now.date_naive();
-            self.queue.retain(|k, c| *c > 0 && is_day_in_window(&k.day, today));
+            self.queue
+                .retain(|k, c| *c > 0 && is_day_in_window(&k.day, today));
         }
 
         fn is_due(&self, now: DateTime<Utc>) -> bool {

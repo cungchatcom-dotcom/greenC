@@ -86,10 +86,7 @@ fn read_windows_build_number() -> Option<u32> {
     }
     let reg_key = OwnedRegKey::new(raw_key)?;
 
-    let value_name: Vec<u16> = "CurrentBuildNumber"
-        .encode_utf16()
-        .chain(Some(0))
-        .collect();
+    let value_name: Vec<u16> = "CurrentBuildNumber".encode_utf16().chain(Some(0)).collect();
     let mut val_type = REG_VALUE_TYPE::default();
     let mut data_len: u32 = 0;
     // SAFETY: Probes byte length of `CurrentBuildNumber`.
@@ -175,12 +172,15 @@ mod tests {
             .collect();
         assert_eq!(parse_windows_build_utf16le(&wide), 22631);
 
-        let win10: Vec<u8> = "19045"
-            .encode_utf16()
-            .flat_map(u16::to_le_bytes)
-            .collect();
+        let win10: Vec<u8> = "19045".encode_utf16().flat_map(u16::to_le_bytes).collect();
         assert_eq!(parse_windows_build_utf16le(&win10), 19045);
-        assert_eq!(classify_windows(parse_windows_build_utf16le(&win10)), "windows10");
-        assert_eq!(classify_windows(parse_windows_build_utf16le(&wide)), "windows11");
+        assert_eq!(
+            classify_windows(parse_windows_build_utf16le(&win10)),
+            "windows10"
+        );
+        assert_eq!(
+            classify_windows(parse_windows_build_utf16le(&wide)),
+            "windows11"
+        );
     }
 }

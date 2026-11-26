@@ -60,7 +60,10 @@ mod standard {
         let exported = tmp.path().join("exported.txt");
         diag.export_log(&exported).unwrap();
         let content = fs::read_to_string(&exported).unwrap();
-        assert_eq!(content.trim(), "2026-11-26T08:00:00Z scan cleanup ok - lt5s");
+        assert_eq!(
+            content.trim(),
+            "2026-11-26T08:00:00Z scan cleanup ok - lt5s"
+        );
     }
 
     #[test]
@@ -236,8 +239,12 @@ mod standard {
         ]);
         let mut counts = std::collections::BTreeMap::new();
         for row in v["rows"].as_array().unwrap() {
-            let row_keys: BTreeSet<&str> =
-                row.as_object().unwrap().keys().map(String::as_str).collect();
+            let row_keys: BTreeSet<&str> = row
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
             assert_eq!(row_keys, expected_row_keys);
             assert_eq!(row["build"], 0);
             assert_eq!(row["disk"], "");
@@ -276,23 +283,11 @@ mod standard {
         }
 
         // Old (>7 days) and far-future (>1 day) rows are dropped.
-        diag.record(
-            Event::Start { ms: 100 },
-            now - Duration::days(8),
-        );
-        diag.record(
-            Event::Start { ms: 2_000 },
-            now + Duration::days(2),
-        );
+        diag.record(Event::Start { ms: 100 }, now - Duration::days(8));
+        diag.record(Event::Start { ms: 2_000 }, now + Duration::days(2));
         // Exactly 7 days ago and +1 day are kept.
-        diag.record(
-            Event::Start { ms: 5_000 },
-            now - Duration::days(7),
-        );
-        diag.record(
-            Event::Start { ms: 15_000 },
-            now + Duration::days(1),
-        );
+        diag.record(Event::Start { ms: 5_000 }, now - Duration::days(7));
+        diag.record(Event::Start { ms: 15_000 }, now + Duration::days(1));
 
         let b = diag.take_due_batch(now).unwrap();
         assert!(b.body.len() <= 32_768);
@@ -391,7 +386,9 @@ mod standard {
         // Backward clock: last_attempt_at is in the future -> treated as due ONCE.
         let t_back = t_retry - Duration::hours(5);
         diag.record(Event::Start { ms: 600 }, t_back);
-        let b3 = diag.take_due_batch(t_back).expect("backward clock should be due");
+        let b3 = diag
+            .take_due_batch(t_back)
+            .expect("backward clock should be due");
         diag.finish_batch(&b3.id, SendResult::Retry, t_back);
         // Immediately after attempt at t_back, NOT due continuously.
         assert!(diag.take_due_batch(t_back + Duration::minutes(1)).is_none());
@@ -448,8 +445,15 @@ mod standard {
         let rows = v["rows"].as_array().unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["event"], "crash");
-        assert_eq!(rows[0]["name"], "crates/greenc-app/src/commands/cleanup.rs:123");
-        reopened.finish_batch(&crash_batch.id, SendResult::Accepted, now + Duration::minutes(1));
+        assert_eq!(
+            rows[0]["name"],
+            "crates/greenc-app/src/commands/cleanup.rs:123"
+        );
+        reopened.finish_batch(
+            &crash_batch.id,
+            SendResult::Accepted,
+            now + Duration::minutes(1),
+        );
 
         // Non-matching path must become "dependency".
         reopened.record_panic("C:\\Users\\Alice\\.cargo\\registry\\src\\foo.rs", 99);
@@ -466,7 +470,9 @@ mod standard {
         reopened2.record_panic("crates/greenc-core/src/lib.rs", 10);
         let reopened3 = Diagnostics::open(tmp.path().to_path_buf(), sample_env());
         reopened3.set_consent(true);
-        assert!(reopened3.take_due_batch(now + Duration::hours(25)).is_none());
+        assert!(reopened3
+            .take_due_batch(now + Duration::hours(25))
+            .is_none());
     }
 
     #[test]
@@ -502,7 +508,10 @@ mod standard {
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines.len(), 2);
         assert_eq!(lines[0], "2026-11-26T08:00:00Z scan unknown ok - lt500ms");
-        assert_eq!(lines[1], "2026-11-26T08:00:00Z action cleanup failed unknown lt500ms");
+        assert_eq!(
+            lines[1],
+            "2026-11-26T08:00:00Z action cleanup failed unknown lt500ms"
+        );
     }
 
     #[test]

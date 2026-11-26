@@ -79,127 +79,128 @@ pub async fn scan_compaction_candidates(
     let task_id_worker = task_id.clone();
     let join_res = tokio::task::spawn_blocking(
         move || -> std::result::Result<Vec<CompactionCandidateDto>, CommandFailure> {
-        state_inner.emit_progress(&TaskProgressEvent {
-            task_id: task_id_worker.clone(),
-            kind: "compact_scan".to_string(),
-            state: "running".to_string(),
-            percent: 10,
-            phase: "scan".to_string(),
-            title: "Đang quét dữ liệu có thể thu gọn".to_string(),
-            detail: "Rà soát thư mục SDK và đĩa ảo VHDX...".to_string(),
-            done_files: 0,
-            total_files: 0,
-            done_bytes: 0,
-            total_bytes: 0,
-            throughput_bps: 0,
-            eta_seconds: 0,
-        });
+            state_inner.emit_progress(&TaskProgressEvent {
+                task_id: task_id_worker.clone(),
+                kind: "compact_scan".to_string(),
+                state: "running".to_string(),
+                percent: 10,
+                phase: "scan".to_string(),
+                title: "Đang quét dữ liệu có thể thu gọn".to_string(),
+                detail: "Rà soát thư mục SDK và đĩa ảo VHDX...".to_string(),
+                done_files: 0,
+                total_files: 0,
+                done_bytes: 0,
+                total_bytes: 0,
+                throughput_bps: 0,
+                eta_seconds: 0,
+            });
 
-        let proc_probe = NativeProcessServiceProbe;
-        let mut dtos = Vec::new();
+            let proc_probe = NativeProcessServiceProbe;
+            let mut dtos = Vec::new();
 
-        if let Some(custom) = target_path {
-            let custom_p = PathBuf::from(&custom);
-            if custom_p.exists() {
-                let candidates = InPlaceCompactor::scan_candidate_files(&custom_p, 0);
-                let mut total_b = 0u64;
-                for f in &candidates {
-                    if let Ok(m) = std::fs::metadata(f) {
-                        total_b += m.len();
+            if let Some(custom) = target_path {
+                let custom_p = PathBuf::from(&custom);
+                if custom_p.exists() {
+                    let candidates = InPlaceCompactor::scan_candidate_files(&custom_p, 0);
+                    let mut total_b = 0u64;
+                    for f in &candidates {
+                        if let Ok(m) = std::fs::metadata(f) {
+                            total_b += m.len();
+                        }
                     }
+                    let est = (total_b as f64 * 0.40) as u64;
+                    let name = custom_p
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("Directory")
+                        .to_string();
+
+                    dtos.push(CompactionCandidateDto {
+                        id: format!("custom_{}", name.to_lowercase()),
+                        name,
+                        path: custom,
+                        kind: "wof_directory".to_string(),
+                        logical_bytes: total_b,
+                        physical_bytes: total_b,
+                        estimated_reclaimable_bytes: est,
+                        file_count: candidates.len() as u64,
+                        recommended_algorithm: "XPRESS8K".to_string(),
+                        is_locked: false,
+                        locked_processes: Vec::new(),
+                        is_compacted: false,
+                        selected: true,
+                    });
                 }
-                let est = (total_b as f64 * 0.40) as u64;
-                let name = custom_p
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("Directory")
-                    .to_string();
+            } else {
+                // Discovers standard developer SDK directories
+                let dirs = InPlaceCompactor::discover_directories_for_compaction();
+                for d in dirs {
+                    let name = d
+                        .path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("Folder")
+                        .to_string();
+                    let path_str = d.path.to_string_lossy().to_string();
 
-                dtos.push(CompactionCandidateDto {
-                    id: format!("custom_{}", name.to_lowercase()),
-                    name,
-                    path: custom,
-                    kind: "wof_directory".to_string(),
-                    logical_bytes: total_b,
-                    physical_bytes: total_b,
-                    estimated_reclaimable_bytes: est,
-                    file_count: candidates.len() as u64,
-                    recommended_algorithm: "XPRESS8K".to_string(),
-                    is_locked: false,
-                    locked_processes: Vec::new(),
-                    is_compacted: false,
-                    selected: true,
-                });
+                    dtos.push(CompactionCandidateDto {
+                        id: format!("dir_{}", name.to_lowercase()),
+                        name: format!("SDK {}", name),
+                        path: path_str,
+                        kind: "wof_directory".to_string(),
+                        logical_bytes: d.logical_bytes,
+                        physical_bytes: d.logical_bytes,
+                        estimated_reclaimable_bytes: d.estimated_reclaim_bytes,
+                        file_count: d.file_count,
+                        recommended_algorithm: "XPRESS8K".to_string(),
+                        is_locked: false,
+                        locked_processes: Vec::new(),
+                        is_compacted: false,
+                        selected: true,
+                    });
+                }
+
+                // Discovers WSL2 and Docker VHDX disks
+                let vhdxs = VhdxCompactor::discover_vhdx_images(&proc_probe);
+                for v in vhdxs {
+                    let est = (v.size_bytes as f64 * 0.30) as u64; // Est. 30% slack
+                    dtos.push(CompactionCandidateDto {
+                        id: format!("vhdx_{}", v.name.to_lowercase().replace(' ', "_")),
+                        name: v.name,
+                        path: v.path.to_string_lossy().to_string(),
+                        kind: "vhdx_trim".to_string(),
+                        logical_bytes: v.size_bytes,
+                        physical_bytes: v.size_bytes,
+                        estimated_reclaimable_bytes: est,
+                        file_count: 1,
+                        recommended_algorithm: "VIRTDISK".to_string(),
+                        is_locked: v.is_locked,
+                        locked_processes: v.running_processes,
+                        is_compacted: false,
+                        selected: !v.is_locked,
+                    });
+                }
             }
-        } else {
-            // Discovers standard developer SDK directories
-            let dirs = InPlaceCompactor::discover_directories_for_compaction();
-            for d in dirs {
-                let name = d
-                    .path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("Folder")
-                    .to_string();
-                let path_str = d.path.to_string_lossy().to_string();
 
-                dtos.push(CompactionCandidateDto {
-                    id: format!("dir_{}", name.to_lowercase()),
-                    name: format!("SDK {}", name),
-                    path: path_str,
-                    kind: "wof_directory".to_string(),
-                    logical_bytes: d.logical_bytes,
-                    physical_bytes: d.logical_bytes,
-                    estimated_reclaimable_bytes: d.estimated_reclaim_bytes,
-                    file_count: d.file_count,
-                    recommended_algorithm: "XPRESS8K".to_string(),
-                    is_locked: false,
-                    locked_processes: Vec::new(),
-                    is_compacted: false,
-                    selected: true,
-                });
-            }
+            state_inner.emit_progress(&TaskProgressEvent {
+                task_id: task_id_worker,
+                kind: "compact_scan".to_string(),
+                state: "completed".to_string(),
+                percent: 100,
+                phase: "complete".to_string(),
+                title: "Hoàn tất tìm kiếm dữ liệu thu gọn".to_string(),
+                detail: format!("Tìm thấy {} mục", dtos.len()),
+                done_files: dtos.len() as u64,
+                total_files: dtos.len() as u64,
+                done_bytes: 0,
+                total_bytes: 0,
+                throughput_bps: 0,
+                eta_seconds: 0,
+            });
 
-            // Discovers WSL2 and Docker VHDX disks
-            let vhdxs = VhdxCompactor::discover_vhdx_images(&proc_probe);
-            for v in vhdxs {
-                let est = (v.size_bytes as f64 * 0.30) as u64; // Est. 30% slack
-                dtos.push(CompactionCandidateDto {
-                    id: format!("vhdx_{}", v.name.to_lowercase().replace(' ', "_")),
-                    name: v.name,
-                    path: v.path.to_string_lossy().to_string(),
-                    kind: "vhdx_trim".to_string(),
-                    logical_bytes: v.size_bytes,
-                    physical_bytes: v.size_bytes,
-                    estimated_reclaimable_bytes: est,
-                    file_count: 1,
-                    recommended_algorithm: "VIRTDISK".to_string(),
-                    is_locked: v.is_locked,
-                    locked_processes: v.running_processes,
-                    is_compacted: false,
-                    selected: !v.is_locked,
-                });
-            }
-        }
-
-        state_inner.emit_progress(&TaskProgressEvent {
-            task_id: task_id_worker,
-            kind: "compact_scan".to_string(),
-            state: "completed".to_string(),
-            percent: 100,
-            phase: "complete".to_string(),
-            title: "Hoàn tất tìm kiếm dữ liệu thu gọn".to_string(),
-            detail: format!("Tìm thấy {} mục", dtos.len()),
-            done_files: dtos.len() as u64,
-            total_files: dtos.len() as u64,
-            done_bytes: 0,
-            total_bytes: 0,
-            throughput_bps: 0,
-            eta_seconds: 0,
-        });
-
-        Ok(dtos)
-    })
+            Ok(dtos)
+        },
+    )
     .await;
 
     state.unregister_task(&task_id);
@@ -232,108 +233,111 @@ pub async fn compact_files(
     let task_ctrl_worker = Arc::clone(&task_ctrl);
     let join_res = tokio::task::spawn_blocking(
         move || -> std::result::Result<CompactionResultDto, CommandFailure> {
-        let algo = match algorithm.as_deref() {
-            Some("XPRESS4K") => WofAlgorithm::Xpress4k,
-            Some("XPRESS16K") => WofAlgorithm::Xpress16k,
-            Some("LZX") => WofAlgorithm::Lzx,
-            Some("LZNT1") => WofAlgorithm::Lznt1,
-            _ => WofAlgorithm::Xpress8k,
-        };
+            let algo = match algorithm.as_deref() {
+                Some("XPRESS4K") => WofAlgorithm::Xpress4k,
+                Some("XPRESS16K") => WofAlgorithm::Xpress16k,
+                Some("LZX") => WofAlgorithm::Lzx,
+                Some("LZNT1") => WofAlgorithm::Lznt1,
+                _ => WofAlgorithm::Xpress8k,
+            };
 
-        let compaction_api = NativeCompactionApi;
-        let lock_probe = NativeFileLockProbe;
-        let state_progress = state_inner.clone();
-        let task_id_clone = task_id_worker.clone();
+            let compaction_api = NativeCompactionApi;
+            let lock_probe = NativeFileLockProbe;
+            let state_progress = state_inner.clone();
+            let task_id_clone = task_id_worker.clone();
 
-        let total_files_processed = 0u64;
-        let mut total_files_compacted = 0u64;
-        let total_files_skipped = 0u64;
-        let mut total_logical = 0u64;
-        let mut total_before = 0u64;
-        let mut total_after = 0u64;
+            let total_files_processed = 0u64;
+            let mut total_files_compacted = 0u64;
+            let total_files_skipped = 0u64;
+            let mut total_logical = 0u64;
+            let mut total_before = 0u64;
+            let mut total_after = 0u64;
 
-        for path_str in &target_paths {
-            if task_ctrl_worker.is_cancelled() {
-                break;
+            for path_str in &target_paths {
+                if task_ctrl_worker.is_cancelled() {
+                    break;
+                }
+
+                let path = PathBuf::from(path_str);
+                let state_prog = state_progress.clone();
+                let task_id_inner = task_id_clone.clone();
+
+                let rec = InPlaceCompactor::compact_directory(
+                    &path,
+                    algo,
+                    &state_inner.db,
+                    &compaction_api,
+                    &lock_probe,
+                    &task_ctrl_worker,
+                    move |cur_b, cur_f| {
+                        state_prog.emit_progress(&TaskProgressEvent {
+                            task_id: task_id_inner.clone(),
+                            kind: "compact".to_string(),
+                            state: "running".to_string(),
+                            percent: 50,
+                            phase: "compacting".to_string(),
+                            title: "Đang thu gọn tệp".to_string(),
+                            detail: format!("Đã xử lý {} tệp", cur_f),
+                            done_files: cur_f,
+                            total_files: 0,
+                            done_bytes: cur_b,
+                            total_bytes: 0,
+                            throughput_bps: 0,
+                            eta_seconds: 0,
+                        });
+                    },
+                )
+                .map_err(|e| {
+                    CommandFailure::from_err(&e, format!("Lỗi thu gọn {}: {}", path_str, e))
+                })?;
+
+                total_files_compacted += rec.file_count;
+                total_logical += rec.logical_bytes;
+                total_before += rec.physical_before_bytes;
+                total_after += rec.physical_after_bytes;
             }
 
-            let path = PathBuf::from(path_str);
-            let state_prog = state_progress.clone();
-            let task_id_inner = task_id_clone.clone();
+            let reclaimed = total_before.saturating_sub(total_after);
+            let ratio = if total_before > 0 {
+                total_after as f64 / total_before as f64
+            } else {
+                1.0
+            };
 
-            let rec = InPlaceCompactor::compact_directory(
-                &path,
-                algo,
-                &state_inner.db,
-                &compaction_api,
-                &lock_probe,
-                &task_ctrl_worker,
-                move |cur_b, cur_f| {
-                    state_prog.emit_progress(&TaskProgressEvent {
-                        task_id: task_id_inner.clone(),
-                        kind: "compact".to_string(),
-                        state: "running".to_string(),
-                        percent: 50,
-                        phase: "compacting".to_string(),
-                        title: "Đang thu gọn tệp".to_string(),
-                        detail: format!("Đã xử lý {} tệp", cur_f),
-                        done_files: cur_f,
-                        total_files: 0,
-                        done_bytes: cur_b,
-                        total_bytes: 0,
-                        throughput_bps: 0,
-                        eta_seconds: 0,
-                    });
-                },
-            )
-            .map_err(|e| CommandFailure::from_err(&e, format!("Lỗi thu gọn {}: {}", path_str, e)))?;
+            state_inner.emit_progress(&TaskProgressEvent {
+                task_id: task_id_worker.clone(),
+                kind: "compact".to_string(),
+                state: "completed".to_string(),
+                percent: 100,
+                phase: "done".to_string(),
+                title: "Đã thu gọn xong tệp tin".to_string(),
+                detail: format!("Tiết kiệm được {} MB", reclaimed / (1024 * 1024)),
+                done_files: total_files_compacted,
+                total_files: total_files_compacted,
+                done_bytes: total_after,
+                total_bytes: total_before,
+                throughput_bps: 0,
+                eta_seconds: 0,
+            });
 
-            total_files_compacted += rec.file_count;
-            total_logical += rec.logical_bytes;
-            total_before += rec.physical_before_bytes;
-            total_after += rec.physical_after_bytes;
-        }
-
-        let reclaimed = total_before.saturating_sub(total_after);
-        let ratio = if total_before > 0 {
-            total_after as f64 / total_before as f64
-        } else {
-            1.0
-        };
-
-        state_inner.emit_progress(&TaskProgressEvent {
-            task_id: task_id_worker.clone(),
-            kind: "compact".to_string(),
-            state: "completed".to_string(),
-            percent: 100,
-            phase: "done".to_string(),
-            title: "Đã thu gọn xong tệp tin".to_string(),
-            detail: format!("Tiết kiệm được {} MB", reclaimed / (1024 * 1024)),
-            done_files: total_files_compacted,
-            total_files: total_files_compacted,
-            done_bytes: total_after,
-            total_bytes: total_before,
-            throughput_bps: 0,
-            eta_seconds: 0,
-        });
-
-        Ok(CompactionResultDto {
-            task_id: task_id_worker,
-            success: true,
-            kind: "wof_directory".to_string(),
-            target_path: target_paths.join("; "),
-            algorithm: algo.as_str().to_string(),
-            files_processed: total_files_processed,
-            files_compacted: total_files_compacted,
-            files_skipped: total_files_skipped,
-            logical_bytes: total_logical,
-            physical_before_bytes: total_before,
-            physical_after_bytes: total_after,
-            reclaimed_bytes: reclaimed,
-            compression_ratio: ratio,
-            error_message: None,
-        })
-    })
+            Ok(CompactionResultDto {
+                task_id: task_id_worker,
+                success: true,
+                kind: "wof_directory".to_string(),
+                target_path: target_paths.join("; "),
+                algorithm: algo.as_str().to_string(),
+                files_processed: total_files_processed,
+                files_compacted: total_files_compacted,
+                files_skipped: total_files_skipped,
+                logical_bytes: total_logical,
+                physical_before_bytes: total_before,
+                physical_after_bytes: total_after,
+                reclaimed_bytes: reclaimed,
+                compression_ratio: ratio,
+                error_message: None,
+            })
+        },
+    )
     .await;
 
     state.unregister_task(&task_id);
@@ -452,72 +456,77 @@ pub async fn compact_vhdx(
     let task_id_worker = task_id.clone();
     let join_res = tokio::task::spawn_blocking(
         move || -> std::result::Result<CompactionResultDto, CommandFailure> {
-        let compaction_api = NativeCompactionApi;
-        let proc_probe = NativeProcessServiceProbe;
-        let path = PathBuf::from(&vhdx_path);
+            let compaction_api = NativeCompactionApi;
+            let proc_probe = NativeProcessServiceProbe;
+            let path = PathBuf::from(&vhdx_path);
 
-        state_inner.emit_progress(&TaskProgressEvent {
-            task_id: task_id_worker.clone(),
-            kind: "compact_vhdx".to_string(),
-            state: "running".to_string(),
-            percent: 20,
-            phase: "trimming".to_string(),
-            title: "Đang thu gọn đĩa ảo VHDX".to_string(),
-            detail: vhdx_path.clone(),
-            done_files: 0,
-            total_files: 1,
-            done_bytes: 0,
-            total_bytes: 0,
-            throughput_bps: 0,
-            eta_seconds: 0,
-        });
+            state_inner.emit_progress(&TaskProgressEvent {
+                task_id: task_id_worker.clone(),
+                kind: "compact_vhdx".to_string(),
+                state: "running".to_string(),
+                percent: 20,
+                phase: "trimming".to_string(),
+                title: "Đang thu gọn đĩa ảo VHDX".to_string(),
+                detail: vhdx_path.clone(),
+                done_files: 0,
+                total_files: 1,
+                done_bytes: 0,
+                total_bytes: 0,
+                throughput_bps: 0,
+                eta_seconds: 0,
+            });
 
-        let rec =
-            VhdxCompactor::compact_vhdx_image(&path, &state_inner.db, &compaction_api, &proc_probe)
-                .map_err(|e| CommandFailure::from_err(&e, format!("Lỗi thu gọn VHDX: {e}")))?;
+            let rec = VhdxCompactor::compact_vhdx_image(
+                &path,
+                &state_inner.db,
+                &compaction_api,
+                &proc_probe,
+            )
+            .map_err(|e| CommandFailure::from_err(&e, format!("Lỗi thu gọn VHDX: {e}")))?;
 
-        let reclaimed = rec
-            .physical_before_bytes
-            .saturating_sub(rec.physical_after_bytes);
-        let ratio = if rec.physical_before_bytes > 0 {
-            rec.physical_after_bytes as f64 / rec.physical_before_bytes as f64
-        } else {
-            1.0
-        };
+            let reclaimed = rec
+                .physical_before_bytes
+                .saturating_sub(rec.physical_after_bytes);
+            let ratio = if rec.physical_before_bytes > 0 {
+                rec.physical_after_bytes as f64 / rec.physical_before_bytes as f64
+            } else {
+                1.0
+            };
 
-        state_inner.emit_progress(&TaskProgressEvent {
-            task_id: task_id_worker.clone(),
-            kind: "compact_vhdx".to_string(),
-            state: "completed".to_string(),
-            percent: 100,
-            phase: "done".to_string(),
-            title: "Đã thu gọn đĩa ảo VHDX".to_string(),
-            detail: format!("Tiết kiệm {} MB", reclaimed / (1024 * 1024)),
-            done_files: 1,
-            total_files: 1,
-            done_bytes: rec.physical_after_bytes,
-            total_bytes: rec.physical_before_bytes,
-            throughput_bps: 0,
-            eta_seconds: 0,
-        });
+            state_inner.emit_progress(&TaskProgressEvent {
+                task_id: task_id_worker.clone(),
+                kind: "compact_vhdx".to_string(),
+                state: "completed".to_string(),
+                percent: 100,
+                phase: "done".to_string(),
+                title: "Đã thu gọn đĩa ảo VHDX".to_string(),
+                detail: format!("Tiết kiệm {} MB", reclaimed / (1024 * 1024)),
+                done_files: 1,
+                total_files: 1,
+                done_bytes: rec.physical_after_bytes,
+                total_bytes: rec.physical_before_bytes,
+                throughput_bps: 0,
+                eta_seconds: 0,
+            });
 
-        Ok(CompactionResultDto {
-            task_id: task_id_worker,
-            success: true,
-            kind: "vhdx_trim".to_string(),
-            target_path: vhdx_path,
-            algorithm: "VIRTDISK".to_string(),
-            files_processed: 1,
-            files_compacted: 1,
-            files_skipped: 0,
-            logical_bytes: rec.logical_bytes,
-            physical_before_bytes: rec.physical_before_bytes,
-            physical_after_bytes: rec.physical_after_bytes,
-            reclaimed_bytes: reclaimed,
-            compression_ratio: ratio,
-            error_message: None,
-        })
-    })
+            Ok(CompactionResultDto {
+                task_id: task_id_worker,
+                success: true,
+                kind: "vhdx_trim".to_string(),
+                target_path: vhdx_path,
+                algorithm: "VIRTDISK".to_string(),
+                files_processed: 1,
+                files_compacted: 1,
+                files_skipped: 0,
+                logical_bytes: rec.logical_bytes,
+                physical_before_bytes: rec.physical_before_bytes,
+                physical_after_bytes: rec.physical_after_bytes,
+                reclaimed_bytes: reclaimed,
+                compression_ratio: ratio,
+                error_message: None,
+            })
+        },
+    )
     .await;
 
     state.unregister_task(&task_id);

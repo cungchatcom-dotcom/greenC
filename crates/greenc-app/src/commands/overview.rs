@@ -2,7 +2,6 @@
 
 use crate::commands::diagnostics::{record_scan_result, CommandFailure};
 use crate::state::{AppState, TaskProgressEvent};
-use greenc_diagnostics::Outcome;
 #[cfg(all(windows, feature = "store"))]
 use greenc_core::config::STORE_STARTUP_TASK_ID;
 use greenc_core::config::{
@@ -11,6 +10,7 @@ use greenc_core::config::{
 use greenc_core::error::Result;
 use greenc_core::models::DriveInfo;
 use greenc_core::task::TaskControl;
+use greenc_diagnostics::Outcome;
 #[cfg(all(windows, feature = "store"))]
 use greenc_platform::power_session::{NativePowerSessionApi, PowerSessionApi};
 use greenc_platform::volume::{list_drives_native, recommend_drive};

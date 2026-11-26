@@ -431,9 +431,8 @@ pub async fn change_data_root(
     let state_inner = state.inner().clone();
     let task_id_worker = task_id.clone();
 
-    let join_res =
-        tokio::task::spawn_blocking(
-            move || -> std::result::Result<MoveVaultReportDto, CommandFailure> {
+    let join_res = tokio::task::spawn_blocking(
+        move || -> std::result::Result<MoveVaultReportDto, CommandFailure> {
             let new_vault_dir = new_root_path.join("Vault");
             let new_apps_dir = new_root_path.join("Apps");
             let new_moving_dir = new_root_path.join("Moving");
@@ -514,8 +513,9 @@ pub async fn change_data_root(
                 errors: summary.errors,
                 success,
             })
-        })
-        .await;
+        },
+    )
+    .await;
 
     state.unregister_task(&task_id);
     let diag_res = match join_res {

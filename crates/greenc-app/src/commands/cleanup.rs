@@ -85,9 +85,13 @@ pub async fn scan_cleanup_candidates(
             "old_versions".to_string(),
         ],
         Some(ids) if ids.is_empty() => {
-            return record_scan_result(&state.diagnostics, "cleanup", started, Ok(Vec::new()), |_| {
-                Outcome::Ok
-            });
+            return record_scan_result(
+                &state.diagnostics,
+                "cleanup",
+                started,
+                Ok(Vec::new()),
+                |_| Outcome::Ok,
+            );
         }
         Some(ids) => ids,
     };
@@ -240,8 +244,8 @@ pub async fn scan_cleanup_candidates(
 
     state.unregister_task(&task_id);
     let cancelled = task_ctrl.is_cancelled();
-    let diag_res = join_res
-        .map_err(|e| CommandFailure::from_msg(format!("Task failed: {}", e), "unknown"));
+    let diag_res =
+        join_res.map_err(|e| CommandFailure::from_msg(format!("Task failed: {}", e), "unknown"));
     record_scan_result(&state.diagnostics, "cleanup", started, diag_res, |_| {
         if cancelled {
             Outcome::Cancelled
@@ -281,107 +285,175 @@ pub async fn execute_cleanup(
     let task_id_worker = task_id.clone();
     let join_res = tokio::task::spawn_blocking(
         move || -> std::result::Result<CleanupReportDto, CommandFailure> {
-        let lock_probe = NativeFileLockProbe;
-        let volume_api = NativeWin32VolumeApi;
+            let lock_probe = NativeFileLockProbe;
+            let volume_api = NativeWin32VolumeApi;
 
-        // Resolve vault dir
-        let data_root = state_inner.settings().get_data_root().ok().flatten();
-        let vault_dir = data_root
-            .map(|d| d.join("Vault"))
-            .unwrap_or_else(default_vault_dir);
+            // Resolve vault dir
+            let data_root = state_inner.settings().get_data_root().ok().flatten();
+            let vault_dir = data_root
+                .map(|d| d.join("Vault"))
+                .unwrap_or_else(default_vault_dir);
 
-        // Gather all clean candidates for selected profile IDs
-        // Re-checking each group can take a while (it walks the folders again and probes locks).
-        // Report it as a "prepare" phase so the UI shows 0/N instead of a stale finished state.
-        let total_groups = candidate_ids.len() as u64;
-        let emit_prepare = |done: u64, detail: String| {
-            state_inner.emit_progress(&TaskProgressEvent {
-                task_id: task_id_worker.clone(),
-                kind: "cleanup_execute".to_string(),
-                state: "running".to_string(),
-                percent: (done * 10 / total_groups.max(1)) as u32,
-                phase: "prepare".to_string(),
-                title: "Đang chuẩn bị dọn dẹp...".to_string(),
-                detail,
-                done_files: done,
-                total_files: total_groups,
-                done_bytes: 0,
-                total_bytes: 0,
-                throughput_bps: 0,
-                eta_seconds: 0,
-            });
-        };
-
-        let mut candidates_to_clean = Vec::new();
-        for (i, cid) in candidate_ids.iter().enumerate() {
-            let pid = cid.trim_start_matches("cand_");
-            emit_prepare(
-                i as u64,
-                format!("Kiểm tra lại nhóm {} ({}/{})", pid, i + 1, total_groups),
-            );
-            let cands = PresetProfiles::scan_profile_candidates(pid, &task_ctrl, &lock_probe);
-            candidates_to_clean.extend(cands);
-        }
-        emit_prepare(
-            total_groups,
-            format!(
-                "Ghi nhận trạng thái {} tệp trước khi dọn...",
-                candidates_to_clean.len()
-            ),
-        );
-
-        if candidates_to_clean.is_empty() {
-            return Ok(CleanupReportDto {
-                task_id: task_id_worker.clone(),
-                success: true,
-                total_candidates: candidate_ids.len() as u32,
-                processed_candidates: 0,
-                total_reclaimed_bytes: 0,
-                total_files_deleted: 0,
-                vault_archive_id: None,
-                vault_archive_path: None,
-                compressed_vault_bytes: 0,
-                skipped_locked_files_count: 0,
-                skipped_items: vec![],
-                error_message: None,
-            });
-        }
-
-        let total_files = candidates_to_clean.len() as u64;
-        let total_bytes: u64 = candidates_to_clean.iter().map(|c| c.size_bytes).sum();
-
-        // Step 0: Capture pre-archive metadata snapshot BEFORE archiving commences.
-        // This baseline snapshot captures (len, mtime) at T0.
-        // If any file is modified, written to, or touched while ArchiverPipeline is streaming
-        // or during the deletion prep window, its metadata at unlinking time will mismatch this T0 snapshot,
-        // and SafeCleaner will skip unlinking the file, strictly protecting against mid-flight data loss.
-        let mut snapshots = HashMap::with_capacity(candidates_to_clean.len());
-        for c in &candidates_to_clean {
-            let snap = match std::fs::metadata(&c.path) {
-                Ok(m) => (m.len(), m.modified().unwrap_or(SystemTime::UNIX_EPOCH)),
-                Err(_) => (c.size_bytes, c.mtime),
+            // Gather all clean candidates for selected profile IDs
+            // Re-checking each group can take a while (it walks the folders again and probes locks).
+            // Report it as a "prepare" phase so the UI shows 0/N instead of a stale finished state.
+            let total_groups = candidate_ids.len() as u64;
+            let emit_prepare = |done: u64, detail: String| {
+                state_inner.emit_progress(&TaskProgressEvent {
+                    task_id: task_id_worker.clone(),
+                    kind: "cleanup_execute".to_string(),
+                    state: "running".to_string(),
+                    percent: (done * 10 / total_groups.max(1)) as u32,
+                    phase: "prepare".to_string(),
+                    title: "Đang chuẩn bị dọn dẹp...".to_string(),
+                    detail,
+                    done_files: done,
+                    total_files: total_groups,
+                    done_bytes: 0,
+                    total_bytes: 0,
+                    throughput_bps: 0,
+                    eta_seconds: 0,
+                });
             };
-            snapshots.insert(c.path.clone(), snap);
-            // Defensively cover hardlink siblings under the same snapshot
-            for sib in &c.hardlink_siblings {
-                snapshots.entry(sib.clone()).or_insert(snap);
+
+            let mut candidates_to_clean = Vec::new();
+            for (i, cid) in candidate_ids.iter().enumerate() {
+                let pid = cid.trim_start_matches("cand_");
+                emit_prepare(
+                    i as u64,
+                    format!("Kiểm tra lại nhóm {} ({}/{})", pid, i + 1, total_groups),
+                );
+                let cands = PresetProfiles::scan_profile_candidates(pid, &task_ctrl, &lock_probe);
+                candidates_to_clean.extend(cands);
             }
-        }
+            emit_prepare(
+                total_groups,
+                format!(
+                    "Ghi nhận trạng thái {} tệp trước khi dọn...",
+                    candidates_to_clean.len()
+                ),
+            );
 
-        // Step 1: Canary Vault Archiving (if enabled)
-        let mut vault_archive_id = None;
-        let mut vault_archive_path = None;
-        let mut compressed_vault_bytes = 0u64;
+            if candidates_to_clean.is_empty() {
+                return Ok(CleanupReportDto {
+                    task_id: task_id_worker.clone(),
+                    success: true,
+                    total_candidates: candidate_ids.len() as u32,
+                    processed_candidates: 0,
+                    total_reclaimed_bytes: 0,
+                    total_files_deleted: 0,
+                    vault_archive_id: None,
+                    vault_archive_path: None,
+                    compressed_vault_bytes: 0,
+                    skipped_locked_files_count: 0,
+                    skipped_items: vec![],
+                    error_message: None,
+                });
+            }
 
-        if enable_vault {
+            let total_files = candidates_to_clean.len() as u64;
+            let total_bytes: u64 = candidates_to_clean.iter().map(|c| c.size_bytes).sum();
+
+            // Step 0: Capture pre-archive metadata snapshot BEFORE archiving commences.
+            // This baseline snapshot captures (len, mtime) at T0.
+            // If any file is modified, written to, or touched while ArchiverPipeline is streaming
+            // or during the deletion prep window, its metadata at unlinking time will mismatch this T0 snapshot,
+            // and SafeCleaner will skip unlinking the file, strictly protecting against mid-flight data loss.
+            let mut snapshots = HashMap::with_capacity(candidates_to_clean.len());
+            for c in &candidates_to_clean {
+                let snap = match std::fs::metadata(&c.path) {
+                    Ok(m) => (m.len(), m.modified().unwrap_or(SystemTime::UNIX_EPOCH)),
+                    Err(_) => (c.size_bytes, c.mtime),
+                };
+                snapshots.insert(c.path.clone(), snap);
+                // Defensively cover hardlink siblings under the same snapshot
+                for sib in &c.hardlink_siblings {
+                    snapshots.entry(sib.clone()).or_insert(snap);
+                }
+            }
+
+            // Step 1: Canary Vault Archiving (if enabled)
+            let mut vault_archive_id = None;
+            let mut vault_archive_path = None;
+            let mut compressed_vault_bytes = 0u64;
+
+            if enable_vault {
+                state_inner.emit_progress(&TaskProgressEvent {
+                    task_id: task_id_worker.clone(),
+                    kind: "cleanup_execute".to_string(),
+                    state: "running".to_string(),
+                    percent: 10,
+                    phase: "archive".to_string(),
+                    title: "Đang lưu trữ vào Kho an toàn (Canary Vault)...".to_string(),
+                    detail: format!("Nén {} tệp tin...", total_files),
+                    done_files: 0,
+                    total_files,
+                    done_bytes: 0,
+                    total_bytes,
+                    throughput_bps: 0,
+                    eta_seconds: 0,
+                });
+
+                let arch_options = ArchiveOptions {
+                    vault_dir: vault_dir.clone(),
+                    min_vault_reserve_bytes: MIN_VAULT_RESERVE_BYTES,
+                    ..Default::default()
+                };
+
+                let pipeline = ArchiverPipeline::new(arch_options);
+                let state_clone_for_progress = state_inner.clone();
+                let task_id_clone = task_id_worker.clone();
+
+                let manifest = pipeline
+                    .archive_candidates(
+                        0, // Ad-hoc cleanup
+                        "QuickCleanup",
+                        &candidates_to_clean,
+                        &volume_api,
+                        &task_ctrl,
+                        move |p| {
+                            state_clone_for_progress.emit_progress(&TaskProgressEvent {
+                                task_id: task_id_clone.clone(),
+                                kind: "cleanup_execute".to_string(),
+                                state: "running".to_string(),
+                                percent: 10
+                                    + ((p.done_bytes as f64 / p.total_bytes.max(1) as f64) * 50.0)
+                                        as u32,
+                                phase: "archive".to_string(),
+                                title: "Đang nén dữ liệu vào Kho an toàn...".to_string(),
+                                detail: p.current_file,
+                                done_files: p.done_files,
+                                total_files: p.total_files,
+                                done_bytes: p.done_bytes,
+                                total_bytes: p.total_bytes,
+                                throughput_bps: p.throughput_bps,
+                                eta_seconds: p.eta_seconds,
+                            });
+                        },
+                    )
+                    .map_err(|e| {
+                        CommandFailure::from_err(&e, format!("Lỗi tạo kho an toàn: {}", e))
+                    })?;
+
+                // Persist manifest to SQLite
+                let zip_p = vault_dir.join(format!("{}.zip", manifest.archive_id));
+                let man_p = vault_dir.join(format!("{}.manifest.json", manifest.archive_id));
+                let _ = manifest.persist_to_db(&state_inner.db, &zip_p, &man_p);
+
+                vault_archive_id = Some(manifest.archive_id.clone());
+                vault_archive_path = Some(zip_p.to_string_lossy().to_string());
+                compressed_vault_bytes = manifest.compressed_size;
+            }
+
+            // Step 2: Two-Phase Safe Deletion
             state_inner.emit_progress(&TaskProgressEvent {
                 task_id: task_id_worker.clone(),
                 kind: "cleanup_execute".to_string(),
                 state: "running".to_string(),
-                percent: 10,
-                phase: "archive".to_string(),
-                title: "Đang lưu trữ vào Kho an toàn (Canary Vault)...".to_string(),
-                detail: format!("Nén {} tệp tin...", total_files),
+                percent: 70,
+                phase: "delete".to_string(),
+                title: "Đang xóa an toàn các tệp đã lưu trữ...".to_string(),
+                detail: "Kiểm tra khóa và phiên bản tệp tin trước khi giải phóng...".to_string(),
                 done_files: 0,
                 total_files,
                 done_bytes: 0,
@@ -390,156 +462,91 @@ pub async fn execute_cleanup(
                 eta_seconds: 0,
             });
 
-            let arch_options = ArchiveOptions {
-                vault_dir: vault_dir.clone(),
-                min_vault_reserve_bytes: MIN_VAULT_RESERVE_BYTES,
-                ..Default::default()
+            // (Snapshot was already captured in Step 0 prior to archiving)
+
+            let deletion_method = if permanent {
+                DeletionMethod::Permanent
+            } else {
+                DeletionMethod::RecycleBin
             };
 
-            let pipeline = ArchiverPipeline::new(arch_options);
-            let state_clone_for_progress = state_inner.clone();
-            let task_id_clone = task_id_worker.clone();
+            let cleaner = SafeCleaner::new(
+                &lock_probe,
+                &volume_api,
+                None,
+                CleanupOptions {
+                    deletion_method,
+                    min_reserve_bytes: MIN_VAULT_RESERVE_BYTES,
+                    prune_empty_directories: true,
+                },
+            );
 
-            let manifest = pipeline
-                .archive_candidates(
-                    0, // Ad-hoc cleanup
-                    "QuickCleanup",
-                    &candidates_to_clean,
-                    &volume_api,
-                    &task_ctrl,
-                    move |p| {
-                        state_clone_for_progress.emit_progress(&TaskProgressEvent {
-                            task_id: task_id_clone.clone(),
-                            kind: "cleanup_execute".to_string(),
-                            state: "running".to_string(),
-                            percent: 10
-                                + ((p.done_bytes as f64 / p.total_bytes.max(1) as f64) * 50.0)
-                                    as u32,
-                            phase: "archive".to_string(),
-                            title: "Đang nén dữ liệu vào Kho an toàn...".to_string(),
-                            detail: p.current_file,
-                            done_files: p.done_files,
-                            total_files: p.total_files,
-                            done_bytes: p.done_bytes,
-                            total_bytes: p.total_bytes,
-                            throughput_bps: p.throughput_bps,
-                            eta_seconds: p.eta_seconds,
-                        });
-                    },
-                )
-                .map_err(|e| CommandFailure::from_err(&e, format!("Lỗi tạo kho an toàn: {}", e)))?;
+            let manifest_items: Vec<greenc_core::models::FileManifestItem> = candidates_to_clean
+                .iter()
+                .enumerate()
+                .map(|(i, c)| greenc_core::models::FileManifestItem {
+                    id: None,
+                    archive_id: None,
+                    original_path: c.path.clone(),
+                    rel_arcname: format!("item_{:05}", i + 1),
+                    size_bytes: c.size_bytes,
+                    sha256: String::new(),
+                    mtime: 0.0,
+                    atime: 0.0,
+                    hardlink_paths: c.hardlink_siblings.clone(),
+                    restored_individually: false,
+                })
+                .collect();
 
-            // Persist manifest to SQLite
-            let zip_p = vault_dir.join(format!("{}.zip", manifest.archive_id));
-            let man_p = vault_dir.join(format!("{}.manifest.json", manifest.archive_id));
-            let _ = manifest.persist_to_db(&state_inner.db, &zip_p, &man_p);
+            let clean_res = cleaner
+                .unlink_archived_items(&manifest_items, &snapshots)
+                .map_err(|e| CommandFailure::from_err(&e, format!("Lỗi xóa tệp tin: {}", e)))?;
 
-            vault_archive_id = Some(manifest.archive_id.clone());
-            vault_archive_path = Some(zip_p.to_string_lossy().to_string());
-            compressed_vault_bytes = manifest.compressed_size;
-        }
+            let skipped_dtos = clean_res
+                .skipped_items
+                .into_iter()
+                .map(|(p, r)| SkippedItemDto {
+                    path: p.to_string_lossy().to_string(),
+                    reason: r,
+                })
+                .collect();
 
-        // Step 2: Two-Phase Safe Deletion
-        state_inner.emit_progress(&TaskProgressEvent {
-            task_id: task_id_worker.clone(),
-            kind: "cleanup_execute".to_string(),
-            state: "running".to_string(),
-            percent: 70,
-            phase: "delete".to_string(),
-            title: "Đang xóa an toàn các tệp đã lưu trữ...".to_string(),
-            detail: "Kiểm tra khóa và phiên bản tệp tin trước khi giải phóng...".to_string(),
-            done_files: 0,
-            total_files,
-            done_bytes: 0,
-            total_bytes,
-            throughput_bps: 0,
-            eta_seconds: 0,
-        });
+            // Final completion event
+            state_inner.emit_progress(&TaskProgressEvent {
+                task_id: task_id_worker.clone(),
+                kind: "cleanup_execute".to_string(),
+                state: "completed".to_string(),
+                percent: 100,
+                phase: "completed".to_string(),
+                title: "Hoàn tất dọn dẹp an toàn".to_string(),
+                detail: format!(
+                    "Đã giải phóng {} tệp tin ({})",
+                    clean_res.files_deleted, clean_res.bytes_freed
+                ),
+                done_files: clean_res.files_deleted,
+                total_files,
+                done_bytes: clean_res.bytes_freed,
+                total_bytes,
+                throughput_bps: 0,
+                eta_seconds: 0,
+            });
 
-        // (Snapshot was already captured in Step 0 prior to archiving)
-
-        let deletion_method = if permanent {
-            DeletionMethod::Permanent
-        } else {
-            DeletionMethod::RecycleBin
-        };
-
-        let cleaner = SafeCleaner::new(
-            &lock_probe,
-            &volume_api,
-            None,
-            CleanupOptions {
-                deletion_method,
-                min_reserve_bytes: MIN_VAULT_RESERVE_BYTES,
-                prune_empty_directories: true,
-            },
-        );
-
-        let manifest_items: Vec<greenc_core::models::FileManifestItem> = candidates_to_clean
-            .iter()
-            .enumerate()
-            .map(|(i, c)| greenc_core::models::FileManifestItem {
-                id: None,
-                archive_id: None,
-                original_path: c.path.clone(),
-                rel_arcname: format!("item_{:05}", i + 1),
-                size_bytes: c.size_bytes,
-                sha256: String::new(),
-                mtime: 0.0,
-                atime: 0.0,
-                hardlink_paths: c.hardlink_siblings.clone(),
-                restored_individually: false,
+            Ok(CleanupReportDto {
+                task_id: task_id_worker,
+                success: true,
+                total_candidates: candidate_ids.len() as u32,
+                processed_candidates: candidate_ids.len() as u32,
+                total_reclaimed_bytes: clean_res.bytes_freed,
+                total_files_deleted: clean_res.files_deleted,
+                vault_archive_id,
+                vault_archive_path,
+                compressed_vault_bytes,
+                skipped_locked_files_count: clean_res.skipped_files_count,
+                skipped_items: skipped_dtos,
+                error_message: None,
             })
-            .collect();
-
-        let clean_res = cleaner
-            .unlink_archived_items(&manifest_items, &snapshots)
-            .map_err(|e| CommandFailure::from_err(&e, format!("Lỗi xóa tệp tin: {}", e)))?;
-
-        let skipped_dtos = clean_res
-            .skipped_items
-            .into_iter()
-            .map(|(p, r)| SkippedItemDto {
-                path: p.to_string_lossy().to_string(),
-                reason: r,
-            })
-            .collect();
-
-        // Final completion event
-        state_inner.emit_progress(&TaskProgressEvent {
-            task_id: task_id_worker.clone(),
-            kind: "cleanup_execute".to_string(),
-            state: "completed".to_string(),
-            percent: 100,
-            phase: "completed".to_string(),
-            title: "Hoàn tất dọn dẹp an toàn".to_string(),
-            detail: format!(
-                "Đã giải phóng {} tệp tin ({})",
-                clean_res.files_deleted, clean_res.bytes_freed
-            ),
-            done_files: clean_res.files_deleted,
-            total_files,
-            done_bytes: clean_res.bytes_freed,
-            total_bytes,
-            throughput_bps: 0,
-            eta_seconds: 0,
-        });
-
-        Ok(CleanupReportDto {
-            task_id: task_id_worker,
-            success: true,
-            total_candidates: candidate_ids.len() as u32,
-            processed_candidates: candidate_ids.len() as u32,
-            total_reclaimed_bytes: clean_res.bytes_freed,
-            total_files_deleted: clean_res.files_deleted,
-            vault_archive_id,
-            vault_archive_path,
-            compressed_vault_bytes,
-            skipped_locked_files_count: clean_res.skipped_files_count,
-            skipped_items: skipped_dtos,
-            error_message: None,
-        })
-    })
+        },
+    )
     .await;
 
     state.unregister_task(&task_id);

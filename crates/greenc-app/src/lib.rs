@@ -56,8 +56,8 @@ pub fn run() {
 
     #[cfg(not(feature = "store"))]
     let _ = auto_migrate_legacy_db(&db_path);
-    let app_state =
-        AppState::new_with_diagnostics(db_path, diagnostics).expect("Failed to initialize AppState");
+    let app_state = AppState::new_with_diagnostics(db_path, diagnostics)
+        .expect("Failed to initialize AppState");
     // Re-point Vault archives whose ZIP moved (project rename, data-root change, legacy import)
     // and mark the ones whose ZIP is gone, before the UI or the watchdog look at them.
     if let Err(err) = greenc_storage::vault_repair::repair_vault_paths_default(&app_state.db) {

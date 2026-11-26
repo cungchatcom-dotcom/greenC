@@ -150,9 +150,8 @@ pub async fn scan_drive_history(
     let drive_for_worker = drive_norm.clone();
     let task_id_for_worker = task_id.clone();
 
-    let join_res =
-        tokio::task::spawn_blocking(
-            move || -> std::result::Result<DriveHistoryDto, CommandFailure> {
+    let join_res = tokio::task::spawn_blocking(
+        move || -> std::result::Result<DriveHistoryDto, CommandFailure> {
             state_inner.emit_progress(&TaskProgressEvent {
                 task_id: task_id_for_worker.clone(),
                 kind: "scan_drive_history".to_string(),
@@ -228,8 +227,9 @@ pub async fn scan_drive_history(
                 selected_date,
                 latest_drilldown,
             })
-        })
-        .await;
+        },
+    )
+    .await;
 
     state.unregister_task(&task_id);
     let diag_res = match join_res {

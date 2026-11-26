@@ -370,101 +370,102 @@ pub async fn clean_zalo_now(
 
     let join_res = tokio::task::spawn_blocking(
         move || -> std::result::Result<ZaloCleanupResultDto, CommandFailure> {
-        let lifecycle = NativeAppLifecycleApi;
-        let proc_probe = NativeProcessServiceProbe;
-        let lock_probe = NativeFileLockProbe;
-        let vol_api = NativeWin32VolumeApi;
-        let (zalo_running, running_exe_dirs) = detect_zalo_running(&lifecycle, &proc_probe);
-        let (known_relocated_sources, _) = known_zalo_relocations(&state_inner);
+            let lifecycle = NativeAppLifecycleApi;
+            let proc_probe = NativeProcessServiceProbe;
+            let lock_probe = NativeFileLockProbe;
+            let vol_api = NativeWin32VolumeApi;
+            let (zalo_running, running_exe_dirs) = detect_zalo_running(&lifecycle, &proc_probe);
+            let (known_relocated_sources, _) = known_zalo_relocations(&state_inner);
 
-        let now = SystemTime::now();
-        let disc = discover_zalo_installation(&ZaloDiscoveryOptions {
-            running_exe_dirs,
-            known_relocated_sources,
-            now,
-            ..Default::default()
-        })
-        .ok_or_else(|| {
-            CommandFailure::from_msg("Không tìm thấy dữ liệu Zalo PC trên máy", "NotFound")
-        })?;
-
-        state_inner.emit_progress(&TaskProgressEvent {
-            task_id: task_id_worker.clone(),
-            kind: "zalo_clean".to_string(),
-            state: "running".to_string(),
-            percent: 20,
-            phase: "cleaning".to_string(),
-            title: "Đang dọn bộ đệm và bản cũ Zalo...".to_string(),
-            detail: "Giữ nguyên tin nhắn, ảnh và đăng nhập".to_string(),
-            done_files: 0,
-            total_files: 0,
-            done_bytes: 0,
-            total_bytes: 0,
-            throughput_bps: 0,
-            eta_seconds: 0,
-        });
-
-        let vault_dir = state_inner
-            .settings()
-            .vault_dir(&default_vault_dir())
-            .unwrap_or_else(|_| default_vault_dir());
-        let retention_days = state_inner.settings().get_retention_days().unwrap_or(14);
-        let mode = if enable_vault.unwrap_or(true) {
-            RegenerableCacheMode::Vault
-        } else {
-            RegenerableCacheMode::Direct
-        };
-
-        let report = execute_zalo_cleanup(
-            &disc,
-            &vault_dir,
-            &state_inner.db,
-            &vol_api,
-            &lock_probe,
-            zalo_running,
-            &ZaloCleanupOptions {
-                dry_run: false,
-                mode,
-                retention_days,
+            let now = SystemTime::now();
+            let disc = discover_zalo_installation(&ZaloDiscoveryOptions {
+                running_exe_dirs,
+                known_relocated_sources,
                 now,
                 ..Default::default()
-            },
-            &task_ctrl,
-        )
-        .map_err(|e| CommandFailure::from_err(&e, format!("Không dọn được Zalo: {e}")))?;
+            })
+            .ok_or_else(|| {
+                CommandFailure::from_msg("Không tìm thấy dữ liệu Zalo PC trên máy", "NotFound")
+            })?;
 
-        state_inner.emit_progress(&TaskProgressEvent {
-            task_id: task_id_worker,
-            kind: "zalo_clean".to_string(),
-            state: "completed".to_string(),
-            percent: 100,
-            phase: "done".to_string(),
-            title: "Đã dọn xong Zalo".to_string(),
-            detail: report.locked_notice.clone().unwrap_or_default(),
-            done_files: report.cleaned_files,
-            total_files: report.cleaned_files,
-            done_bytes: report.logical_freed_bytes,
-            total_bytes: report.logical_freed_bytes,
-            throughput_bps: 0,
-            eta_seconds: 0,
-        });
+            state_inner.emit_progress(&TaskProgressEvent {
+                task_id: task_id_worker.clone(),
+                kind: "zalo_clean".to_string(),
+                state: "running".to_string(),
+                percent: 20,
+                phase: "cleaning".to_string(),
+                title: "Đang dọn bộ đệm và bản cũ Zalo...".to_string(),
+                detail: "Giữ nguyên tin nhắn, ảnh và đăng nhập".to_string(),
+                done_files: 0,
+                total_files: 0,
+                done_bytes: 0,
+                total_bytes: 0,
+                throughput_bps: 0,
+                eta_seconds: 0,
+            });
 
-        Ok(ZaloCleanupResultDto {
-            dry_run: report.dry_run,
-            mode: report.mode.as_str().to_string(),
-            cleaned_units: report.cleaned_units,
-            cleaned_files: report.cleaned_files,
-            logical_freed_bytes: report.logical_freed_bytes,
-            vault_bytes: report.vault_bytes,
-            net_freed_bytes: report.net_freed_bytes,
-            vault_same_drive: report.vault_same_drive,
-            vault_archive_id: report.vault_archive_id,
-            locked_skipped_files: report.locked_skipped_files,
-            locked_skipped_bytes: report.locked_skipped_bytes,
-            zalo_running: report.zalo_running,
-            locked_notice: report.locked_notice,
-        })
-    })
+            let vault_dir = state_inner
+                .settings()
+                .vault_dir(&default_vault_dir())
+                .unwrap_or_else(|_| default_vault_dir());
+            let retention_days = state_inner.settings().get_retention_days().unwrap_or(14);
+            let mode = if enable_vault.unwrap_or(true) {
+                RegenerableCacheMode::Vault
+            } else {
+                RegenerableCacheMode::Direct
+            };
+
+            let report = execute_zalo_cleanup(
+                &disc,
+                &vault_dir,
+                &state_inner.db,
+                &vol_api,
+                &lock_probe,
+                zalo_running,
+                &ZaloCleanupOptions {
+                    dry_run: false,
+                    mode,
+                    retention_days,
+                    now,
+                    ..Default::default()
+                },
+                &task_ctrl,
+            )
+            .map_err(|e| CommandFailure::from_err(&e, format!("Không dọn được Zalo: {e}")))?;
+
+            state_inner.emit_progress(&TaskProgressEvent {
+                task_id: task_id_worker,
+                kind: "zalo_clean".to_string(),
+                state: "completed".to_string(),
+                percent: 100,
+                phase: "done".to_string(),
+                title: "Đã dọn xong Zalo".to_string(),
+                detail: report.locked_notice.clone().unwrap_or_default(),
+                done_files: report.cleaned_files,
+                total_files: report.cleaned_files,
+                done_bytes: report.logical_freed_bytes,
+                total_bytes: report.logical_freed_bytes,
+                throughput_bps: 0,
+                eta_seconds: 0,
+            });
+
+            Ok(ZaloCleanupResultDto {
+                dry_run: report.dry_run,
+                mode: report.mode.as_str().to_string(),
+                cleaned_units: report.cleaned_units,
+                cleaned_files: report.cleaned_files,
+                logical_freed_bytes: report.logical_freed_bytes,
+                vault_bytes: report.vault_bytes,
+                net_freed_bytes: report.net_freed_bytes,
+                vault_same_drive: report.vault_same_drive,
+                vault_archive_id: report.vault_archive_id,
+                locked_skipped_files: report.locked_skipped_files,
+                locked_skipped_bytes: report.locked_skipped_bytes,
+                zalo_running: report.zalo_running,
+                locked_notice: report.locked_notice,
+            })
+        },
+    )
     .await;
 
     state.unregister_task(&task_id);
@@ -501,112 +502,117 @@ pub async fn move_zalo_data(
 
     let join_res = tokio::task::spawn_blocking(
         move || -> std::result::Result<ZaloMoveResultDto, CommandFailure> {
-        let drive_char = {
-            let trimmed = target_drive.trim();
-            let bytes = trimmed.as_bytes();
-            let valid_shape = match bytes.len() {
-                1 => bytes[0].is_ascii_alphabetic(),
-                2 => bytes[0].is_ascii_alphabetic() && bytes[1] == b':',
-                3 => {
-                    bytes[0].is_ascii_alphabetic()
-                        && bytes[1] == b':'
-                        && (bytes[2] == b'\\' || bytes[2] == b'/')
-                }
-                _ => false,
-            };
-            if valid_shape {
-                Some((bytes[0] as char).to_ascii_uppercase())
-            } else {
-                None
-            }
-        }
-        .ok_or_else(|| CommandFailure::from_msg("Chưa chọn ổ đĩa đích hợp lệ", "InvalidPath"))?;
-
-        let lifecycle = NativeAppLifecycleApi;
-        let proc_probe = NativeProcessServiceProbe;
-        let lock_probe = NativeFileLockProbe;
-        let vol_api = NativeWin32VolumeApi;
-        let reparse_api = NativeReparsePointApi;
-        let shell_api = NativeShellFolderApi;
-
-        let (_, running_exe_dirs) = detect_zalo_running(&lifecycle, &proc_probe);
-        let (known_relocated_sources, _) = known_zalo_relocations(&state_inner);
-        let disc = discover_zalo_installation(&ZaloDiscoveryOptions {
-            running_exe_dirs,
-            known_relocated_sources,
-            ..Default::default()
-        })
-        .ok_or_else(|| CommandFailure::from_msg("Không tìm thấy cài đặt Zalo PC", "NotFound"))?;
-
-        let opts = ZaloMoveOptions {
-            target_drive: drive_char,
-            reopen_zalo: reopen_zalo.unwrap_or(true),
-            ..Default::default()
-        };
-
-        let state_cb = state_inner.clone();
-        let tid_cb = task_id_worker.clone();
-
-        let report = ZaloRelocator::move_zalo_data(
-            &disc,
-            &opts,
-            &state_inner.db,
-            &vol_api,
-            &reparse_api,
-            &shell_api,
-            &lock_probe,
-            &proc_probe,
-            &lifecycle,
-            &task_ctrl,
-            move |p| {
-                state_cb.emit_progress(&TaskProgressEvent {
-                    task_id: tid_cb.clone(),
-                    kind: "zalo_move".to_string(),
-                    state: if p.phase == greenc_relocate::zalo_move::ZaloMovePhase::Done {
-                        "completed"
-                    } else {
-                        "running"
+            let drive_char = {
+                let trimmed = target_drive.trim();
+                let bytes = trimmed.as_bytes();
+                let valid_shape = match bytes.len() {
+                    1 => bytes[0].is_ascii_alphabetic(),
+                    2 => bytes[0].is_ascii_alphabetic() && bytes[1] == b':',
+                    3 => {
+                        bytes[0].is_ascii_alphabetic()
+                            && bytes[1] == b':'
+                            && (bytes[2] == b'\\' || bytes[2] == b'/')
                     }
-                    .to_string(),
-                    percent: p.percent,
-                    phase: p.phase.as_str().to_string(),
-                    title: p.phase.label_vi().to_string(),
-                    detail: p.detail,
-                    done_files: p.done_files,
-                    total_files: p.total_files,
-                    done_bytes: p.done_bytes,
-                    total_bytes: p.total_bytes,
-                    throughput_bps: 0,
-                    eta_seconds: 0,
-                });
-            },
-        )
-        .map_err(|e| CommandFailure::from_err(&e, e.to_string()))?;
+                    _ => false,
+                };
+                if valid_shape {
+                    Some((bytes[0] as char).to_ascii_uppercase())
+                } else {
+                    None
+                }
+            }
+            .ok_or_else(|| {
+                CommandFailure::from_msg("Chưa chọn ổ đĩa đích hợp lệ", "InvalidPath")
+            })?;
 
-        Ok(ZaloMoveResultDto {
-            record_id: report.record_id,
-            dry_run: report.dry_run,
-            already_on_other_drive: report.already_on_other_drive,
-            source_path: report.source_path.to_string_lossy().to_string(),
-            target_path: report.target_path.to_string_lossy().to_string(),
-            target_drive: report.target_drive,
-            moved_bytes: report.moved_bytes,
-            moved_files: report.moved_files,
-            message_files_verified: report.message_files_verified,
-            media_files_verified: report.media_files_verified,
-            reopened_zalo: report.reopened_zalo,
-            health_verified: report.health_verified,
-            auto_rolled_back: report.auto_rolled_back,
-            retained_original_id: report.retained_original_id,
-            retained_original_path: report
-                .retained_original_path
-                .map(|p| p.to_string_lossy().to_string()),
-            retained_original_bytes: report.retained_original_bytes,
-            retained_purge_after: report.retained_purge_after,
-            status: report.status,
-            message: report.message,
-        })
-    })
+            let lifecycle = NativeAppLifecycleApi;
+            let proc_probe = NativeProcessServiceProbe;
+            let lock_probe = NativeFileLockProbe;
+            let vol_api = NativeWin32VolumeApi;
+            let reparse_api = NativeReparsePointApi;
+            let shell_api = NativeShellFolderApi;
+
+            let (_, running_exe_dirs) = detect_zalo_running(&lifecycle, &proc_probe);
+            let (known_relocated_sources, _) = known_zalo_relocations(&state_inner);
+            let disc = discover_zalo_installation(&ZaloDiscoveryOptions {
+                running_exe_dirs,
+                known_relocated_sources,
+                ..Default::default()
+            })
+            .ok_or_else(|| {
+                CommandFailure::from_msg("Không tìm thấy cài đặt Zalo PC", "NotFound")
+            })?;
+
+            let opts = ZaloMoveOptions {
+                target_drive: drive_char,
+                reopen_zalo: reopen_zalo.unwrap_or(true),
+                ..Default::default()
+            };
+
+            let state_cb = state_inner.clone();
+            let tid_cb = task_id_worker.clone();
+
+            let report = ZaloRelocator::move_zalo_data(
+                &disc,
+                &opts,
+                &state_inner.db,
+                &vol_api,
+                &reparse_api,
+                &shell_api,
+                &lock_probe,
+                &proc_probe,
+                &lifecycle,
+                &task_ctrl,
+                move |p| {
+                    state_cb.emit_progress(&TaskProgressEvent {
+                        task_id: tid_cb.clone(),
+                        kind: "zalo_move".to_string(),
+                        state: if p.phase == greenc_relocate::zalo_move::ZaloMovePhase::Done {
+                            "completed"
+                        } else {
+                            "running"
+                        }
+                        .to_string(),
+                        percent: p.percent,
+                        phase: p.phase.as_str().to_string(),
+                        title: p.phase.label_vi().to_string(),
+                        detail: p.detail,
+                        done_files: p.done_files,
+                        total_files: p.total_files,
+                        done_bytes: p.done_bytes,
+                        total_bytes: p.total_bytes,
+                        throughput_bps: 0,
+                        eta_seconds: 0,
+                    });
+                },
+            )
+            .map_err(|e| CommandFailure::from_err(&e, e.to_string()))?;
+
+            Ok(ZaloMoveResultDto {
+                record_id: report.record_id,
+                dry_run: report.dry_run,
+                already_on_other_drive: report.already_on_other_drive,
+                source_path: report.source_path.to_string_lossy().to_string(),
+                target_path: report.target_path.to_string_lossy().to_string(),
+                target_drive: report.target_drive,
+                moved_bytes: report.moved_bytes,
+                moved_files: report.moved_files,
+                message_files_verified: report.message_files_verified,
+                media_files_verified: report.media_files_verified,
+                reopened_zalo: report.reopened_zalo,
+                health_verified: report.health_verified,
+                auto_rolled_back: report.auto_rolled_back,
+                retained_original_id: report.retained_original_id,
+                retained_original_path: report
+                    .retained_original_path
+                    .map(|p| p.to_string_lossy().to_string()),
+                retained_original_bytes: report.retained_original_bytes,
+                retained_purge_after: report.retained_purge_after,
+                status: report.status,
+                message: report.message,
+            })
+        },
+    )
     .await;
 
     state.unregister_task(&task_id);
@@ -634,8 +640,8 @@ pub async fn purge_zalo_retained_original(
 ) -> std::result::Result<String, String> {
     let started = Instant::now();
     let state_inner = state.inner().clone();
-    let join_res = tokio::task::spawn_blocking(
-        move || -> std::result::Result<String, CommandFailure> {
+    let join_res =
+        tokio::task::spawn_blocking(move || -> std::result::Result<String, CommandFailure> {
             let reparse = NativeReparsePointApi;
             let rec =
                 ZaloRelocator::purge_retained_original(retained_id, &state_inner.db, &reparse)
@@ -643,9 +649,8 @@ pub async fn purge_zalo_retained_original(
             Ok(rec
                 .detail
                 .unwrap_or_else(|| "Đã xoá bản gốc giữ tạm thành công.".to_string()))
-        },
-    )
-    .await;
+        })
+        .await;
 
     let diag_res = match join_res {
         Ok(inner) => inner,
@@ -668,8 +673,8 @@ pub async fn restore_zalo_retained_original(
 ) -> std::result::Result<String, String> {
     let started = Instant::now();
     let state_inner = state.inner().clone();
-    let join_res = tokio::task::spawn_blocking(
-        move || -> std::result::Result<String, CommandFailure> {
+    let join_res =
+        tokio::task::spawn_blocking(move || -> std::result::Result<String, CommandFailure> {
             let reparse = NativeReparsePointApi;
             let lock_probe = NativeFileLockProbe;
             let proc_probe = NativeProcessServiceProbe;
@@ -687,9 +692,8 @@ pub async fn restore_zalo_retained_original(
             Ok(rec
                 .detail
                 .unwrap_or_else(|| "Đã khôi phục bản gốc Zalo về vị trí cũ an toàn.".to_string()))
-        },
-    )
-    .await;
+        })
+        .await;
 
     let diag_res = match join_res {
         Ok(inner) => inner,
@@ -698,7 +702,11 @@ pub async fn restore_zalo_retained_original(
             "unknown",
         )),
     };
-    record_action_result(&state.diagnostics, "zalo_restore", started, diag_res, |_| {
-        Outcome::Ok
-    })
+    record_action_result(
+        &state.diagnostics,
+        "zalo_restore",
+        started,
+        diag_res,
+        |_| Outcome::Ok,
+    )
 }
