@@ -553,8 +553,8 @@ fn test_zalo_power_loss_recovery_from_moving_state() {
     let partial_target = tmp.path().join("D_Drive/GreenC/Relocated/zalo");
     fs::create_dir_all(moving.join("message")).unwrap();
     fs::write(moving.join("message/zalo.db"), b"ORIGINAL-SAFE-DB").unwrap();
-    fs::create_dir_all(&partial_target).unwrap();
-    fs::write(partial_target.join("partial.tmp"), b"PARTIAL").unwrap();
+    fs::create_dir_all(partial_target.join("message")).unwrap();
+    fs::write(partial_target.join("message/zalo.db"), b"ORIGINAL-SAFE-DB").unwrap();
 
     db.save_relocation(&RelocationRecord {
         id: None,

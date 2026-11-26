@@ -17,6 +17,13 @@ Ghi thay đổi mới vào mục **Unreleased**. Khi phát hành, `scripts/versi
 - Hai lượt quét dọn dẹp chạy cùng lúc có thể báo nhầm Canary không đạt.
 - Trong lúc đang quét, GreenC không còn bỏ qua việc khôi phục tác vụ di chuyển dở và việc canh gác nền.
 - Đang thao tác trên tệp thì các nút thao tác khác bị khoá, kể cả khi chuyển qua lại giữa các màn hình.
+- Chỉ cho phép một thao tác chuyển, hoàn tác, sửa liên kết hoặc phục hồi chạy cùng lúc, kể cả giữa ứng dụng và dòng lệnh.
+- Sửa liên kết: thử tạo liên kết mới trước khi bỏ liên kết cũ; không thay thư mục đang có dữ liệu.
+- Phục hồi sau sự cố: không gỡ liên kết khi ổ đích chưa sẵn sàng hoặc liên kết trỏ nơi khác; chỉ xoá tệp đã có bản tương đương ở nơi còn lại; chỉ dùng thư mục tạm của đúng lần chuyển.
+- Chuyển và hoàn tác: khi không trả được thư mục về chỗ cũ thì giữ cả hai bản thay vì xoá bản ở ổ đích.
+- Không chuyển thư mục có liên kết bên trong (trước đây bản chuyển thiếu các liên kết này).
+- Hoàn tác: yêu cầu đóng ứng dụng; không hoàn tác thư mục Windows khi ổ đích chưa sẵn sàng.
+- Thông báo phục hồi nêu rõ trường hợp cần người dùng xử lý.
 
 ## [2.2.2] - 2026-11-25
 

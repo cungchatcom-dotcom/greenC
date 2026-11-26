@@ -1,10 +1,20 @@
 use crate::handle::OwnedHandle;
 use greenc_core::config::{BUSY_MUTEX_NAME, SINGLE_INSTANCE_MUTEX_NAME};
 use greenc_core::error::{GreenCError, Result};
+use std::fs::{File, OpenOptions};
+use std::io::Write;
 use std::os::windows::ffi::OsStrExt;
+use std::os::windows::io::AsRawHandle;
+use std::path::{Path, PathBuf};
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
+use windows::Win32::Foundation::{
+    GetLastError, ERROR_ALREADY_EXISTS, ERROR_LOCK_VIOLATION, ERROR_SHARING_VIOLATION, HANDLE,
+};
+use windows::Win32::Storage::FileSystem::{
+    LockFileEx, UnlockFileEx, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY,
+};
 use windows::Win32::System::Threading::{CreateMutexW, ReleaseMutex};
+use windows::Win32::System::IO::OVERLAPPED;
 use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONINFORMATION, MB_OK};
 
 /// Displays a native informational dialog when another instance of GreenC (including a
@@ -111,6 +121,125 @@ impl BusyMarker {
         let handle = unsafe { CreateMutexW(None, false, PCWSTR(wide.as_ptr())) }.ok()?;
         Some(Self {
             _handle: OwnedHandle::new(handle)?,
+        })
+    }
+}
+
+/// Machine-wide, cross-session relocation lock backed by an exclusive Win32 `LockFileEx` byte-range
+/// lock on a lock file adjacent to the GreenC database.
+///
+/// Unlike a `Local\` kernel mutex (which is isolated to a single Terminal Services session), a lock
+/// file next to the DB enforces mutual exclusion across ALL Windows sessions (console, RDP,
+/// elevated/non-elevated, scheduled tasks, GUI and CLI) operating on the same database without
+/// needing `SeCreateGlobalPrivilege`. The Windows kernel automatically releases the lock if the
+/// holding process exits or crashes abruptly.
+#[derive(Debug)]
+pub struct RelocationLock {
+    file: File,
+}
+
+impl Drop for RelocationLock {
+    fn drop(&mut self) {
+        let mut overlapped = OVERLAPPED::default();
+        let handle = HANDLE(self.file.as_raw_handle());
+        // SAFETY: `handle` is a valid open file handle owned by `self.file` and `overlapped` is a
+        // valid zero-initialized `OVERLAPPED` matching the `[0, u32::MAX:u32::MAX]` range locked on
+        // acquisition.
+        unsafe {
+            let _ = UnlockFileEx(handle, 0, u32::MAX, u32::MAX, &mut overlapped);
+        }
+    }
+}
+
+impl RelocationLock {
+    /// Computes the deterministic lock file path adjacent to `db_path` so GUI, CLI, and
+    /// cross-session processes pointing at the same database contend on the exact same file.
+    pub fn lock_path_for_db(db_path: &Path) -> PathBuf {
+        let db_name = db_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("greenc.db");
+        let sanitized_name: String = db_name
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+
+        let parent = db_path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .map(|p| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()))
+            .unwrap_or_else(|| std::env::temp_dir().join("greenc-locks"));
+
+        parent.join(format!(".greenc-relocation-{sanitized_name}.lock"))
+    }
+
+    /// Non-blocking attempt to acquire the cross-session relocation lock for `db_path`.
+    /// Returns `Ok(Some(lock))` if acquired, or `Ok(None)` if another operation/process/session
+    /// currently holds it.
+    pub fn try_acquire_for_db(db_path: &Path) -> Result<Option<Self>> {
+        let lock_path = Self::lock_path_for_db(db_path);
+        if let Some(parent) = lock_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let mut file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(&lock_path)?;
+
+        let mut overlapped = OVERLAPPED::default();
+        let handle = HANDLE(file.as_raw_handle());
+        // SAFETY: `handle` is a valid open file handle owned by `file`, `overlapped` is a valid
+        // zero-initialized `OVERLAPPED` starting at offset 0, and `LOCKFILE_EXCLUSIVE_LOCK |
+        // LOCKFILE_FAIL_IMMEDIATELY` performs a non-blocking exclusive byte-range lock.
+        let lock_res = unsafe {
+            LockFileEx(
+                handle,
+                LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+                0,
+                u32::MAX,
+                u32::MAX,
+                &mut overlapped,
+            )
+        };
+
+        if let Err(err) = lock_res {
+            let code = (err.code().0 as u32) & 0xFFFF;
+            if code == ERROR_LOCK_VIOLATION.0 || code == ERROR_SHARING_VIOLATION.0 {
+                return Ok(None);
+            }
+            return Err(GreenCError::Win32 {
+                code,
+                message: format!(
+                    "Failed to lock relocation file '{}': {}",
+                    lock_path.display(),
+                    err
+                ),
+            });
+        }
+
+        // Write PID for diagnostic visibility (best-effort; kernel LockFileEx is authoritative).
+        let _ = file.set_len(0);
+        let _ = write!(file, "{}", std::process::id());
+        let _ = file.flush();
+
+        Ok(Some(Self { file }))
+    }
+
+    /// Acquires the cross-session relocation lock for `db_path`, returning `PreconditionBlocked`
+    /// if another GUI/CLI process, thread, or Windows session currently holds it.
+    pub fn acquire_for_db(db_path: &Path) -> Result<Self> {
+        Self::try_acquire_for_db(db_path)?.ok_or_else(|| GreenCError::PreconditionBlocked {
+            operation: "relocation_lock".to_string(),
+            reason: "Đang có thao tác chuyển hoặc khôi phục dữ liệu khác đang chạy. Vui lòng đợi hoàn tất rồi thử lại.".to_string(),
         })
     }
 }

@@ -14,6 +14,7 @@ let quota = Infinity;
 };
 
 const { peek, refresh, isPending, createLoader, trimTree, forgetMemory, markFilesChanged } = await import('../lib/cache.ts');
+const { mergeRecoveries } = await import('../lib/recoveries.ts');
 
 function deferred<T>() {
   let resolve!: (v: T) => void;
@@ -215,4 +216,15 @@ test('an empty stored entry is ignored', async () => {
   for (const key of disk.keys()) disk.set(key, '{"data":null,"savedAt":1}');
   forgetMemory();
   assert.equal(peek('k'), null);
+});
+
+test('a record that recovery reports again replaces the earlier notice', () => {
+  const first = mergeRecoveries([], [{ id: 1, detail: 'a' }, { id: 2, detail: 'b' }]);
+  const second = mergeRecoveries(first, [{ id: 1, detail: 'c' }]);
+  assert.deepEqual(second, [{ id: 2, detail: 'b' }, { id: 1, detail: 'c' }]);
+});
+
+test('recovery notices without a record number are all kept', () => {
+  const kept = mergeRecoveries<{ id?: number | null; detail: string }>([{ detail: 'a' }], [{ detail: 'b' }]);
+  assert.equal(kept.length, 2);
 });

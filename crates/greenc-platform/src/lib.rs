@@ -54,7 +54,7 @@ pub use known_folders::{
     FOLDERID_VIDEOS,
 };
 
-pub use mutex::{notify_already_running, BusyMarker, GreenCAppMutex};
+pub use mutex::{notify_already_running, BusyMarker, GreenCAppMutex, RelocationLock};
 
 #[cfg(windows)]
 pub use power_session::OwnedRegKey;

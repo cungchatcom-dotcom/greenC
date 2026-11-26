@@ -11,8 +11,8 @@ use greenc_core::models::{
 use greenc_core::task::TaskControl;
 use greenc_platform::traits::{ShellFolderApi, Win32VolumeApi};
 use greenc_platform::{
-    FOLDERID_DESKTOP, FOLDERID_DOCUMENTS, FOLDERID_DOWNLOADS, FOLDERID_MUSIC, FOLDERID_PICTURES,
-    FOLDERID_VIDEOS,
+    RelocationLock, FOLDERID_DESKTOP, FOLDERID_DOCUMENTS, FOLDERID_DOWNLOADS, FOLDERID_MUSIC,
+    FOLDERID_PICTURES, FOLDERID_VIDEOS,
 };
 use greenc_storage::db::GreenCDb;
 use serde::{Deserialize, Serialize};
@@ -105,6 +105,7 @@ impl KnownFolderService {
             other => other,
         };
 
+        let _lock = RelocationLock::acquire_for_db(db.path())?;
         let current_path = shell_api.get_known_folder(guid)?;
         CandidateQualificationEngine::check_onedrive(&current_path, shell_api)?;
         if contains_zalo_chat_data(&current_path) {

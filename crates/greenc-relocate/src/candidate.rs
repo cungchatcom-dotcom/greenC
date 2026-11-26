@@ -373,6 +373,13 @@ impl CandidateScanner {
                         let folder_name = entry.file_name().to_string_lossy().to_string();
                         let folder_lower = folder_name.to_lowercase();
 
+                        // Skip GreenC's own temporary folders
+                        if folder_lower.contains(".greenc-")
+                            || folder_lower.starts_with("restoring.")
+                        {
+                            continue;
+                        }
+
                         // Skip protected system folders
                         if ADVANCED_SKIP_LIST
                             .iter()

@@ -45,6 +45,10 @@ pub trait ReparsePointApi: Send + Sync {
     fn create_junction(&self, link: &Path, target: &Path) -> Result<()>;
     fn get_junction_target(&self, link: &Path) -> Result<PathBuf>;
     fn delete_junction(&self, link: &Path) -> Result<()>;
+    /// Renames the link itself within its folder; works while its target is offline.
+    fn rename_link(&self, from: &Path, to: &Path) -> Result<()> {
+        std::fs::rename(from, to).map_err(Into::into)
+    }
 }
 
 // ==========================================
@@ -276,6 +280,14 @@ impl ReparsePointApi for MockReparsePointApi {
 
     fn delete_junction(&self, link: &Path) -> Result<()> {
         self.junctions.lock().unwrap().remove(link);
+        Ok(())
+    }
+
+    fn rename_link(&self, from: &Path, to: &Path) -> Result<()> {
+        let mut junctions = self.junctions.lock().unwrap();
+        if let Some(target) = junctions.remove(from) {
+            junctions.insert(to.to_path_buf(), target);
+        }
         Ok(())
     }
 }

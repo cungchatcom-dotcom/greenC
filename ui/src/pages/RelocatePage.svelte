@@ -54,6 +54,7 @@
   let candidates = $state<RelocationCandidateDto[]>([]);
   let knownFolders = $state<KnownFolderDto[]>([]);
   let historyRecords = $state<RelocationResultDto[]>([]);
+  let needsReview = $derived(recoveries.list.filter((r) => r.status === 'needs_review'));
   let availableDrives = $state<DriveInfo[]>([]);
   let targetDrive = $state('D');
   let isStoreBuild = $state(false);
@@ -127,8 +128,12 @@
     await loadScan(
       `relocate.${drive}`,
       async () => {
-        // Check crash recoveries first
-        await recoverOnce();
+        // Check crash recoveries first; a failure here must not hide the scan.
+        try {
+          await recoverOnce();
+        } catch (err) {
+          console.error('Crash recovery failed:', err);
+        }
 
         // Parallel fetch candidates, known folders, and history
         const [candList, kfList, histList] = await Promise.all([
@@ -326,12 +331,19 @@
       <div class="flex items-center gap-3">
         <AlertTriangle class="h-5 w-5 text-amber-600 dark:text-amber-400 shrink-0" />
         <div>
-          <h4 class="text-sm font-semibold text-amber-900 dark:text-amber-200">
-            {t('Bị gián đoạn, đã khôi phục về vị trí cũ')}
-          </h4>
-          <p class="text-xs text-amber-800 dark:text-amber-300 mt-0.5">
-            {t('Phát hiện {count} tác vụ di chuyển chưa hoàn tất do tắt máy đột ngột. GreenC đã tự động hoàn trả an toàn.', { count: recoveries.list.length })}
-          </p>
+          {#if needsReview.length > 0}
+            {#each needsReview as rec (rec.id)}
+              <h4 class="text-sm font-semibold text-amber-900 dark:text-amber-200">{rec.app_name}</h4>
+              <p class="text-xs text-amber-800 dark:text-amber-300 mt-0.5 break-words">{rec.detail}</p>
+            {/each}
+          {:else}
+            <h4 class="text-sm font-semibold text-amber-900 dark:text-amber-200">
+              {t('Bị gián đoạn, đã khôi phục về vị trí cũ')}
+            </h4>
+            <p class="text-xs text-amber-800 dark:text-amber-300 mt-0.5">
+              {t('Phát hiện {count} tác vụ di chuyển chưa hoàn tất do tắt máy đột ngột. GreenC đã tự động hoàn trả an toàn.', { count: recoveries.list.length })}
+            </p>
+          {/if}
         </div>
       </div>
       <button

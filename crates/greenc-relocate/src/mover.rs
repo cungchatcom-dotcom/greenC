@@ -1,6 +1,7 @@
 //! Transactional Mover implementing the 4-phase safe relocation state machine and 1-click Undo (Tasks T039, T046).
 
 use crate::candidate::{CandidateQualificationEngine, RelocationCandidate};
+use crate::recovery::path_has_content_or_uncertain;
 use crate::verified_copy::{remove_dir_all_safe, verified_copy_tree_manifest, CopyTreeOptions};
 use chrono::Utc;
 use greenc_core::error::{GreenCError, Result};
@@ -11,6 +12,7 @@ use greenc_core::task::TaskControl;
 use greenc_platform::traits::{
     ProcessServiceProbe, ReparsePointApi, ShellFolderApi, Win32VolumeApi,
 };
+use greenc_platform::RelocationLock;
 use greenc_storage::db::GreenCDb;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -174,6 +176,13 @@ impl TransactionalMover {
             .unwrap_or_else(|| candidate.default_target_path.clone());
 
         Self::preflight(candidate)?;
+        let _lock = RelocationLock::acquire_for_db(db.path())?;
+        if reparse_api.is_reparse_point(&source_path) {
+            return Err(GreenCError::PreconditionBlocked {
+                operation: "relocate".to_string(),
+                reason: format!("{} đã là một liên kết", source_path.display()),
+            });
+        }
 
         // 1. Pre-qualification guards
         CandidateQualificationEngine::check_target_volume_eligible(target_drive, volume_api)?;
@@ -213,10 +222,26 @@ impl TransactionalMover {
         let (copy_stats, manifest) = verified_copy_tree_manifest(
             &source_path,
             &target_path,
-            &CopyTreeOptions::default(),
+            // A copy without the links inside would look complete but break the app.
+            &CopyTreeOptions {
+                fail_on_reparse: true,
+                ..CopyTreeOptions::default()
+            },
             ctrl,
             on_progress,
         )?;
+
+        let uuid_suffix = uuid::Uuid::new_v4().to_string();
+        let source_name = source_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("folder");
+        let source_parent = source_path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("C:\\"));
+        let moving_dir_name = format!("{source_name}.greenc-moving.{uuid_suffix}");
+        let moving_path = source_parent.join(&moving_dir_name);
 
         // 3. Phase 2: Persist state as `Moving` before touching source filesystem
         let mut record = RelocationRecord {
@@ -231,23 +256,12 @@ impl TransactionalMover {
             health_status: RelocationHealthStatus::Healthy,
             process_names: candidate.locked_processes.clone(),
             created_at: Utc::now(),
-            detail: None,
+            // Crash recovery only ever touches the folder named here.
+            detail: Some(format!("Đang chuyển; bản gốc tạm: {moving_dir_name}")),
         };
 
         let rec_id = db.save_relocation(&record)?;
         record.id = Some(rec_id);
-
-        let uuid_suffix = uuid::Uuid::new_v4().to_string();
-        let source_name = source_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("folder");
-        let source_parent = source_path
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| PathBuf::from("C:\\"));
-        let moving_dir_name = format!("{}.greenc-moving.{}", source_name, uuid_suffix);
-        let moving_path = source_parent.join(&moving_dir_name);
 
         // Atomic rename of source to .greenc-moving.<uuid>
         if let Err(rename_err) = fs::rename(&source_path, &moving_path) {
@@ -311,28 +325,38 @@ impl TransactionalMover {
                 "Junction creation failed: {}. Executing atomic rollback to source.",
                 j_err
             );
-            let _ = reparse_api.delete_junction(&source_path);
-            let _ = fs::rename(&moving_path, &source_path);
-            remove_dir_all_safe(&target_path);
-
-            record.status = RelocationStatus::Failed;
-            record.detail = Some(format!("Lỗi tạo liên kết NTFS Junction: {}", j_err));
+            if reparse_api.is_reparse_point(&source_path) {
+                let _ = reparse_api.delete_junction(&source_path);
+            } else {
+                // Creating a junction starts with an empty folder; non-empty ones are kept.
+                let _ = fs::remove_dir(&source_path);
+            }
+            let reason = format!("Lỗi tạo liên kết NTFS Junction: {j_err}");
+            match fs::rename(&moving_path, &source_path) {
+                Ok(()) => {
+                    remove_dir_all_safe(&target_path);
+                    record.status = RelocationStatus::Failed;
+                    record.detail = Some(reason);
+                }
+                // Stays `Moving` with both copies: crash recovery puts the original back.
+                Err(e) => {
+                    record.detail = Some(format!(
+                        "{reason}; bản gốc đang ở {} ({e})",
+                        moving_path.display()
+                    ));
+                }
+            }
             let _ = db.save_relocation(&record);
             return Err(j_err);
         }
 
         // 5. Phase 4: Purge temporary .greenc-moving.<uuid> folder & mark Done
+        // Only files that were copied and did not change since are removed.
+        manifest.remove_copied(&moving_path, &target_path);
         let mut detail = None;
-        if let Err(del_err) = fs::remove_dir_all(&moving_path) {
-            tracing::warn!(
-                "Could not delete all files in moving directory {}: {}. Flagging in detail.",
-                moving_path.display(),
-                del_err
-            );
-            detail = Some(format!(
-                "Còn tệp chưa xóa trong {}: {}",
-                moving_dir_name, del_err
-            ));
+        if fs::symlink_metadata(&moving_path).is_ok() {
+            tracing::warn!("Some files were kept in {}", moving_path.display());
+            detail = Some(format!("Còn tệp chưa xóa trong {moving_dir_name}"));
         }
 
         record.status = RelocationStatus::Done;
@@ -356,6 +380,7 @@ impl TransactionalMover {
         proc_probe: &dyn ProcessServiceProbe,
         ctrl: &TaskControl,
     ) -> Result<RelocationRecord> {
+        let _lock = RelocationLock::acquire_for_db(db.path())?;
         let records = db.list_relocations(None)?;
         let mut record = records
             .into_iter()
@@ -376,7 +401,15 @@ impl TransactionalMover {
         }
 
         // Verify processes are not running
-        CandidateQualificationEngine::check_process_running(&record.process_names, proc_probe)?;
+        // Records only list what was running when the folder was found, so ask the catalog too.
+        let mut processes = record.process_names.clone();
+        processes.extend(
+            crate::catalog::get_app_catalog()
+                .into_iter()
+                .filter(|p| p.app_id == record.app_id)
+                .flat_map(|p| p.process_names),
+        );
+        CandidateQualificationEngine::check_process_running(&processes, proc_probe)?;
 
         // Validate free space on the destination of the undo (the source volume)
         // Enforces `free_bytes >= record.size_bytes + 512 MiB`
@@ -396,6 +429,24 @@ impl TransactionalMover {
                     return Err(GreenCError::NotFound {
                         entity: "RelocatedTarget".to_string(),
                         id: target_path.display().to_string(),
+                    });
+                }
+
+                let is_link = reparse_api.is_reparse_point(&source_path);
+                let blocked = if is_link {
+                    !reparse_api
+                        .get_junction_target(&source_path)
+                        .is_ok_and(|t| greenc_core::models::same_windows_path(&t, &target_path))
+                } else {
+                    path_has_content_or_uncertain(&source_path)
+                };
+                if blocked {
+                    return Err(GreenCError::PreconditionBlocked {
+                        operation: "undo_relocation".to_string(),
+                        reason: format!(
+                            "{} không còn là liên kết do GreenC tạo; chưa thay đổi gì.",
+                            source_path.display()
+                        ),
                     });
                 }
 
@@ -440,15 +491,31 @@ impl TransactionalMover {
                     });
                 }
 
-                // Step 2: Delete junction at source
-                if reparse_api.is_reparse_point(&source_path) {
-                    reparse_api.delete_junction(&source_path)?;
-                } else if source_path.exists() {
+                // Step 2: Move the link aside; it is only deleted once the folder is in place
+                let old_link = source_parent.join(format!(".greenc-oldlink.{uuid_suffix}"));
+                if is_link {
+                    if let Err(e) = reparse_api.rename_link(&source_path, &old_link) {
+                        remove_dir_all_safe(&restore_tmp);
+                        return Err(e);
+                    }
+                } else {
                     let _ = fs::remove_dir(&source_path);
                 }
 
                 // Step 3: Rename restore_tmp to source_path
-                fs::rename(&restore_tmp, &source_path)?;
+                if let Err(e) = fs::rename(&restore_tmp, &source_path) {
+                    // The target still holds everything: go back to the linked state.
+                    remove_dir_all_safe(&restore_tmp);
+                    if is_link {
+                        if let Err(link_err) = reparse_api.rename_link(&old_link, &source_path) {
+                            tracing::error!("Could not restore the link after undo: {link_err}");
+                        }
+                    }
+                    return Err(GreenCError::Io(e));
+                }
+                if is_link {
+                    let _ = reparse_api.delete_junction(&old_link);
+                }
 
                 // Step 4: Remove from the secondary disk only what was copied back
                 manifest.remove_copied(&target_path, &source_path);
@@ -486,25 +553,25 @@ impl TransactionalMover {
                     g => g,
                 };
 
+                if !target_path.exists() {
+                    return Err(GreenCError::NotFound {
+                        entity: "RelocatedTarget".to_string(),
+                        id: target_path.display().to_string(),
+                    });
+                }
+
                 // Move files back
-                let manifest = if target_path.exists() {
-                    let (_, manifest) = verified_copy_tree_manifest(
-                        &target_path,
-                        &source_path,
-                        &CopyTreeOptions::default(),
-                        ctrl,
-                        |_, _| {},
-                    )?;
-                    Some(manifest)
-                } else {
-                    None
-                };
+                let (_, manifest) = verified_copy_tree_manifest(
+                    &target_path,
+                    &source_path,
+                    &CopyTreeOptions::default(),
+                    ctrl,
+                    |_, _| {},
+                )?;
 
                 // Windows must point at the restored folder before anything is removed.
                 shell_api.set_known_folder(guid, &source_path)?;
-                if let Some(manifest) = manifest {
-                    manifest.remove_copied(&target_path, &source_path);
-                }
+                manifest.remove_copied(&target_path, &source_path);
 
                 record.status = RelocationStatus::Undone;
                 record.detail = Some(if target_path.exists() {

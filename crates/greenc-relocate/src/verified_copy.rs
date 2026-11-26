@@ -168,7 +168,7 @@ pub fn to_extended_io_path(path: &Path) -> PathBuf {
     }
 }
 
-fn is_meta_reparse_or_symlink(meta: &fs::Metadata) -> bool {
+pub(crate) fn is_meta_reparse_or_symlink(meta: &fs::Metadata) -> bool {
     let is_link = meta.file_type().is_symlink();
     #[cfg(windows)]
     {

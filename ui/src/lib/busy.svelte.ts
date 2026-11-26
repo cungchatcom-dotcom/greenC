@@ -5,6 +5,7 @@
 
 import { untrack } from 'svelte';
 import { markFilesChanged } from './cache';
+import { mergeRecoveries } from './recoveries';
 import { recoverInterruptedRelocations, type RelocationResultDto } from './api';
 
 class FileActions {
@@ -45,7 +46,7 @@ let recovering: Promise<void> | null = null;
 export function recoverOnce(): Promise<void> {
   recovering ??= recoverInterruptedRelocations()
     .then((found) => {
-      if (found.length > 0) recoveries.list = [...recoveries.list, ...found];
+      if (found.length > 0) recoveries.list = mergeRecoveries(recoveries.list, found);
     })
     .finally(() => (recovering = null));
   return recovering;

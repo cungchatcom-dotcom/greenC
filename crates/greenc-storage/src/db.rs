@@ -51,6 +51,24 @@ impl GreenCDb {
         &self.path
     }
 
+    /// Like [`Self::with_conn`], but commits reach the disk before returning (WAL with
+    /// `synchronous = NORMAL` may lose the last commits on power failure).
+    fn with_durable_conn<F, R>(&self, f: F) -> Result<R>
+    where
+        F: FnOnce(&Connection) -> Result<R>,
+    {
+        self.with_conn(|conn| {
+            let set = |mode: &str| {
+                conn.execute_batch(&format!("PRAGMA synchronous = {mode};"))
+                    .map_err(|e| GreenCError::Sqlite(e.to_string()))
+            };
+            set("FULL")?;
+            let res = f(conn);
+            let _ = set("NORMAL"); // staying on FULL is only slower
+            res
+        })
+    }
+
     pub fn with_conn<F, R>(&self, f: F) -> Result<R>
     where
         F: FnOnce(&Connection) -> Result<R>,
@@ -833,7 +851,7 @@ impl GreenCDb {
 
     pub fn save_relocation(&self, rec: &RelocationRecord) -> Result<i64> {
         let procs_str = rec.process_names.join(",");
-        self.with_conn(|conn| {
+        self.with_durable_conn(|conn| {
             if let Some(id) = rec.id {
                 conn.execute(
                     "UPDATE relocations SET
