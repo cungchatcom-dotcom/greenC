@@ -1718,6 +1718,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "greenc-diagnostics"
+version = "2.2.3"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "uuid",
+]
+
+[[package]]
 name = "greenc-i18n"
 version = "2.2.3"
 dependencies = [

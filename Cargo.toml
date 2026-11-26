@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/greenc-core",
+    "crates/greenc-diagnostics",
     "crates/greenc-platform",
     "crates/greenc-storage",
     "crates/greenc-i18n",
@@ -23,6 +24,7 @@ rust-version = "1.83.0"
 [workspace.dependencies]
 # Internal Workspace Crates
 greenc-core = { path = "crates/greenc-core" }
+greenc-diagnostics = { path = "crates/greenc-diagnostics" }
 greenc-platform = { path = "crates/greenc-platform" }
 greenc-storage = { path = "crates/greenc-storage" }
 greenc-i18n = { path = "crates/greenc-i18n" }
