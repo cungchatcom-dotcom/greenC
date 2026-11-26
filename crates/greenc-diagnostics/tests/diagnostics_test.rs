@@ -590,6 +590,71 @@ mod standard {
     }
 
     #[test]
+    fn turning_off_stays_off_even_when_the_state_cannot_be_written() {
+        let tmp = TempDir::new().unwrap();
+        let now = ts(2026, 11, 26, 8, 0, 0);
+        let diag = Diagnostics::open(tmp.path().to_path_buf(), sample_env());
+        diag.set_consent(true);
+        diag.record(Event::Start { ms: 300 }, now);
+        // A folder where the temporary file goes makes every later write fail, like a full disk.
+        fs::create_dir(tmp.path().join("state.json.tmp")).unwrap();
+
+        diag.set_consent(false);
+
+        let reopened = Diagnostics::open(tmp.path().to_path_buf(), sample_env());
+        assert!(!reopened.consent().granted);
+        assert!(reopened.take_due_batch(now + Duration::hours(25)).is_none());
+    }
+
+    #[test]
+    fn a_background_job_that_keeps_failing_is_counted_once_a_day() {
+        let tmp = TempDir::new().unwrap();
+        let diag = Diagnostics::open(tmp.path().to_path_buf(), sample_env());
+        diag.set_consent(true);
+        let day = ts(2026, 11, 26, 8, 0, 0);
+        let failed = Event::Action {
+            name: "guard_clean",
+            outcome: Outcome::Failed,
+            code: "Io",
+            ms: 100,
+        };
+        let done = Event::Action {
+            name: "guard_clean",
+            outcome: Outcome::Ok,
+            code: "",
+            ms: 100,
+        };
+        for tick in 0..5 {
+            diag.record(failed, day + Duration::seconds(45 * tick));
+            diag.record(done, day + Duration::seconds(45 * tick));
+        }
+        diag.record(failed, day + Duration::days(1));
+
+        let batch = diag.take_due_batch(day + Duration::days(1)).unwrap();
+        let body: Value = serde_json::from_str(&batch.body).unwrap();
+        let counts: Vec<(&str, &str, u64)> = body["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| {
+                (
+                    r["day"].as_str().unwrap(),
+                    r["outcome"].as_str().unwrap(),
+                    r["count"].as_u64().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            counts,
+            vec![
+                ("2026-11-26", "failed", 1),
+                ("2026-11-26", "ok", 5),
+                ("2026-11-27", "failed", 1),
+            ]
+        );
+    }
+
+    #[test]
     fn unwritable_directory_never_panics() {
         let tmp = TempDir::new().unwrap();
         let blocker = tmp.path().join("not_a_dir");

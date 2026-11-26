@@ -119,7 +119,7 @@ impl Diagnostics {
 
 #[cfg(not(feature = "store"))]
 mod standard {
-    use super::{Batch, ConsentState, Env, Event, SendResult, CONSENT_VERSION};
+    use super::{Batch, ConsentState, Env, Event, Outcome, SendResult, CONSENT_VERSION};
     use crate::contract::{
         disk_bucket, is_day_in_window, is_valid_crash_name, normalize_crash_location,
         normalize_event, pack_batch_rows, BatchPayload, CounterKey, CounterRow, ExamplePayload,
@@ -128,7 +128,7 @@ mod standard {
     use crate::log_store::LogStore;
     use chrono::{DateTime, Duration, Utc};
     use serde::{Deserialize, Serialize};
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::Mutex;
@@ -201,6 +201,8 @@ mod standard {
         queue: BTreeMap<CounterKey, u32>,
         pending: Option<PendingBatch>,
         log_store: LogStore,
+        /// Failures of background jobs already noted today: `(day, name, outcome, code)`.
+        background_failures: BTreeSet<(String, String, &'static str, String)>,
     }
 
     impl InnerState {
@@ -213,6 +215,7 @@ mod standard {
                 queue: BTreeMap::new(),
                 pending: None,
                 log_store: LogStore::new(dir),
+                background_failures: BTreeSet::new(),
             }
         }
 
@@ -401,6 +404,7 @@ mod standard {
 
         pub fn set_consent(&self, granted: bool) {
             let mut state = self.lock_inner();
+            state.background_failures.clear();
             if granted {
                 state.consent = ConsentRecord::Granted {
                     consent_version: CONSENT_VERSION,
@@ -413,12 +417,34 @@ mod standard {
                 state.last_active_day = None;
                 let _ = fs::remove_file(self.dir.join(CRASH_MARKER_FILE));
             }
-            save_state(&self.dir, &state);
+            if !save_state(&self.dir, &state) && !granted {
+                // The old file may still say "granted". Removing it works on a full disk and
+                // leaves the next start unanswered.
+                let _ = fs::remove_file(self.dir.join(STATE_FILE));
+            }
         }
 
         pub fn record(&self, event: Event<'_>, now: DateTime<Utc>) {
             let norm = normalize_event(event, &self.env);
             let mut state = self.lock_inner();
+            let day = now.format("%Y-%m-%d").to_string();
+
+            // A background job is retried every few seconds; one that keeps failing would
+            // otherwise outnumber everything the user does.
+            if matches!(event, Event::Action { name, outcome, .. }
+                if name.starts_with("guard_") && outcome != Outcome::Ok)
+            {
+                state.background_failures.retain(|seen| seen.0 == day);
+                let seen = (
+                    day.clone(),
+                    norm.log_name.clone(),
+                    norm.outcome,
+                    norm.log_code.clone(),
+                );
+                if !state.background_failures.insert(seen) {
+                    return;
+                }
+            }
 
             state.log_store.append_entry(
                 now,
@@ -433,7 +459,6 @@ mod standard {
                 return;
             }
 
-            let day = now.format("%Y-%m-%d").to_string();
             if matches!(event, Event::Active) {
                 if state.last_active_day.as_deref() == Some(day.as_str()) {
                     return;
@@ -682,21 +707,28 @@ mod standard {
             queue,
             pending: persisted.pending,
             log_store: LogStore::new(dir),
+            background_failures: BTreeSet::new(),
         }
     }
 
-    fn save_state(dir: &Path, state: &InnerState) {
+    /// Returns `false` when the file on disk was not replaced.
+    fn save_state(dir: &Path, state: &InnerState) -> bool {
         if fs::create_dir_all(dir).is_err() {
-            return;
+            return false;
         }
         let Ok(serialized) = serde_json::to_vec(&state.to_persisted_ref()) else {
-            return;
+            return false;
         };
         let tmp_path = dir.join("state.json.tmp");
         let state_path = dir.join(STATE_FILE);
-        if fs::write(&tmp_path, serialized).is_ok() && fs::rename(&tmp_path, &state_path).is_err() {
-            let _ = fs::remove_file(&tmp_path);
+        if fs::write(&tmp_path, serialized).is_err() {
+            return false;
         }
+        if fs::rename(&tmp_path, &state_path).is_err() {
+            let _ = fs::remove_file(&tmp_path);
+            return false;
+        }
+        true
     }
 }
 

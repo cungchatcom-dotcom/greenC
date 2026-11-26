@@ -129,6 +129,10 @@ pub fn get_diagnostics_consent(state: State<'_, AppState>) -> ConsentState {
 #[tauri::command]
 pub fn set_diagnostics_consent(granted: bool, state: State<'_, AppState>) -> ConsentState {
     state.diagnostics.set_consent(granted);
+    if granted {
+        // The window is open now; without this today would only count after it is reopened.
+        state.diagnostics.record(Event::Active, Utc::now());
+    }
     state.diagnostics.consent()
 }
 
