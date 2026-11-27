@@ -73,7 +73,8 @@ function Get-PeMachineType {
         throw "PE file not found: '$FilePath'"
     }
 
-    $stream = [System.IO.File]::Open($FilePath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
+    $resolvedPath = (Resolve-Path -LiteralPath $FilePath).Path
+    $stream = [System.IO.File]::Open($resolvedPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
     try {
         if ($stream.Length -lt 64) {
             throw "File '$FilePath' is too small ($($stream.Length) bytes) to be a valid PE executable."
@@ -221,6 +222,8 @@ function Escape-XmlAttr([string]$Value) {
 }
 
 # Prepare clean per-architecture staging directory
+New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
+$OutputDir = (Resolve-Path -LiteralPath $OutputDir).Path
 $StageDir = Join-Path $OutputDir "stage-$Architecture"
 if (Test-Path -LiteralPath $StageDir) {
     Remove-Item -LiteralPath $StageDir -Recurse -Force
