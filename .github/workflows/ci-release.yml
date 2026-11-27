@@ -289,22 +289,6 @@ jobs:
       - name: Build Frontend Assets
         run: pnpm --dir ui run build
 
-      - name: Run Tests (Windows Store Feature, Arm64)
-        if: matrix.arch == 'arm64'
-        shell: pwsh
-        env:
-          CARGO_TERM_COLOR: never
-        run: |
-          $ErrorActionPreference = 'Stop'
-          cargo test `
-            --target ${{ matrix.target }} `
-            -p greenc-core -p greenc-platform -p greenc-storage `
-            -p greenc-vault -p greenc-relocate -p greenc-cli -p greenc-app `
-            --features store --no-fail-fast
-          if ($LASTEXITCODE -ne 0) {
-            throw "Arm64 store tests failed with exit code $LASTEXITCODE"
-          }
-
       - name: Build Store Binaries (--features store)
         shell: pwsh
         run: |
@@ -346,6 +330,22 @@ jobs:
             throw "Expected exactly one ${{ matrix.arch }} .msix in dist/msix, found $($msix.Count)"
           }
           & packaging/msix/smoke-test.ps1 -PackagePath $msix[0].FullName -ExpectedArchitecture "${{ matrix.arch }}"
+
+      - name: Run Tests (Windows Store Feature, Arm64)
+        if: matrix.arch == 'arm64'
+        shell: pwsh
+        env:
+          CARGO_TERM_COLOR: never
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cargo test `
+            --target ${{ matrix.target }} `
+            -p greenc-core -p greenc-platform -p greenc-storage `
+            -p greenc-vault -p greenc-relocate -p greenc-cli -p greenc-app `
+            --features store --no-fail-fast
+          if ($LASTEXITCODE -ne 0) {
+            throw "Arm64 store tests failed with exit code $LASTEXITCODE"
+          }
 
       - name: Report package identity (${{ matrix.arch }})
         shell: pwsh

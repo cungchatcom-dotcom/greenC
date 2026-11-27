@@ -28,3 +28,8 @@ Design: build per architecture on a native runner, bundle in a third job.
 - [x] T7 `docs/microsoft-store.md` (Vietnamese): bundle upload, x64 + Arm64, version must be new
       (2.2.2.0 is taken; 4th part stays 0), bundle cannot be reverted to single msix.
 - [x] T8 Update any other reference to the old file names or the `stage` folder (`git grep`).
+- [x] T9 Fix Arm64 MSIX smoke-test runner pollution: in `.github/workflows/ci-release.yml`, move
+      `Run Tests (Windows Store Feature, Arm64)` after the MSIX smoke test and before artifact upload
+      (keeping binary build before packaging); in `packaging/msix/smoke-test.ps1`, fail with `::error::`
+      and non-zero exit before `Add-AppxPackage` if `%LOCALAPPDATA%\GreenC-Store` or `%LOCALAPPDATA%\GreenC`
+      already exists on the runner.

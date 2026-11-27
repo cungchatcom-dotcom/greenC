@@ -192,6 +192,18 @@ try {
 $pkg = $null
 $failed = $false
 try {
+    # The runner must not have pre-existing real GreenC AppData folders before MSIX install,
+    # otherwise Windows bypasses MSIX AppData virtualization and writes to the real folder.
+    $dirtyPaths = @()
+    foreach ($dirName in @('GreenC-Store', 'GreenC')) {
+        if (Test-Path -LiteralPath (Join-Path $env:LOCALAPPDATA $dirName)) {
+            $dirtyPaths += "%LOCALAPPDATA%\$dirName"
+        }
+    }
+    if ($dirtyPaths.Count -gt 0) {
+        throw "Runner is not clean before MSIX install: pre-existing folder(s) found ($($dirtyPaths -join ', ')). Run unpackaged tests after smoke-test.ps1 so MSIX AppData virtualization is not bypassed."
+    }
+
     Add-AppxPackage -Path $copy
     $pkgs = @(Get-AppxPackage -Name $expectedName)
     if ($pkgs.Count -eq 0) {
