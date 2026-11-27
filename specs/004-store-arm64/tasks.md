@@ -25,6 +25,6 @@ Design: build per architecture on a native runner, bundle in a third job.
 - [x] T6 Check Arm64 build needs of native dependencies (`aws-lc-sys` through reqwest/rustls needs a C
       compiler that targets aarch64-msvc, usually clang; also `libsqlite3-sys`, `zstd-sys`, WebView2 loader)
       against the `windows-11-arm` runner image; add explicit setup steps where needed.
-- [ ] T7 `docs/microsoft-store.md` (Vietnamese): bundle upload, x64 + Arm64, version must be new
+- [x] T7 `docs/microsoft-store.md` (Vietnamese): bundle upload, x64 + Arm64, version must be new
       (2.2.2.0 is taken; 4th part stays 0), bundle cannot be reverted to single msix.
 - [ ] T8 Update any other reference to the old file names or the `stage` folder (`git grep`).
