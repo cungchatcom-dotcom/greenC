@@ -7,7 +7,7 @@ Design: build per architecture on a native runner, bundle in a third job.
       paths `target\<triple>\release\` (`x86_64-pc-windows-msvc`, `aarch64-pc-windows-msvc`); read the PE
       header of both exes and throw on mismatch; stage in `dist\msix\stage-<arch>`; output
       `GreenC-<ver>-<arch>.msix`; stop creating a per-architecture `.msixupload`.
-- [ ] T3 new `packaging/msix/build-bundle.ps1`: input directory; require exactly one x64 + one arm64 msix;
+- [x] T3 new `packaging/msix/build-bundle.ps1`: input directory; require exactly one x64 + one arm64 msix;
       unpack each and compare Identity; `makeappx bundle /d <dir holding only the two msix> /p <out> /bv <ver> /o`;
       `makeappx unbundle` and check `AppxMetadata\AppxBundleManifest.xml` (two `Package Type="application"`
       entries, x64 and arm64, same version); write `.msixupload` (ZIP with only the bundle). Check every
