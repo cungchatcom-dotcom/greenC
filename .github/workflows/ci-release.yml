@@ -156,6 +156,118 @@ jobs:
       - name: Add Rust Target (${{ matrix.target }})
         run: rustup target add ${{ matrix.target }}
 
+      - name: Setup Arm64 Native Build Toolchain (clang-cl & MSVC ARM64)
+        if: matrix.arch == 'arm64'
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+
+          # Native dependency requirements for aarch64-pc-windows-msvc:
+          # - aws-lc-sys 0.47.0 (reqwest -> rustls) compiles win-aarch64 .S assembly via clang-cl.
+          # - ring 0.17.14 (if compiled) invokes clang on Windows AArch64.
+          # - libsqlite3-sys 0.30.1 (rusqlite bundled) & zstd-sys 2.1.3 compile via MSVC ARM64 cl.exe.
+          # - webview2-com-sys 0.39.1 bundles prebuilt arm64/WebView2LoaderStatic.lib.
+          $vsInstalls = @()
+          if (-not [string]::IsNullOrWhiteSpace(${env:ProgramFiles(x86)})) {
+            $vswhere = Join-Path (Join-Path (Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio') 'Installer') 'vswhere.exe'
+            if (Test-Path -LiteralPath $vswhere -PathType Leaf) {
+              $foundVs = @(& $vswhere -all -products * -property installationPath)
+              if ($LASTEXITCODE -eq 0) {
+                $vsInstalls = @($foundVs | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+              }
+            }
+          }
+
+          function Find-ClangCl {
+            $cmd = Get-Command clang-cl.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($null -ne $cmd) {
+              return $cmd.Source
+            }
+
+            $candidates = @()
+            foreach ($base in @(${env:ProgramFiles}, ${env:ProgramFiles(x86)})) {
+              if (-not [string]::IsNullOrWhiteSpace($base)) {
+                $candidates += (Join-Path (Join-Path (Join-Path $base 'LLVM') 'bin') 'clang-cl.exe')
+              }
+            }
+            foreach ($vsRoot in $vsInstalls) {
+              $llvmBase = Join-Path (Join-Path (Join-Path $vsRoot 'VC') 'Tools') 'Llvm'
+              foreach ($archDir in @('ARM64', 'x64', '')) {
+                $binDir = if ([string]::IsNullOrWhiteSpace($archDir)) {
+                  Join-Path $llvmBase 'bin'
+                } else {
+                  Join-Path (Join-Path $llvmBase $archDir) 'bin'
+                }
+                $candidates += (Join-Path $binDir 'clang-cl.exe')
+              }
+            }
+
+            foreach ($cand in $candidates) {
+              if (Test-Path -LiteralPath $cand -PathType Leaf) {
+                return $cand
+              }
+            }
+            return $null
+          }
+
+          $clangCl = Find-ClangCl
+          if ([string]::IsNullOrWhiteSpace($clangCl)) {
+            Write-Host 'clang-cl.exe not pre-installed in PATH or Visual Studio; installing LLVM...'
+            $winget = Get-Command winget.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+            $choco = Get-Command choco.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($null -ne $winget) {
+              & $winget.Source install --id LLVM.LLVM --exact --silent --accept-package-agreements --accept-source-agreements
+              if ($LASTEXITCODE -ne 0) {
+                throw "winget install LLVM.LLVM failed with exit code $LASTEXITCODE"
+              }
+            } elseif ($null -ne $choco) {
+              & $choco.Source install llvm -y --no-progress
+              if ($LASTEXITCODE -ne 0) {
+                throw "choco install llvm failed with exit code $LASTEXITCODE"
+              }
+            } else {
+              throw 'clang-cl.exe is missing and neither winget nor choco is available to install LLVM.'
+            }
+            $clangCl = Find-ClangCl
+          }
+
+          if ([string]::IsNullOrWhiteSpace($clangCl)) {
+            throw 'clang-cl.exe not found after LLVM setup (required by aws-lc-sys on aarch64-pc-windows-msvc).'
+          }
+
+          $llvmBin = Split-Path -Path $clangCl -Parent
+          Add-Content -LiteralPath $env:GITHUB_PATH -Value $llvmBin
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "AWS_LC_SYS_CC=$clangCl"
+
+          Write-Host "Using clang-cl for aws-lc-sys: $clangCl"
+          & $clangCl --version
+          if ($LASTEXITCODE -ne 0) {
+            throw "clang-cl --version failed with exit code $LASTEXITCODE"
+          }
+
+          $clangExe = Join-Path $llvmBin 'clang.exe'
+          if (Test-Path -LiteralPath $clangExe -PathType Leaf) {
+            & $clangExe --version
+            if ($LASTEXITCODE -ne 0) {
+              throw "clang --version failed with exit code $LASTEXITCODE"
+            }
+          }
+
+          # Verify MSVC ARM64 cl.exe is installed for libsqlite3-sys and zstd-sys
+          $arm64Cl = @()
+          foreach ($vsRoot in $vsInstalls) {
+            $msvcDir = Join-Path (Join-Path (Join-Path $vsRoot 'VC') 'Tools') 'MSVC'
+            if (Test-Path -LiteralPath $msvcDir -PathType Container) {
+              $arm64Cl += @(Get-ChildItem -LiteralPath $msvcDir -Filter 'cl.exe' -File -Recurse -ErrorAction SilentlyContinue |
+                Where-Object { $_.FullName -match '\\arm64\\cl\.exe$' })
+            }
+          }
+          if ($arm64Cl.Count -eq 0) {
+            throw 'MSVC ARM64 cl.exe not found in Visual Studio installations (required by libsqlite3-sys and zstd-sys).'
+          }
+          Write-Host "Verified MSVC ARM64 cl.exe: $($arm64Cl[0].FullName)"
+
       - name: Cache Cargo Dependencies
         uses: Swatinem/rust-cache@v2
         with:

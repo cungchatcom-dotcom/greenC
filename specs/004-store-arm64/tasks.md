@@ -22,7 +22,7 @@ Design: build per architecture on a native runner, bundle in a third job.
       (needs build-msix) producing `GreenC-MSIX-Store`; new job `smoke-bundle` matrix on both runners.
       Add `refs/heads/feat/store-arm64` to the run condition. Keep `msix_version` and tag version handling,
       and use the same version in all jobs. `release-*` and `publish-*` jobs must not change.
-- [ ] T6 Check Arm64 build needs of native dependencies (`aws-lc-sys` through reqwest/rustls needs a C
+- [x] T6 Check Arm64 build needs of native dependencies (`aws-lc-sys` through reqwest/rustls needs a C
       compiler that targets aarch64-msvc, usually clang; also `libsqlite3-sys`, `zstd-sys`, WebView2 loader)
       against the `windows-11-arm` runner image; add explicit setup steps where needed.
 - [ ] T7 `docs/microsoft-store.md` (Vietnamese): bundle upload, x64 + Arm64, version must be new
