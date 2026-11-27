@@ -12,7 +12,7 @@ Design: build per architecture on a native runner, bundle in a third job.
       `makeappx unbundle` and check `AppxMetadata\AppxBundleManifest.xml` (two `Package Type="application"`
       entries, x64 and arm64, same version); write `.msixupload` (ZIP with only the bundle). Check every
       native exit code.
-- [ ] T4 `packaging/msix/smoke-test.ps1`: parameters for the package/bundle path and expected architecture;
+- [x] T4 `packaging/msix/smoke-test.ps1`: parameters for the package/bundle path and expected architecture;
       take the Publisher from the built manifest without assuming a fixed stage folder; assert
       `Get-AppxPackage` `.Architecture` equals the expected one; keep all current assertions; pick a
       `signtool.exe` that runs on the host.
