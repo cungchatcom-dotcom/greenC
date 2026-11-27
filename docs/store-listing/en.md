@@ -18,7 +18,7 @@ Key capabilities:
 • Instant Language & Theme Switching: Built-in English, Vietnamese, and additional locales with Light, Dark, and System theme modes.
 
 System Requirements:
-• Windows 10 version 1903 (build 18362) or later, or Windows 11 (64-bit / x64).
+• Windows 10 version 1903 (build 18362) or later, or Windows 11 (64-bit: x64 and native Arm64).
 • Requires Microsoft Edge WebView2 Runtime (pre-installed on Windows 11 and updated Windows 10 systems).
 
 ## App Features (Partner Center bullet points)
@@ -39,8 +39,8 @@ System Requirements:
 6. system utilities
 7. disk guardian
 
-## Release Notes (Initial Microsoft Store Release)
-- Initial Microsoft Store (x64 MSIX) release of GreenC.
+## Release Notes (Microsoft Store Bundle Release)
+- Microsoft Store MSIX bundle release of GreenC (x64 and native Arm64).
 - App updates are managed exclusively by Microsoft Store (external GitHub updater disabled).
 - Opt-in login autostart uses MSIX StartupTask (disabled by default; enable in Settings).
 - Package data is isolated inside the MSIX container and does not modify any standalone EXE installation.

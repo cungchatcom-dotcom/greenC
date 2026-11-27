@@ -66,8 +66,8 @@ Microsoft Store signs and distributes MSIX packages directly, so this path does 
   - Uses `desktop:StartupTask` (`Windows.ApplicationModel.StartupTask`) instead of `HKCU\...\Run`.
   - Isolates app data under `%LOCALAPPDATA%\GreenC-Store` (MSIX virtualized) without touching or migrating any standalone EXE installation.
   - Uses `runFullTrust` only (no `unvirtualizedResources`), blocks NTFS junctions inside virtualized AppData and Known Folder HKCU redirection in Store builds, and stages atomic cache operations outside AppData (`%USERPROFILE%\.greenc-store-staging`).
-- Manifest template & packaging scripts live in `packaging/msix/` (`AppxManifest.xml.in`, `generate-assets.ps1`, `build-msix.ps1`).
-- CI job `build-msix` runs on `workflow_dispatch` (and on `v*` tags once `STORE_IDENTITY_NAME` is configured as a repository variable) and uploads `.msix` + `.msixupload` artifacts without auto-submitting.
+- Manifest template & packaging scripts live in `packaging/msix/` (`AppxManifest.xml.in`, `generate-assets.ps1`, `build-msix.ps1`, `build-bundle.ps1`, `smoke-test.ps1`).
+- CI builds both `x64` (`windows-latest`) and native `arm64` (`windows-11-arm`) in `build-msix` (uploading separate per-architecture `GreenC-MSIX-x64` and `GreenC-MSIX-arm64` artifacts), bundles them in `bundle-msix` into `GreenC-MSIX-Store` (`GreenC-<ver>.msixbundle` + `GreenC-<ver>.msixupload`), and smoke-tests the bundle on both runners in `smoke-bundle` without auto-submitting. Runs on `workflow_dispatch`, `feat/microsoft-store`, `feat/store-arm64`, and `v*` tags once `STORE_IDENTITY_NAME` (or `PACKAGEIDENTITYNAME`) is configured as a repository variable.
 - Full step-by-step registration, Partner Center setup, listing copy, privacy policy, and `runFullTrust` certification notes:
   - [`docs/microsoft-store.md`](microsoft-store.md)
   - [`docs/store-listing/vi.md`](store-listing/vi.md) & [`docs/store-listing/en.md`](store-listing/en.md)

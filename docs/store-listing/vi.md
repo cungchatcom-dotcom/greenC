@@ -18,7 +18,7 @@ GreenC là ứng dụng quản lý dung lượng ổ đĩa gọn nhẹ, chạy h
 • Đa ngôn ngữ & giao diện Sáng/Tối: Hỗ trợ tiếng Việt, tiếng Anh và nhiều ngôn ngữ khác, chuyển đổi tức thì không cần khởi động lại.
 
 Yêu cầu hệ thống:
-• Windows 10 phiên bản 1903 (build 18362) trở lên hoặc Windows 11 (64-bit / x64).
+• Windows 10 phiên bản 1903 (build 18362) trở lên hoặc Windows 11 (64-bit: x64 và Arm64 gốc).
 • Yêu cầu Microsoft Edge WebView2 Runtime (đã tích hợp sẵn trên Windows 11 và các bản Windows 10 đã cập nhật).
 
 ## Tính năng nổi bật (App features — mỗi dòng ngắn gọn cho Partner Center)
@@ -39,8 +39,8 @@ Yêu cầu hệ thống:
 6. disk cleanup
 7. space analyzer
 
-## Ghi chú phát hành (Release notes — phiên bản đầu trên Microsoft Store)
-- Phát hành phiên bản Microsoft Store (MSIX x64) đầu tiên của GreenC.
+## Ghi chú phát hành (Release notes — phiên bản Microsoft Store dạng bundle)
+- Phát hành phiên bản Microsoft Store dạng MSIX bundle (x64 và Arm64 gốc) của GreenC.
 - Cập nhật được quản lý trực tiếp qua Microsoft Store; tắt hoàn toàn trình tải cập nhật ngoài.
 - Tự khởi động cùng Windows theo chuẩn MSIX StartupTask (mặc định tắt, người dùng chủ động bật trong Cài đặt).
 - Dữ liệu ứng dụng được cô lập riêng theo chuẩn MSIX, không can thiệp bản cài EXE độc lập.

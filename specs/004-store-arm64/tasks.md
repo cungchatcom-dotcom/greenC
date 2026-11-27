@@ -27,4 +27,4 @@ Design: build per architecture on a native runner, bundle in a third job.
       against the `windows-11-arm` runner image; add explicit setup steps where needed.
 - [x] T7 `docs/microsoft-store.md` (Vietnamese): bundle upload, x64 + Arm64, version must be new
       (2.2.2.0 is taken; 4th part stays 0), bundle cannot be reverted to single msix.
-- [ ] T8 Update any other reference to the old file names or the `stage` folder (`git grep`).
+- [x] T8 Update any other reference to the old file names or the `stage` folder (`git grep`).
