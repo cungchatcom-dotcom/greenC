@@ -3,7 +3,7 @@
 Design: build per architecture on a native runner, bundle in a third job.
 
 - [x] T1 `packaging/msix/AppxManifest.xml.in`: `ProcessorArchitecture="@ARCH@"`.
-- [ ] T2 `packaging/msix/build-msix.ps1`: `-Architecture x64|arm64` (ValidateSet, default x64); default exe
+- [x] T2 `packaging/msix/build-msix.ps1`: `-Architecture x64|arm64` (ValidateSet, default x64); default exe
       paths `target\<triple>\release\` (`x86_64-pc-windows-msvc`, `aarch64-pc-windows-msvc`); read the PE
       header of both exes and throw on mismatch; stage in `dist\msix\stage-<arch>`; output
       `GreenC-<ver>-<arch>.msix`; stop creating a per-architecture `.msixupload`.
