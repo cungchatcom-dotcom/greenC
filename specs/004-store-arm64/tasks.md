@@ -16,7 +16,7 @@ Design: build per architecture on a native runner, bundle in a third job.
       take the Publisher from the built manifest without assuming a fixed stage folder; assert
       `Get-AppxPackage` `.Architecture` equals the expected one; keep all current assertions; pick a
       `signtool.exe` that runs on the host.
-- [ ] T5 `.github/workflows/ci-release.yml`: `build-msix` matrix (x64 → `windows-latest`, arm64 →
+- [x] T5 `.github/workflows/ci-release.yml`: `build-msix` matrix (x64 → `windows-latest`, arm64 →
       `windows-11-arm`), `rustup target add`, `cargo build --release --target <triple> ... --features store`,
       store-feature tests on arm64, package, smoke test, upload `GreenC-MSIX-<arch>`; new job `bundle-msix`
       (needs build-msix) producing `GreenC-MSIX-Store`; new job `smoke-bundle` matrix on both runners.

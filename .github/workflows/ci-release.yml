@@ -130,10 +130,20 @@ jobs:
           fi
 
   build-msix:
-    name: Build Microsoft Store MSIX Package (x64)
+    name: Build Microsoft Store MSIX Package (${{ matrix.arch }})
     needs: quality-gate
-    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/feat/microsoft-store' || (startsWith(github.ref, 'refs/tags/v') && (vars.STORE_IDENTITY_NAME || vars.PACKAGEIDENTITYNAME) != '')
-    runs-on: windows-latest
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/feat/microsoft-store' || github.ref == 'refs/heads/feat/store-arm64' || (startsWith(github.ref, 'refs/tags/v') && (vars.STORE_IDENTITY_NAME || vars.PACKAGEIDENTITYNAME) != '')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - arch: arm64
+            os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -143,8 +153,13 @@ jobs:
         with:
           toolchain: stable
 
+      - name: Add Rust Target (${{ matrix.target }})
+        run: rustup target add ${{ matrix.target }}
+
       - name: Cache Cargo Dependencies
         uses: Swatinem/rust-cache@v2
+        with:
+          key: msix-${{ matrix.arch }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -162,50 +177,181 @@ jobs:
       - name: Build Frontend Assets
         run: pnpm --dir ui run build
 
-      - name: Build Store Binaries (--features store)
-        run: cargo build --release -p greenc-app -p greenc-cli --features store
+      - name: Run Tests (Windows Store Feature, Arm64)
+        if: matrix.arch == 'arm64'
+        shell: pwsh
+        env:
+          CARGO_TERM_COLOR: never
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cargo test `
+            --target ${{ matrix.target }} `
+            -p greenc-core -p greenc-platform -p greenc-storage `
+            -p greenc-vault -p greenc-relocate -p greenc-cli -p greenc-app `
+            --features store --no-fail-fast
+          if ($LASTEXITCODE -ne 0) {
+            throw "Arm64 store tests failed with exit code $LASTEXITCODE"
+          }
 
-      - name: Package MSIX & MSIXUpload
+      - name: Build Store Binaries (--features store)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cargo build --release --target ${{ matrix.target }} -p greenc-app -p greenc-cli --features store
+          if ($LASTEXITCODE -ne 0) {
+            throw "cargo build (${{ matrix.target }}) failed with exit code $LASTEXITCODE"
+          }
+
+      - name: Package MSIX (${{ matrix.arch }})
         shell: pwsh
         env:
           STORE_IDENTITY_NAME: ${{ vars.STORE_IDENTITY_NAME || vars.PACKAGEIDENTITYNAME }}
           STORE_IDENTITY_PUBLISHER: ${{ vars.STORE_IDENTITY_PUBLISHER || vars.PACKAGEIDENTITYPUBLISHER }}
           STORE_PUBLISHER_DISPLAY_NAME: ${{ vars.STORE_PUBLISHER_DISPLAY_NAME || vars.PACKAGEPROPERTIESPUBLISHERDISPLAYNAME }}
         run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
           $ver = "${{ inputs.msix_version }}"
           if ([string]::IsNullOrWhiteSpace($ver) -and "${{ github.ref }}".StartsWith("refs/tags/v")) {
-            $ver = "${{ github.ref_name }}".TrimStart('v')
+            $ver = "${{ github.ref_name }}".TrimStart('v', 'V')
           }
           $params = @{
-            CreateMsixUpload = $true
-            RunWack          = $true
+            Architecture = "${{ matrix.arch }}"
+            RunWack      = $true
           }
           if (-not [string]::IsNullOrWhiteSpace($ver)) {
             $params.Version = $ver
           }
           & packaging/msix/build-msix.ps1 @params
 
-      - name: Install and smoke-test the package (self-signed, throwaway runner)
-        shell: pwsh
-        run: packaging/msix/smoke-test.ps1
-
-      - name: Report package identity
+      - name: Install and smoke-test the package (${{ matrix.arch }}, self-signed, throwaway runner)
         shell: pwsh
         run: |
-          $x = [xml](Get-Content dist/msix/stage/AppxManifest.xml -Raw -Encoding UTF8)
-          $hash = (Get-ChildItem dist/msix/*.msixupload | Get-FileHash).Hash
-          Write-Output "::notice::identity name=$($x.Package.Identity.Name) publisher=$($x.Package.Identity.Publisher) version=$($x.Package.Identity.Version) display=$($x.Package.Properties.PublisherDisplayName) upload_sha256=$hash"
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $msix = @(Get-ChildItem -Path dist/msix -Filter "GreenC-*-${{ matrix.arch }}.msix" -File)
+          if ($msix.Count -ne 1) {
+            throw "Expected exactly one ${{ matrix.arch }} .msix in dist/msix, found $($msix.Count)"
+          }
+          & packaging/msix/smoke-test.ps1 -PackagePath $msix[0].FullName -ExpectedArchitecture "${{ matrix.arch }}"
 
-      - name: Upload MSIX Store Artifacts
-        if: always()
+      - name: Report package identity (${{ matrix.arch }})
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $x = [xml](Get-Content -LiteralPath "dist/msix/stage-${{ matrix.arch }}/AppxManifest.xml" -Raw -Encoding UTF8)
+          $msix = @(Get-ChildItem -Path dist/msix -Filter "GreenC-*-${{ matrix.arch }}.msix" -File)
+          if ($msix.Count -ne 1) {
+            throw "Expected exactly one ${{ matrix.arch }} .msix in dist/msix, found $($msix.Count)"
+          }
+          $hash = (Get-FileHash -LiteralPath $msix[0].FullName -Algorithm SHA256).Hash
+          Write-Output "::notice::identity arch=$($x.Package.Identity.ProcessorArchitecture) name=$($x.Package.Identity.Name) publisher=$($x.Package.Identity.Publisher) version=$($x.Package.Identity.Version) display=$($x.Package.Properties.PublisherDisplayName) msix_sha256=$hash"
+
+      - name: Upload MSIX Package Artifact (${{ matrix.arch }})
+        uses: actions/upload-artifact@v4
+        with:
+          name: GreenC-MSIX-${{ matrix.arch }}
+          path: |
+            dist/msix/GreenC-*-${{ matrix.arch }}.msix
+            dist/msix/wack-report-${{ matrix.arch }}.xml
+          if-no-files-found: error
+
+  bundle-msix:
+    name: Bundle Microsoft Store MSIX (x64 + arm64)
+    needs: build-msix
+    if: needs.build-msix.result == 'success'
+    runs-on: windows-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Download x64 MSIX Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: GreenC-MSIX-x64
+          path: dist/msix/inputs/x64
+
+      - name: Download Arm64 MSIX Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: GreenC-MSIX-arm64
+          path: dist/msix/inputs/arm64
+
+      - name: Build & Verify MSIX Bundle and Store Upload
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $ver = "${{ inputs.msix_version }}"
+          if ([string]::IsNullOrWhiteSpace($ver) -and "${{ github.ref }}".StartsWith("refs/tags/v")) {
+            $ver = "${{ github.ref_name }}".TrimStart('v', 'V')
+          }
+          $params = @{
+            InputDir  = "dist/msix/inputs"
+            OutputDir = "dist/msix/bundle"
+          }
+          if (-not [string]::IsNullOrWhiteSpace($ver)) {
+            $params.Version = $ver
+          }
+          & packaging/msix/build-bundle.ps1 @params
+
+      - name: Report Store Bundle Upload
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $bundle = @(Get-ChildItem -Path dist/msix/bundle -Filter "GreenC-*.msixbundle" -File)
+          $upload = @(Get-ChildItem -Path dist/msix/bundle -Filter "GreenC-*.msixupload" -File)
+          if ($bundle.Count -ne 1 -or $upload.Count -ne 1) {
+            throw "Expected exactly one .msixbundle and one .msixupload in dist/msix/bundle, found bundle=$($bundle.Count) upload=$($upload.Count)"
+          }
+          $bundleHash = (Get-FileHash -LiteralPath $bundle[0].FullName -Algorithm SHA256).Hash
+          $uploadHash = (Get-FileHash -LiteralPath $upload[0].FullName -Algorithm SHA256).Hash
+          Write-Output "::notice::store bundle=$($bundle[0].Name) bundle_sha256=$bundleHash upload=$($upload[0].Name) upload_sha256=$uploadHash"
+
+      - name: Upload MSIX Store Bundle Artifact
         uses: actions/upload-artifact@v4
         with:
           name: GreenC-MSIX-Store
           path: |
-            dist/msix/*.msix
-            dist/msix/*.msixupload
-            dist/msix/wack-report.xml
+            dist/msix/bundle/GreenC-*.msixbundle
+            dist/msix/bundle/GreenC-*.msixupload
           if-no-files-found: error
+
+  smoke-bundle:
+    name: Smoke-Test Store Bundle (${{ matrix.arch }})
+    needs: bundle-msix
+    if: needs.bundle-msix.result == 'success'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            os: windows-latest
+          - arch: arm64
+            os: windows-11-arm
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Download Store Bundle Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: GreenC-MSIX-Store
+          path: dist/msix/bundle
+
+      - name: Install and smoke-test the bundle (${{ matrix.arch }}, self-signed, throwaway runner)
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $bundles = @(Get-ChildItem -Path dist/msix/bundle -Filter "GreenC-*.msixbundle" -File)
+          if ($bundles.Count -ne 1) {
+            throw "Expected exactly one .msixbundle in dist/msix/bundle, found $($bundles.Count)"
+          }
+          & packaging/msix/smoke-test.ps1 -PackagePath $bundles[0].FullName -ExpectedArchitecture "${{ matrix.arch }}"
 
   release-windows:
     name: Build Windows Installer Release
