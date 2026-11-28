@@ -84,6 +84,17 @@ pub trait AppLifecycleApi: Send + Sync {
     /// Reopens the application after a successful move (via `RmRestart` if available, else by
     /// relaunching the exact captured executable path). Returns `Ok(true)` if reopened.
     fn restart_app(&self, session: &mut AppShutdownSession) -> Result<bool>;
+
+    /// Closes applications ONLY after explicit user confirmation on a follow-up prompt.
+    /// Attempts graceful shutdown first; if tray-resident processes remain alive, closes them
+    /// cleanly so locked cache/data folders can be freed, capturing exe paths for `restart_app`.
+    fn shutdown_confirmed_apps(
+        &self,
+        process_names: &[&str],
+        timeout: Duration,
+    ) -> Result<AppShutdownSession> {
+        self.graceful_shutdown(&[], process_names, timeout)
+    }
 }
 
 /// Production implementation backed by Win32 ToolHelp32 / Restart Manager / User32 on Windows,
@@ -428,6 +439,48 @@ impl AppLifecycleApi for NativeAppLifecycleApi {
             let _ = session;
             Ok(false)
         }
+    }
+
+    fn shutdown_confirmed_apps(
+        &self,
+        process_names: &[&str],
+        timeout: Duration,
+    ) -> Result<AppShutdownSession> {
+        let captured = self.find_running_exe_paths(process_names);
+        if captured.is_empty() {
+            return Ok(AppShutdownSession::no_op());
+        }
+        // Try graceful Restart Manager shutdown first (short bounded wait).
+        let graceful_wait = timeout.min(Duration::from_secs(5));
+        if let Ok(session) = self.graceful_shutdown(&[], process_names, graceful_wait) {
+            if self.find_running_exe_paths(process_names).is_empty() {
+                return Ok(session);
+            }
+        }
+        // User explicitly confirmed closing tray-resident apps that ignored graceful exit.
+        #[cfg(windows)]
+        {
+            for name in process_names {
+                let clean = name.trim();
+                if !clean.is_empty()
+                    && clean
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | ' '))
+                {
+                    let _ = std::process::Command::new("taskkill")
+                        .args(["/IM", clean, "/F"])
+                        .output();
+                }
+            }
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while std::time::Instant::now() < deadline {
+                if self.find_running_exe_paths(process_names).is_empty() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        }
+        Ok(AppShutdownSession::with_captured_exes(captured, false))
     }
 }
 

@@ -1,6 +1,7 @@
 #![deny(unsafe_code)]
 //! Multi-strategy data relocation off C:, NTFS junctions, crash recovery, and in-place compaction.
 
+pub mod autopilot;
 pub mod candidate;
 pub mod catalog;
 pub mod compress;

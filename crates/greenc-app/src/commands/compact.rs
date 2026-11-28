@@ -279,6 +279,27 @@ pub async fn compact_files(
         }
 
         let reclaimed = total_before.saturating_sub(total_after);
+        if reclaimed > 0 {
+            let now_utc = chrono::Utc::now();
+            let app_label = target_paths
+                .first()
+                .and_then(|p| std::path::Path::new(p).file_name())
+                .and_then(|n| n.to_str())
+                .unwrap_or("Compact")
+                .to_string();
+            let _ = state_inner
+                .db
+                .record_savings_event(&greenc_storage::SavingsEventInput {
+                    timestamp: now_utc.to_rfc3339(),
+                    event_date: now_utc.format("%Y-%m-%d").to_string(),
+                    source_kind: "compact".to_string(),
+                    source_ref: task_id_worker.clone(),
+                    app_name: app_label,
+                    category: "compact".to_string(),
+                    bytes_freed: reclaimed,
+                    drive_letter: "C".to_string(),
+                });
+        }
         let ratio = if total_before > 0 {
             total_after as f64 / total_before as f64
         } else {

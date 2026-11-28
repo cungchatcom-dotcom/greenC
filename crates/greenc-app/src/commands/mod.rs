@@ -1,4 +1,5 @@
 pub mod analytics;
+pub mod autopilot;
 pub mod cleanup;
 pub mod compact;
 pub mod drive_quota;

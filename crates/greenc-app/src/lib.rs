@@ -64,6 +64,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             // Bootstrap & Overview (User Story 1)
             commands::analytics::get_savings_stats,
+            commands::autopilot::make_green_now,
             commands::overview::get_bootstrap_state,
             commands::overview::complete_first_run,
             commands::overview::get_overview_summary,
