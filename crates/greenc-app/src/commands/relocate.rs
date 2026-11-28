@@ -339,18 +339,19 @@ pub async fn relocate_directory(
             Ok(rec) => {
                 if rec.size_bytes > 0 {
                     let now_utc = chrono::Utc::now();
-                    let _ = state_inner.db.record_savings_event(
-                        &greenc_storage::SavingsEventInput {
-                            timestamp: now_utc.to_rfc3339(),
-                            event_date: now_utc.format("%Y-%m-%d").to_string(),
-                            source_kind: "relocate".to_string(),
-                            source_ref: rec.id.map(|id| id.to_string()).unwrap_or_default(),
-                            app_name: rec.app_name.clone(),
-                            category: "relocate".to_string(),
-                            bytes_freed: rec.size_bytes,
-                            drive_letter: "C".to_string(),
-                        },
-                    );
+                    let _ =
+                        state_inner
+                            .db
+                            .record_savings_event(&greenc_storage::SavingsEventInput {
+                                timestamp: now_utc.to_rfc3339(),
+                                event_date: now_utc.format("%Y-%m-%d").to_string(),
+                                source_kind: "relocate".to_string(),
+                                source_ref: rec.id.map(|id| id.to_string()).unwrap_or_default(),
+                                app_name: rec.app_name.clone(),
+                                category: "relocate".to_string(),
+                                bytes_freed: rec.size_bytes,
+                                drive_letter: "C".to_string(),
+                            });
                 }
                 state_inner.emit_progress(&TaskProgressEvent {
                     task_id: task_id_worker,
@@ -521,8 +522,9 @@ pub async fn relocate_known_folder(
 
             if rec.size_bytes > 0 {
                 let now_utc = chrono::Utc::now();
-                let _ = state_inner.db.record_savings_event(
-                    &greenc_storage::SavingsEventInput {
+                let _ = state_inner
+                    .db
+                    .record_savings_event(&greenc_storage::SavingsEventInput {
                         timestamp: now_utc.to_rfc3339(),
                         event_date: now_utc.format("%Y-%m-%d").to_string(),
                         source_kind: "relocate".to_string(),
@@ -531,8 +533,7 @@ pub async fn relocate_known_folder(
                         category: "relocate".to_string(),
                         bytes_freed: rec.size_bytes,
                         drive_letter: "C".to_string(),
-                    },
-                );
+                    });
             }
 
             state_inner.emit_progress(&TaskProgressEvent {
@@ -845,8 +846,8 @@ pub async fn relocate_batch(
             &lock_probe,
             &proc_probe,
         );
-        let all_known = KnownFolderService::list_known_folders(drive_char, &shell_api)
-            .unwrap_or_default();
+        let all_known =
+            KnownFolderService::list_known_folders(drive_char, &shell_api).unwrap_or_default();
 
         let selected_known: Vec<_> = if cfg!(feature = "store") {
             Vec::new()
@@ -1108,7 +1109,8 @@ pub async fn relocate_batch(
 
 /// Lists installed WSL2 distributions on Windows.
 #[tauri::command]
-pub async fn list_wsl_distros() -> std::result::Result<Vec<greenc_relocate::wsl::WslDistroInfo>, String> {
+pub async fn list_wsl_distros(
+) -> std::result::Result<Vec<greenc_relocate::wsl::WslDistroInfo>, String> {
     tokio::task::spawn_blocking(greenc_relocate::wsl::list_installed_wsl_distros)
         .await
         .map_err(|e| format!("WSL list error: {e}"))

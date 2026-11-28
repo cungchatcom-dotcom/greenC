@@ -113,7 +113,11 @@ pub fn filter_non_overlapping_compaction_dirs(
     }
     compaction_dirs
         .into_iter()
-        .filter(|c| !planned_relocate_paths.iter().any(|rp| paths_overlap(&c.path, rp)))
+        .filter(|c| {
+            !planned_relocate_paths
+                .iter()
+                .any(|rp| paths_overlap(&c.path, rp))
+        })
         .collect()
 }
 
@@ -154,11 +158,51 @@ mod tests {
     #[test]
     fn curated_filter_excludes_is_advanced_guided_and_partitions_locked() {
         let cands = vec![
-            mk_cand("telegram", r"C:\Users\A\AppData\Roaming\Telegram Desktop", RelocationStrategyKind::Junction, false, true, false, 1000),
-            mk_cand("discord", r"C:\Users\A\AppData\Roaming\discord", RelocationStrategyKind::Junction, false, true, true, 2000),
-            mk_cand("random_adv", r"C:\Users\A\AppData\Local\RandomApp", RelocationStrategyKind::Junction, true, true, false, 5000),
-            mk_cand("wsl2", r"C:\Users\A\AppData\Local\Packages", RelocationStrategyKind::Guided, false, true, false, 9000),
-            mk_cand("zalo", r"C:\Users\A\Zalo Data", RelocationStrategyKind::Junction, false, true, false, 4000),
+            mk_cand(
+                "telegram",
+                r"C:\Users\A\AppData\Roaming\Telegram Desktop",
+                RelocationStrategyKind::Junction,
+                false,
+                true,
+                false,
+                1000,
+            ),
+            mk_cand(
+                "discord",
+                r"C:\Users\A\AppData\Roaming\discord",
+                RelocationStrategyKind::Junction,
+                false,
+                true,
+                true,
+                2000,
+            ),
+            mk_cand(
+                "random_adv",
+                r"C:\Users\A\AppData\Local\RandomApp",
+                RelocationStrategyKind::Junction,
+                true,
+                true,
+                false,
+                5000,
+            ),
+            mk_cand(
+                "wsl2",
+                r"C:\Users\A\AppData\Local\Packages",
+                RelocationStrategyKind::Guided,
+                false,
+                true,
+                false,
+                9000,
+            ),
+            mk_cand(
+                "zalo",
+                r"C:\Users\A\Zalo Data",
+                RelocationStrategyKind::Junction,
+                false,
+                true,
+                false,
+                4000,
+            ),
         ];
 
         let (ready, locked) = select_safe_relocation_candidates(cands);

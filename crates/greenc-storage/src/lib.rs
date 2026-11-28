@@ -11,10 +11,10 @@ pub mod vault_repair;
 
 pub use analytics::{aggregate_savings_stats, SavingsBucket, SavingsStats, TopJunkApp};
 pub use db::{GreenCDb, SavingsEventInput, SavingsEventRow};
-pub use migrations::infer_app_from_path_str;
 pub use legacy_migration::{
     auto_migrate_legacy_db, auto_migrate_legacy_db_with_candidates, get_legacy_db_candidates,
     migrate_legacy_db, move_vault, resolve_default_db_path, MoveVaultSummary,
 };
+pub use migrations::infer_app_from_path_str;
 pub use migrations::{run_migrations, CURRENT_SCHEMA_VERSION};
 pub use settings::{AppSettings, ThemeMode};

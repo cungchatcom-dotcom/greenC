@@ -400,8 +400,7 @@ pub async fn execute_cleanup(
                                 kind: "cleanup_execute".to_string(),
                                 state: "running".to_string(),
                                 percent: 10
-                                    + ((done_now as f64 / total_bytes.max(1) as f64) * 55.0)
-                                        as u32,
+                                    + ((done_now as f64 / total_bytes.max(1) as f64) * 55.0) as u32,
                                 phase: "archive".to_string(),
                                 title: format!("Đang sao lưu {}...", app_label),
                                 detail: p.current_file,
@@ -426,8 +425,7 @@ pub async fn execute_cleanup(
                 }
                 compressed_vault_bytes =
                     compressed_vault_bytes.saturating_add(manifest.compressed_size);
-                cumulative_done_bytes =
-                    cumulative_done_bytes.saturating_add(manifest.total_size);
+                cumulative_done_bytes = cumulative_done_bytes.saturating_add(manifest.total_size);
                 archived_refs.push((
                     manifest.archive_id.clone(),
                     app_name.clone(),
@@ -477,22 +475,23 @@ pub async fn execute_cleanup(
             },
         );
 
-        let manifest_items: Vec<greenc_core::models::FileManifestItem> = candidates_ready_for_unlink
-            .iter()
-            .enumerate()
-            .map(|(i, c)| greenc_core::models::FileManifestItem {
-                id: None,
-                archive_id: None,
-                original_path: c.path.clone(),
-                rel_arcname: format!("item_{:05}", i + 1),
-                size_bytes: c.size_bytes,
-                sha256: String::new(),
-                mtime: 0.0,
-                atime: 0.0,
-                hardlink_paths: c.hardlink_siblings.clone(),
-                restored_individually: false,
-            })
-            .collect();
+        let manifest_items: Vec<greenc_core::models::FileManifestItem> =
+            candidates_ready_for_unlink
+                .iter()
+                .enumerate()
+                .map(|(i, c)| greenc_core::models::FileManifestItem {
+                    id: None,
+                    archive_id: None,
+                    original_path: c.path.clone(),
+                    rel_arcname: format!("item_{:05}", i + 1),
+                    size_bytes: c.size_bytes,
+                    sha256: String::new(),
+                    mtime: 0.0,
+                    atime: 0.0,
+                    hardlink_paths: c.hardlink_siblings.clone(),
+                    restored_individually: false,
+                })
+                .collect();
 
         let clean_res = cleaner
             .unlink_archived_items(&manifest_items, &snapshots)
@@ -536,18 +535,19 @@ pub async fn execute_cleanup(
                     } else {
                         ("cleanup_direct", task_id_worker.clone())
                     };
-                    let _ = state_inner.db.record_savings_event(
-                        &greenc_storage::SavingsEventInput {
-                            timestamp: ts.clone(),
-                            event_date: date.clone(),
-                            source_kind: source_kind.to_string(),
-                            source_ref,
-                            app_name: app_name.clone(),
-                            category: category.clone(),
-                            bytes_freed: actual_group_bytes,
-                            drive_letter: "C".to_string(),
-                        },
-                    );
+                    let _ =
+                        state_inner
+                            .db
+                            .record_savings_event(&greenc_storage::SavingsEventInput {
+                                timestamp: ts.clone(),
+                                event_date: date.clone(),
+                                source_kind: source_kind.to_string(),
+                                source_ref,
+                                app_name: app_name.clone(),
+                                category: category.clone(),
+                                bytes_freed: actual_group_bytes,
+                                drive_letter: "C".to_string(),
+                            });
                 }
             }
         }

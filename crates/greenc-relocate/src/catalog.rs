@@ -105,7 +105,9 @@ fn get_app_catalog_windows() -> Vec<AppCatalogProfile> {
     });
 
     // 3b. Global Chat & Social desktop apps (safe NTFS junction targets outside MSIX Packages)
-    let user_profile = env::var("USERPROFILE").map(PathBuf::from).unwrap_or_default();
+    let user_profile = env::var("USERPROFILE")
+        .map(PathBuf::from)
+        .unwrap_or_default();
     catalog.push(AppCatalogProfile {
         app_id: "wechat".to_string(),
         name: "WeChat Files".to_string(),

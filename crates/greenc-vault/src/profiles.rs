@@ -725,8 +725,7 @@ pub fn infer_friendly_app_name(path: &Path, profile_id: &str) -> (String, String
         "orphan_radar" => ("Orphan Data", "other"),
         _ => ("System Cleanup", "other"),
     };
-    let (name, cat) =
-        greenc_storage::infer_app_from_path_str(&path.to_string_lossy(), fallback.0);
+    let (name, cat) = greenc_storage::infer_app_from_path_str(&path.to_string_lossy(), fallback.0);
     let final_cat = if cat == "other" {
         fallback.1.to_string()
     } else {
@@ -780,7 +779,9 @@ mod profile_app_grouping_tests {
         );
         assert_eq!(
             infer_friendly_app_name(
-                Path::new(r"C:\Users\A\AppData\Roaming\Telegram Desktop\tdata\user_data\cache\a.bin"),
+                Path::new(
+                    r"C:\Users\A\AppData\Roaming\Telegram Desktop\tdata\user_data\cache\a.bin"
+                ),
                 "chat_media"
             ),
             ("Telegram Desktop".to_string(), "chat".to_string())
@@ -794,23 +795,39 @@ mod profile_app_grouping_tests {
         );
         assert_eq!(
             infer_friendly_app_name(
-                Path::new(r"C:\Users\A\AppData\Local\Packages\MSTeams_8wekyb3d8bbwe\LocalCache\Microsoft\MSTeams\EBWebView\Default\Cache\x"),
+                Path::new(
+                    r"C:\Users\A\AppData\Local\Packages\MSTeams_8wekyb3d8bbwe\LocalCache\Microsoft\MSTeams\EBWebView\Default\Cache\x"
+                ),
                 "chat_media"
             ),
             ("Microsoft Teams".to_string(), "chat".to_string())
         );
         assert_eq!(
             infer_friendly_app_name(
-                Path::new(r"C:\Users\A\AppData\Local\Packages\5319275A.WhatsAppDesktop_cv1g1gvanyjgm\LocalCache\Roaming\Caches\y"),
+                Path::new(
+                    r"C:\Users\A\AppData\Local\Packages\5319275A.WhatsAppDesktop_cv1g1gvanyjgm\LocalCache\Roaming\Caches\y"
+                ),
                 "chat_media"
             ),
             ("WhatsApp".to_string(), "chat".to_string())
         );
 
         let grouped = group_candidates_by_app(&[
-            mk(r"C:\Users\A\AppData\Roaming\discord\Cache\1", "chat_media", 100),
-            mk(r"C:\Users\A\AppData\Roaming\discord\Cache\2", "chat_media", 200),
-            mk(r"C:\Users\A\AppData\Local\Google\Chrome\User Data\Default\Cache\3", "browser_cache", 500),
+            mk(
+                r"C:\Users\A\AppData\Roaming\discord\Cache\1",
+                "chat_media",
+                100,
+            ),
+            mk(
+                r"C:\Users\A\AppData\Roaming\discord\Cache\2",
+                "chat_media",
+                200,
+            ),
+            mk(
+                r"C:\Users\A\AppData\Local\Google\Chrome\User Data\Default\Cache\3",
+                "browser_cache",
+                500,
+            ),
         ]);
         assert_eq!(grouped.len(), 2);
         assert_eq!(grouped[0].0, "Discord");

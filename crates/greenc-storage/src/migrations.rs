@@ -329,7 +329,10 @@ pub fn run_migrations(conn: &mut Connection) -> Result<u32> {
     tx.commit()
         .map_err(|e| GreenCError::Sqlite(e.to_string()))?;
 
-    info!("Database successfully migrated to Schema v{}", CURRENT_SCHEMA_VERSION);
+    info!(
+        "Database successfully migrated to Schema v{}",
+        CURRENT_SCHEMA_VERSION
+    );
     Ok(CURRENT_SCHEMA_VERSION)
 }
 
@@ -456,7 +459,10 @@ fn backfill_savings_events(conn: &Connection) -> Result<()> {
         let mut rows = stmt
             .query([])
             .map_err(|e| GreenCError::Sqlite(e.to_string()))?;
-        while let Some(r) = rows.next().map_err(|e| GreenCError::Sqlite(e.to_string()))? {
+        while let Some(r) = rows
+            .next()
+            .map_err(|e| GreenCError::Sqlite(e.to_string()))?
+        {
             vault_rows.push((
                 r.get(0).map_err(|e| GreenCError::Sqlite(e.to_string()))?,
                 r.get(1).map_err(|e| GreenCError::Sqlite(e.to_string()))?,
@@ -484,7 +490,10 @@ fn backfill_savings_events(conn: &Connection) -> Result<()> {
                 .query([aid])
                 .map_err(|e| GreenCError::Sqlite(e.to_string()))?;
             let mut file_sum = 0i64;
-            while let Some(fr) = frows.next().map_err(|e| GreenCError::Sqlite(e.to_string()))? {
+            while let Some(fr) = frows
+                .next()
+                .map_err(|e| GreenCError::Sqlite(e.to_string()))?
+            {
                 let p: String = fr.get(0).map_err(|e| GreenCError::Sqlite(e.to_string()))?;
                 let sz: i64 = fr.get(1).map_err(|e| GreenCError::Sqlite(e.to_string()))?;
                 if sz > 0 {
@@ -529,7 +538,10 @@ fn backfill_savings_events(conn: &Connection) -> Result<()> {
         let mut rows = stmt
             .query([])
             .map_err(|e| GreenCError::Sqlite(e.to_string()))?;
-        while let Some(r) = rows.next().map_err(|e| GreenCError::Sqlite(e.to_string()))? {
+        while let Some(r) = rows
+            .next()
+            .map_err(|e| GreenCError::Sqlite(e.to_string()))?
+        {
             direct_rows.push((
                 r.get(0).map_err(|e| GreenCError::Sqlite(e.to_string()))?,
                 r.get(1).map_err(|e| GreenCError::Sqlite(e.to_string()))?,
@@ -576,7 +588,10 @@ fn backfill_savings_events(conn: &Connection) -> Result<()> {
         let mut rows = stmt
             .query([])
             .map_err(|e| GreenCError::Sqlite(e.to_string()))?;
-        while let Some(r) = rows.next().map_err(|e| GreenCError::Sqlite(e.to_string()))? {
+        while let Some(r) = rows
+            .next()
+            .map_err(|e| GreenCError::Sqlite(e.to_string()))?
+        {
             reloc_rows.push((
                 r.get(0).map_err(|e| GreenCError::Sqlite(e.to_string()))?,
                 r.get(1).map_err(|e| GreenCError::Sqlite(e.to_string()))?,
@@ -609,7 +624,10 @@ fn backfill_savings_events(conn: &Connection) -> Result<()> {
         let mut rows = stmt
             .query([])
             .map_err(|e| GreenCError::Sqlite(e.to_string()))?;
-        while let Some(r) = rows.next().map_err(|e| GreenCError::Sqlite(e.to_string()))? {
+        while let Some(r) = rows
+            .next()
+            .map_err(|e| GreenCError::Sqlite(e.to_string()))?
+        {
             comp_rows.push((
                 r.get(0).map_err(|e| GreenCError::Sqlite(e.to_string()))?,
                 r.get(1).map_err(|e| GreenCError::Sqlite(e.to_string()))?,

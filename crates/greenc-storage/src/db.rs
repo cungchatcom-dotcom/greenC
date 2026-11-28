@@ -2076,10 +2076,18 @@ mod drive_quota_db_tests {
         let events = db.query_savings_events().unwrap();
         // Expect Chrome (2000), Discord (1000), Telegram Desktop (5000), Compact (1500); RolledBackApp excluded.
         assert_eq!(events.len(), 4);
-        assert!(events.iter().any(|e| e.app_name == "Google Chrome" && e.bytes_freed == 2000));
-        assert!(events.iter().any(|e| e.app_name == "Discord" && e.bytes_freed == 1000));
-        assert!(events.iter().any(|e| e.app_name == "Telegram Desktop" && e.bytes_freed == 5000));
-        assert!(events.iter().any(|e| e.source_kind == "compact" && e.bytes_freed == 1500));
+        assert!(events
+            .iter()
+            .any(|e| e.app_name == "Google Chrome" && e.bytes_freed == 2000));
+        assert!(events
+            .iter()
+            .any(|e| e.app_name == "Discord" && e.bytes_freed == 1000));
+        assert!(events
+            .iter()
+            .any(|e| e.app_name == "Telegram Desktop" && e.bytes_freed == 5000));
+        assert!(events
+            .iter()
+            .any(|e| e.source_kind == "compact" && e.bytes_freed == 1500));
 
         // Re-opening must be idempotent (no duplicate backfill rows).
         drop(db);

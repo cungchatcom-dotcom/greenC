@@ -27,9 +27,7 @@ use greenc_relocate::compress::InPlaceCompactor;
 use greenc_relocate::known_folders::KnownFolderService;
 use greenc_relocate::mover::{MoveOptions, TransactionalMover};
 use greenc_relocate::zalo_move::{is_zalo_auto_move_supported, ZaloMoveOptions, ZaloRelocator};
-use greenc_scanner::zalo::{
-    discover_zalo_installation, ZaloDiscoveryOptions, ZALO_PROCESS_NAMES,
-};
+use greenc_scanner::zalo::{discover_zalo_installation, ZaloDiscoveryOptions, ZALO_PROCESS_NAMES};
 use greenc_storage::SavingsEventInput;
 use greenc_vault::archiver::{ArchiveOptions, ArchiverPipeline};
 use greenc_vault::cleanup::{CleanupOptions, DeletionMethod, SafeCleaner};
