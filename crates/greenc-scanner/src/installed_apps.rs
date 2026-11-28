@@ -345,9 +345,74 @@ Get-ItemProperty $paths -ErrorAction SilentlyContinue |
     }
 }
 
+/// Safely parses a Windows `UninstallString` into `(executable, args)`.
+/// Rejects shell metacharacters (`&`, `|`, `;`, `>`, `<`, `` ` ``, `$`, newlines) to prevent
+/// command injection; callers should fall back to opening OS Apps settings when `None`.
+pub fn parse_safe_uninstall_command(raw: &str) -> Option<(String, Vec<String>)> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed
+        .chars()
+        .any(|c| matches!(c, '&' | '|' | ';' | '>' | '<' | '`' | '$' | '\r' | '\n'))
+    {
+        return None;
+    }
+
+    let mut tokens: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut in_quotes = false;
+    for ch in trimmed.chars() {
+        match ch {
+            '"' => {
+                in_quotes = !in_quotes;
+            }
+            c if c.is_whitespace() && !in_quotes => {
+                if !cur.is_empty() {
+                    tokens.push(std::mem::take(&mut cur));
+                }
+            }
+            c => cur.push(c),
+        }
+    }
+    if in_quotes {
+        return None;
+    }
+    if !cur.is_empty() {
+        tokens.push(cur);
+    }
+    if tokens.is_empty() {
+        return None;
+    }
+    let exe = tokens.remove(0);
+    if exe.is_empty() {
+        return None;
+    }
+    Some((exe, tokens))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_safe_uninstall_commands_and_rejects_shell_injection() {
+        assert_eq!(
+            parse_safe_uninstall_command(r#""C:\Program Files\My App\unins000.exe" /NORESTART"#),
+            Some((
+                r"C:\Program Files\My App\unins000.exe".to_string(),
+                vec!["/NORESTART".to_string()]
+            ))
+        );
+        assert_eq!(
+            parse_safe_uninstall_command("MsiExec.exe /I{1234-5678}"),
+            Some(("MsiExec.exe".to_string(), vec!["/I{1234-5678}".to_string()]))
+        );
+        assert_eq!(parse_safe_uninstall_command("unins.exe && calc.exe"), None);
+        assert_eq!(parse_safe_uninstall_command("unins.exe | whoami"), None);
+        assert_eq!(parse_safe_uninstall_command(""), None);
+    }
 
     #[test]
     fn filters_system_components_and_ranks_least_used_largest_first() {

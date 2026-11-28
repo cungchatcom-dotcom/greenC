@@ -970,12 +970,15 @@ export async function getSavingsStats(period: SavingsPeriod = 'day'): Promise<Sa
 }
 
 // =========================================================================
-// One-Click "Make Green Now" Autopilot
+// One-Click "Make Green Now" Goal-Driven 5-Tier Autopilot
 // =========================================================================
+
+export type SweepMode = 'goal' | 'light' | 'max_space';
 
 export interface MakeGreenOptionsDto {
   target_drive?: string | null;
   single_drive_mode?: 'direct_cache' | 'local_vault' | null;
+  sweep_mode?: SweepMode | null;
   close_app_ids?: string[];
   confirm_close_running_apps?: boolean;
   include_known_folders?: boolean;
@@ -996,6 +999,45 @@ export interface LockedAppSummaryDto {
   reason: string;
 }
 
+export interface ExternalBackupDriveDto {
+  root: string;
+  drive_letter: string;
+  label: string;
+  filesystem: string;
+  total_bytes: number;
+  free_bytes: number;
+  is_removable: boolean;
+}
+
+export interface ExternalBackupCandidateDto {
+  name: string;
+  path: string;
+  size_bytes: number;
+  inactive_days: number;
+  kind: 'known_folder' | 'app_data' | string;
+}
+
+export interface InstalledAppSuggestionDto {
+  id: string;
+  name: string;
+  publisher: string;
+  install_location: string | null;
+  size_bytes: number;
+  last_used_days: number;
+  uninstall_command: string | null;
+}
+
+export interface ExternalBackupReportDto {
+  task_id: string;
+  target_root: string;
+  backup_dir: string;
+  backed_up_count: number;
+  freed_bytes: number;
+  archive_ids: string[];
+  warnings: string[];
+  cancelled: boolean;
+}
+
 export interface MakeGreenReportDto {
   task_id: string;
   before_used_bytes: number;
@@ -1009,6 +1051,14 @@ export interface MakeGreenReportDto {
   total_freed_bytes: number;
   backup_drive: string | null;
   single_drive_mode: string | null;
+  sweep_mode: SweepMode | string;
+  goal_target_bytes: number;
+  goal_reached: boolean;
+  remaining_bytes_needed: number;
+  stopped_at_tier: number;
+  external_drives: ExternalBackupDriveDto[];
+  external_backup_candidates: ExternalBackupCandidateDto[];
+  uninstall_suggestions: InstalledAppSuggestionDto[];
   actions: MakeGreenActionItemDto[];
   skipped_locked: LockedAppSummaryDto[];
   reopened_apps: string[];
@@ -1022,6 +1072,28 @@ export async function makeGreenNow(options?: MakeGreenOptionsDto): Promise<MakeG
       options: options ?? null,
     })
   );
+}
+
+export async function listExternalBackupDrives(): Promise<ExternalBackupDriveDto[]> {
+  return await invoke<ExternalBackupDriveDto[]>('list_external_backup_drives');
+}
+
+export async function backupToExternalDrive(
+  targetRoot: string,
+  sourcePaths: string[]
+): Promise<ExternalBackupReportDto> {
+  return await changingFiles(() =>
+    invoke<ExternalBackupReportDto>('backup_to_external_drive', {
+      targetRoot,
+      sourcePaths,
+    })
+  );
+}
+
+export async function launchAppUninstaller(uninstallCommand?: string | null): Promise<boolean> {
+  return await invoke<boolean>('launch_app_uninstaller', {
+    uninstallCommand: uninstallCommand ?? null,
+  });
 }
 
 // =========================================================================

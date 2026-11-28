@@ -10,7 +10,9 @@
 
 use crate::candidate::RelocationCandidate;
 use crate::compress::CompactionCandidate;
-use greenc_core::models::{DriveInfo, RelocationStrategyKind};
+use greenc_core::models::{CleanCandidate, DriveInfo, RelocationStrategyKind};
+use greenc_core::task::TaskControl;
+use greenc_platform::traits::FileLockProbe;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -341,6 +343,105 @@ pub fn filter_non_overlapping_compaction_dirs(
         .collect()
 }
 
+/// Returns `true` if `path` is a system root or OS directory that must NEVER be backed-up-and-deleted.
+pub fn is_protected_backup_source(path: &Path) -> bool {
+    let norm = norm_path(path);
+    if norm.is_empty() || norm == "\\" || norm == "/" {
+        return true;
+    }
+    if norm.len() == 2 && norm.ends_with(':') {
+        return true;
+    }
+    let blocked_exact = [
+        "c:\\windows",
+        "c:\\program files",
+        "c:\\program files (x86)",
+        "c:\\programdata",
+        "c:\\users",
+        "\\usr",
+        "\\etc",
+        "\\bin",
+        "\\sbin",
+        "\\lib",
+        "\\var",
+        "\\boot",
+        "\\sys",
+        "\\proc",
+        "\\dev",
+        "\\system",
+    ];
+    if blocked_exact.iter().any(|b| norm == *b) {
+        return true;
+    }
+    norm.starts_with("c:\\windows\\")
+        || norm.starts_with("c:\\program files\\")
+        || norm.starts_with("c:\\program files (x86)\\")
+}
+
+/// Recursively collects regular, unlocked files under `dir` for verified ZIP backup to an external drive.
+/// Skips symlinks/reparse points and locked files, and refuses protected OS roots.
+pub fn collect_folder_backup_candidates(
+    dir: &Path,
+    lock_probe: &dyn FileLockProbe,
+    task_ctrl: &TaskControl,
+) -> Result<Vec<CleanCandidate>, String> {
+    if is_protected_backup_source(dir) {
+        return Err(format!(
+            "Không cho phép sao lưu/xóa thư mục hệ thống: {}",
+            dir.display()
+        ));
+    }
+    let meta = std::fs::symlink_metadata(dir)
+        .map_err(|e| format!("Không thể đọc thư mục {}: {e}", dir.display()))?;
+    if meta.file_type().is_symlink() || !meta.is_dir() {
+        return Err(format!(
+            "Đường dẫn không phải thư mục thực hợp lệ: {}",
+            dir.display()
+        ));
+    }
+
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(cur) = stack.pop() {
+        if task_ctrl.is_cancelled() {
+            break;
+        }
+        let Ok(entries) = std::fs::read_dir(&cur) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if task_ctrl.is_cancelled() {
+                break;
+            }
+            let p = entry.path();
+            let Ok(em) = std::fs::symlink_metadata(&p) else {
+                continue;
+            };
+            if em.file_type().is_symlink() {
+                continue;
+            }
+            if em.is_dir() {
+                stack.push(p);
+            } else if em.is_file() {
+                if lock_probe.is_file_locked(&p) {
+                    continue;
+                }
+                out.push(CleanCandidate {
+                    path: p,
+                    size_bytes: em.len(),
+                    mtime: em.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+                    is_locked: false,
+                    profile_id: "external_backup".to_string(),
+                    is_canary: false,
+                    is_orphan: false,
+                    hardlink_siblings: Vec::new(),
+                });
+            }
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -557,5 +658,29 @@ mod tests {
         let vault = safe_profiles_for_mode(false, Some("local_vault"));
         assert!(vault.contains(&"old_versions"));
         assert!(vault.contains(&"orphan_radar"));
+    }
+
+    #[test]
+    fn protects_system_roots_and_collects_regular_backup_files() {
+        assert!(is_protected_backup_source(Path::new(r"C:\")));
+        assert!(is_protected_backup_source(Path::new(r"C:\Windows")));
+        assert!(is_protected_backup_source(Path::new(
+            r"C:\Program Files\Foo"
+        )));
+        assert!(is_protected_backup_source(Path::new("/usr")));
+        assert!(!is_protected_backup_source(Path::new(
+            r"C:\Users\Alice\Videos"
+        )));
+
+        let tmp = tempfile::tempdir().unwrap();
+        let sub = tmp.path().join("my_videos");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("clip.mp4"), b"hello-world").unwrap();
+
+        let lock_probe = greenc_platform::traits::NativeFileLockProbe;
+        let ctrl = TaskControl::new();
+        let files = collect_folder_backup_candidates(&sub, &lock_probe, &ctrl).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].size_bytes, 11);
     }
 }

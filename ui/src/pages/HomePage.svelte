@@ -1,17 +1,23 @@
-<!-- ui/src/pages/HomePage.svelte: Full-width low-tech landing screen with 1-click Make Green Now & Savings Scorecard -->
+<!-- ui/src/pages/HomePage.svelte: Full-width low-tech landing screen with Goal-Driven 5-Tier Make Green Now & Savings Scorecard -->
 <script lang="ts">
   import { onMount } from 'svelte';
   import { t, formatSize } from '$lib/i18n.svelte';
   import {
+    backupToExternalDrive,
     getBootstrapState,
     getOverviewSummary,
+    launchAppUninstaller,
     listDriveQuotas,
+    listExternalBackupDrives,
     makeGreenNow,
     type BootstrapState,
     type DriveInfo,
     type DriveQuotaStatusDto,
+    type ExternalBackupDriveDto,
+    type InstalledAppSuggestionDto,
     type MakeGreenReportDto,
     type OverviewSummary,
+    type SweepMode,
   } from '$lib/api';
   import { fileActions, onFilesChanged } from '$lib/busy.svelte';
   import { taskStore } from '$lib/tasks.svelte';
@@ -31,6 +37,10 @@
     Square,
     ChevronDown,
     ChevronUp,
+    Sparkles,
+    Usb,
+    PackageX,
+    ExternalLink,
   } from 'lucide-svelte';
 
   interface Props {
@@ -57,9 +67,17 @@
   // Result & follow-up modal states
   let lastReport = $state<MakeGreenReportDto | null>(null);
   let showActionsDetail = $state(false);
+  let showGreenChoiceModal = $state(false);
   let showSingleDriveModal = $state(false);
+  let pendingSweepMode = $state<SweepMode>('goal');
   let showConfirmCloseModal = $state(false);
   let selectedCloseAppIds = $state<string[]>([]);
+
+  // Tier 4 (USB / External Drive Backup) states
+  let externalDrives = $state<ExternalBackupDriveDto[]>([]);
+  let selectedExternalRoot = $state<string>('');
+  let selectedExternalPaths = $state<string[]>([]);
+  let isCheckingUsb = $state(false);
 
   let backupDrives = $derived<DriveInfo[]>(
     (bootstrap?.drives ?? []).filter((d) => d.is_eligible && !d.is_system)
@@ -75,10 +93,10 @@
   let isWarning = $derived(!isOverGoal && usagePercent >= Math.max(70, maxPct - 10));
 
   const MAKE_GREEN_STEPS = [
-    { key: 'analyze', label: 'Phân tích' },
-    { key: 'clean', label: 'Dọn rác' },
-    { key: 'compact', label: 'Nén gọn' },
-    { key: 'relocate', label: 'Chuyển ổ' },
+    { key: 'analyze', label: 'Tính mục tiêu' },
+    { key: 'tier1', label: 'Tầng 1: Rác' },
+    { key: 'tier2', label: 'Tầng 2: Ứng dụng' },
+    { key: 'tier3', label: 'Tầng 3: Dọn sâu' },
   ] as const;
 
   async function loadHome() {
@@ -124,17 +142,32 @@
     loadHome();
   });
 
-  function handleClickMakeGreen() {
-    if (isBusy) return;
-    // Single-drive PC: ask user cleanly between 2 clear options
+  function startSweepWithMode(mode: SweepMode) {
+    pendingSweepMode = mode;
     if (backupDrives.length === 0) {
       showSingleDriveModal = true;
       return;
     }
     void executeMakeGreen({
       target_drive: selectedBackupDrive,
+      sweep_mode: mode,
       include_known_folders: true,
     });
+  }
+
+  function handleClickMakeGreen() {
+    if (isBusy) return;
+    // Option 2: If C: is ALREADY green, ask user cleanly between Light (Tier 1) and Deep Max Space
+    if (!isOverGoal) {
+      showGreenChoiceModal = true;
+      return;
+    }
+    startSweepWithMode('goal');
+  }
+
+  function handlePickGreenMode(mode: 'light' | 'max_space') {
+    showGreenChoiceModal = false;
+    startSweepWithMode(mode);
   }
 
   function handlePickSingleDriveMode(mode: 'direct_cache' | 'local_vault') {
@@ -142,6 +175,7 @@
     void executeMakeGreen({
       target_drive: null,
       single_drive_mode: mode,
+      sweep_mode: pendingSweepMode,
       include_known_folders: false,
     });
   }
@@ -171,10 +205,27 @@
           ? ((lastReport?.single_drive_mode as 'direct_cache' | 'local_vault' | null) ??
             'direct_cache')
           : null,
+      sweep_mode: (lastReport?.sweep_mode as SweepMode) ?? 'goal',
       close_app_ids: ids,
       confirm_close_running_apps: true,
       include_known_folders: backupDrives.length > 0,
     });
+  }
+
+  function syncTier4FromReport(report: MakeGreenReportDto) {
+    externalDrives = report.external_drives ?? [];
+    selectedExternalRoot = externalDrives[0]?.root ?? '';
+    // Pre-select least-used heavy folders until remaining_bytes_needed is covered
+    const picked: string[] = [];
+    let acc = 0;
+    for (const c of report.external_backup_candidates ?? []) {
+      picked.push(c.path);
+      acc += c.size_bytes;
+      if (report.remaining_bytes_needed > 0 && acc >= report.remaining_bytes_needed) {
+        break;
+      }
+    }
+    selectedExternalPaths = picked;
   }
 
   async function executeMakeGreen(opts: Parameters<typeof makeGreenNow>[0]) {
@@ -200,8 +251,111 @@
       );
       lastReport = report;
       showActionsDetail = false;
+      syncTier4FromReport(report);
     } catch {
       // Toast already surfaced by taskStore
+    }
+  }
+
+  async function handleRefreshUsbDrives() {
+    isCheckingUsb = true;
+    try {
+      const found = await listExternalBackupDrives();
+      externalDrives = found;
+      if (found.length > 0 && !found.some((d) => d.root === selectedExternalRoot)) {
+        selectedExternalRoot = found[0].root;
+      }
+      if (found.length === 0) {
+        taskStore.showToast({
+          kind: 'info',
+          title: t('Chưa thấy USB hoặc ổ cứng di động nào'),
+          detail: t('Hãy cắm USB vào máy rồi bấm Kiểm tra lại.'),
+        });
+      }
+    } catch (err) {
+      taskStore.showToast({
+        kind: 'err',
+        title: t('Không kiểm tra được USB'),
+        detail: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      isCheckingUsb = false;
+    }
+  }
+
+  function toggleExternalPath(path: string) {
+    if (selectedExternalPaths.includes(path)) {
+      selectedExternalPaths = selectedExternalPaths.filter((p) => p !== path);
+    } else {
+      selectedExternalPaths = [...selectedExternalPaths, path];
+    }
+  }
+
+  async function handleBackupToExternal() {
+    if (!selectedExternalRoot || selectedExternalPaths.length === 0 || isBusy) return;
+    const paths = [...selectedExternalPaths];
+    const target = selectedExternalRoot;
+    try {
+      const rep = await taskStore.run(
+        {
+          kind: 'external_backup',
+          title: t('Đang sao lưu nén sang USB...'),
+          phase: 'archiving',
+        },
+        () => backupToExternalDrive(target, paths),
+        (res) => ({
+          kind: 'ok',
+          title: t('Đã sao lưu sang USB & giải phóng ổ C:!'),
+          detail: t('Đã giải phóng {size} (lưu tại {dir})', {
+            size: formatSize(res.freed_bytes),
+            dir: res.backup_dir,
+          }),
+        })
+      );
+      // Remove backed-up paths from candidate list and update remaining bytes
+      if (lastReport) {
+        const doneSet = new Set(paths);
+        const remainingCandidates = lastReport.external_backup_candidates.filter(
+          (c) => !doneSet.has(c.path)
+        );
+        const newRemaining = Math.max(0, lastReport.remaining_bytes_needed - rep.freed_bytes);
+        lastReport = {
+          ...lastReport,
+          total_freed_bytes: lastReport.total_freed_bytes + rep.freed_bytes,
+          remaining_bytes_needed: newRemaining,
+          goal_reached: newRemaining === 0,
+          external_backup_candidates: remainingCandidates,
+        };
+        selectedExternalPaths = remainingCandidates.slice(0, 3).map((c) => c.path);
+      }
+    } catch {
+      // Toast already shown by taskStore
+    }
+  }
+
+  async function handleLaunchUninstaller(app: InstalledAppSuggestionDto) {
+    try {
+      const opened = await launchAppUninstaller(app.uninstall_command);
+      if (opened) {
+        taskStore.showToast({
+          kind: 'info',
+          title: t('Đã mở trình gỡ cài đặt cho {app}', { app: app.name }),
+          detail: t('Hoàn tất gỡ cài đặt rồi bấm Làm mới để cập nhật dung lượng ổ C:.'),
+        });
+      } else if (app.uninstall_command) {
+        await navigator.clipboard?.writeText(app.uninstall_command).catch(() => {});
+        taskStore.showToast({
+          kind: 'info',
+          title: t('Đã sao chép lệnh gỡ cài đặt cho {app}', { app: app.name }),
+          detail: app.uninstall_command,
+        });
+      }
+    } catch (err) {
+      taskStore.showToast({
+        kind: 'err',
+        title: t('Không mở được trình gỡ cài đặt'),
+        detail: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
@@ -219,6 +373,11 @@
     lastReport
       ? lastReport.skipped_locked.reduce((acc, item) => acc + item.size_bytes, 0)
       : 0
+  );
+  let selectedExternalBytes = $derived(
+    (lastReport?.external_backup_candidates ?? [])
+      .filter((c) => selectedExternalPaths.includes(c.path))
+      .reduce((acc, c) => acc + c.size_bytes, 0)
   );
 </script>
 
@@ -350,7 +509,7 @@
           <span>{t('Làm xanh ổ C: ngay')}</span>
         </button>
         <p class="text-[11px] text-secondary text-center sm:text-right max-w-xs">
-          {t('Tự động phân tích → dọn rác → nén gọn → chuyển dữ liệu sang ổ dự phòng.')}
+          {t('Dọn theo mục tiêu: Rác thuần túy → Ứng dụng ít dùng → Dọn sâu → Dừng ngay khi đạt.')}
         </p>
       </div>
     </div>
@@ -358,22 +517,53 @@
 
   <!-- Inline Report Card after Make Green Now finishes -->
   {#if lastReport}
-    <section class="rounded-2xl border border-emerald-500/35 bg-card p-5 shadow-sm space-y-4">
+    <section
+      class={`rounded-2xl border bg-card p-5 shadow-sm space-y-4 ${
+        lastReport.goal_reached ? 'border-emerald-500/35' : 'border-amber-500/40'
+      }`}
+    >
       <div class="flex items-start justify-between gap-3">
         <div class="flex items-center gap-2.5">
-          <div class="h-9 w-9 rounded-xl bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
-            <CheckCircle2 class="h-5 w-5" />
+          <div
+            class={`h-9 w-9 rounded-xl flex items-center justify-center shrink-0 ${
+              lastReport.goal_reached
+                ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
+                : 'bg-amber-500/15 text-amber-600 dark:text-amber-400'
+            }`}
+          >
+            {#if lastReport.goal_reached}
+              <CheckCircle2 class="h-5 w-5" />
+            {:else}
+              <AlertTriangle class="h-5 w-5" />
+            {/if}
           </div>
-          <div>
-            <h3 class="text-base font-bold text-primary">
-              {#if lastReport.cancelled}
-                {t('Đã dừng — đã giải phóng {size}', { size: formatSize(lastReport.total_freed_bytes) })}
-              {:else if lastReport.total_freed_bytes > 0}
-                {t('Xong! Đã giải phóng {size} cho ổ C:', { size: formatSize(lastReport.total_freed_bytes) })}
-              {:else}
-                {t('Ổ C: của bạn đã khá gọn gàng!')}
+          <div class="space-y-0.5">
+            <div class="flex items-center gap-2 flex-wrap">
+              <h3 class="text-base font-bold text-primary">
+                {#if lastReport.cancelled}
+                  {t('Đã dừng — đã giải phóng {size}', { size: formatSize(lastReport.total_freed_bytes) })}
+                {:else if lastReport.total_freed_bytes > 0}
+                  {t('Xong! Đã giải phóng {size} cho ổ C:', { size: formatSize(lastReport.total_freed_bytes) })}
+                {:else}
+                  {t('Ổ C: của bạn đã khá gọn gàng!')}
+                {/if}
+              </h3>
+              {#if lastReport.sweep_mode === 'light'}
+                <span class="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-500/15 text-emerald-700 dark:text-emerald-300">
+                  {t('Dọn nhẹ · Tầng 1')}
+                </span>
+              {:else if lastReport.goal_reached}
+                <span class="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-500/15 text-emerald-700 dark:text-emerald-300">
+                  {t('Đạt mục tiêu ở Tầng {tier}', { tier: lastReport.stopped_at_tier })}
+                </span>
+              {:else if lastReport.remaining_bytes_needed > 0}
+                <span class="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-amber-500/15 text-amber-700 dark:text-amber-300">
+                  {t('Còn thiếu {size} để đạt mục tiêu', {
+                    size: formatSize(lastReport.remaining_bytes_needed),
+                  })}
+                </span>
               {/if}
-            </h3>
+            </div>
             <p class="text-xs text-secondary tabular-numbers">
               {t('Ổ C: từ {before}% → {after}% · Trống thêm từ {bFree} lên {aFree}', {
                 before: beforePct,
@@ -436,6 +626,153 @@
           >
             {t('Đóng ứng dụng & giải phóng nốt')}
           </button>
+        </div>
+      {/if}
+
+      <!-- Tier 4: External USB / Portable Drive Backup Escalation -->
+      {#if !lastReport.goal_reached && lastReport.remaining_bytes_needed > 0}
+        <div class="rounded-xl border border-sky-500/35 bg-sky-500/5 p-4 space-y-3">
+          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div class="flex items-center gap-2">
+              <div class="h-8 w-8 rounded-lg bg-sky-500/15 text-sky-600 dark:text-sky-400 flex items-center justify-center shrink-0">
+                <Usb class="h-4 w-4" />
+              </div>
+              <div>
+                <h4 class="text-sm font-bold text-primary">
+                  {t('Tầng 4: Bạn có USB hoặc ổ cứng di động để sao lưu sang không?')}
+                </h4>
+                <p class="text-xs text-secondary">
+                  {t('GreenC nén sao lưu an toàn vào USB (không tạo liên kết hỏng khi rút USB) và giải phóng ổ C:.')}
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onclick={handleRefreshUsbDrives}
+              disabled={isCheckingUsb || isBusy}
+              class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border bg-card hover:bg-subtle text-xs font-semibold text-primary shrink-0 disabled:opacity-50"
+            >
+              <RefreshCw class={`h-3.5 w-3.5 ${isCheckingUsb ? 'animate-spin' : ''}`} />
+              {t('Kiểm tra lại USB')}
+            </button>
+          </div>
+
+          {#if externalDrives.length === 0}
+            <p class="text-xs text-secondary bg-card/70 rounded-lg px-3.5 py-2.5 border border-border/60">
+              {t('Chưa phát hiện USB hoặc ổ cứng di động nào. Hãy cắm vào máy (trống từ 512 MB trở lên) rồi bấm "Kiểm tra lại USB".')}
+            </p>
+          {:else}
+            <div class="space-y-3">
+              <div class="flex items-center gap-2 flex-wrap text-xs">
+                <span class="font-medium text-secondary">{t('Chọn USB / ổ cứng di động:')}</span>
+                <select
+                  bind:value={selectedExternalRoot}
+                  disabled={isBusy}
+                  class="bg-card border border-border rounded-lg px-2.5 py-1.5 text-xs font-semibold text-primary outline-none cursor-pointer"
+                >
+                  {#each externalDrives as ext}
+                    <option value={ext.root}>
+                      {ext.drive_letter}: ({ext.label || t('Ổ di động')} · {ext.filesystem} · {t('trống {free}', { free: formatSize(ext.free_bytes) })})
+                    </option>
+                  {/each}
+                </select>
+              </div>
+
+              {#if lastReport.external_backup_candidates.length > 0}
+                <div class="rounded-lg border border-border/70 bg-card divide-y divide-border/50 max-h-48 overflow-y-auto">
+                  {#each lastReport.external_backup_candidates as cand}
+                    {@const checked = selectedExternalPaths.includes(cand.path)}
+                    <button
+                      type="button"
+                      onclick={() => toggleExternalPath(cand.path)}
+                      class="w-full px-3 py-2 flex items-center justify-between gap-3 hover:bg-subtle/60 text-left text-xs"
+                    >
+                      <span class="flex items-center gap-2 min-w-0">
+                        {#if checked}
+                          <CheckSquare class="h-4 w-4 text-accent shrink-0" />
+                        {:else}
+                          <Square class="h-4 w-4 text-secondary shrink-0" />
+                        {/if}
+                        <span class="font-semibold text-primary truncate">{cand.name}</span>
+                        <span class="text-[11px] text-secondary shrink-0">
+                          · {t('{days} ngày chưa dùng', { days: cand.inactive_days })}
+                        </span>
+                      </span>
+                      <span class="font-mono font-semibold text-primary shrink-0">
+                        {formatSize(cand.size_bytes)}
+                      </span>
+                    </button>
+                  {/each}
+                </div>
+
+                <div class="flex items-center justify-between gap-3 flex-wrap">
+                  <span class="text-xs text-secondary">
+                    {t('Đã chọn {count} thư mục ({size})', {
+                      count: selectedExternalPaths.length,
+                      size: formatSize(selectedExternalBytes),
+                    })}
+                  </span>
+                  <button
+                    type="button"
+                    onclick={handleBackupToExternal}
+                    disabled={isBusy || selectedExternalPaths.length === 0 || !selectedExternalRoot}
+                    class="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-700 text-white text-xs font-semibold disabled:opacity-50"
+                  >
+                    <Usb class="h-3.5 w-3.5" />
+                    {t('Sao lưu nén sang USB & giải phóng ổ C:')}
+                  </button>
+                </div>
+              {/if}
+            </div>
+          {/if}
+        </div>
+      {/if}
+
+      <!-- Tier 5: Unused App Uninstall Suggestions (least-used & largest first) -->
+      {#if !lastReport.goal_reached && lastReport.uninstall_suggestions.length > 0}
+        <div class="rounded-xl border border-rose-500/30 bg-rose-500/5 p-4 space-y-3">
+          <div class="flex items-center gap-2">
+            <div class="h-8 w-8 rounded-lg bg-rose-500/15 text-rose-600 dark:text-rose-400 flex items-center justify-center shrink-0">
+              <PackageX class="h-4 w-4" />
+            </div>
+            <div>
+              <h4 class="text-sm font-bold text-primary">
+                {t('Tầng 5: Gợi ý gỡ bớt ứng dụng ít dùng nhất')}
+              </h4>
+              <p class="text-xs text-secondary">
+                {t('Xếp từ ứng dụng lâu không dùng nhất & nặng nhất. GreenC chỉ mở trình gỡ cài đặt chính thức để bạn tự quyết định.')}
+              </p>
+            </div>
+          </div>
+
+          <div class="rounded-lg border border-border/70 bg-card divide-y divide-border/50 max-h-60 overflow-y-auto">
+            {#each lastReport.uninstall_suggestions as app}
+              <div class="px-3.5 py-2.5 flex items-center justify-between gap-3 text-xs">
+                <div class="min-w-0">
+                  <div class="font-semibold text-primary truncate">{app.name}</div>
+                  <div class="text-[11px] text-secondary truncate">
+                    {t('~{days} ngày chưa dùng', { days: app.last_used_days })}
+                    {#if app.publisher}
+                      · {app.publisher}
+                    {/if}
+                  </div>
+                </div>
+                <div class="flex items-center gap-3 shrink-0">
+                  <span class="font-mono font-semibold text-primary">
+                    {formatSize(app.size_bytes)}
+                  </span>
+                  <button
+                    type="button"
+                    onclick={() => handleLaunchUninstaller(app)}
+                    class="inline-flex items-center gap-1 px-2.5 py-1 rounded-md border border-rose-500/40 text-rose-600 dark:text-rose-400 hover:bg-rose-500/10 font-semibold transition-colors"
+                  >
+                    <ExternalLink class="h-3 w-3" />
+                    {t('Mở gỡ cài đặt')}
+                  </button>
+                </div>
+              </div>
+            {/each}
+          </div>
         </div>
       {/if}
 
@@ -514,6 +851,71 @@
     </div>
   {/if}
 </div>
+
+<!-- Option 2 Modal: When Drive C: is ALREADY Green, let user choose Light (Tier 1) vs Deep Max Space -->
+{#if showGreenChoiceModal}
+  <div class="fixed inset-0 z-50 bg-black/45 backdrop-blur-sm flex items-center justify-center p-4">
+    <div class="rounded-2xl border border-border bg-card p-6 shadow-2xl max-w-lg w-full space-y-4">
+      <div class="flex items-center justify-between">
+        <h3 class="font-bold text-base text-primary">{t('Ổ C: đang xanh (đạt mục tiêu)')}</h3>
+        <button
+          type="button"
+          onclick={() => (showGreenChoiceModal = false)}
+          class="text-secondary hover:text-primary"
+        >
+          <X class="h-4 w-4" />
+        </button>
+      </div>
+
+      <p class="text-xs text-secondary leading-relaxed">
+        {t('Ổ C: hiện đang dưới ngưỡng mục tiêu ({pct}% / {max}%). Bạn muốn GreenC dọn theo mức nào?', {
+          pct: usagePercent,
+          max: maxPct,
+        })}
+      </p>
+
+      <div class="space-y-2.5">
+        <button
+          type="button"
+          onclick={() => handlePickGreenMode('light')}
+          class="w-full text-left rounded-xl border-2 border-accent/50 hover:border-accent bg-accent/5 p-4 transition-colors space-y-1 cursor-pointer"
+        >
+          <div class="flex items-center gap-2 font-bold text-sm text-primary">
+            <Sparkles class="h-4 w-4 text-accent" />
+            <span>{t('Dọn nhẹ — Chỉ rác thuần túy (Khuyên dùng)')}</span>
+          </div>
+          <p class="text-xs text-secondary">
+            {t('Chỉ dọn Tầng 1: tệp tạm (Temp), crash dumps và log cũ. Rất nhanh, không đụng vào cache ứng dụng hay di chuyển dữ liệu.')}
+          </p>
+        </button>
+
+        <button
+          type="button"
+          onclick={() => handlePickGreenMode('max_space')}
+          class="w-full text-left rounded-xl border border-border hover:border-accent/60 bg-subtle/50 p-4 transition-colors space-y-1 cursor-pointer"
+        >
+          <div class="flex items-center gap-2 font-bold text-sm text-primary">
+            <Zap class="h-4 w-4 text-emerald-600" />
+            <span>{t('Dọn sâu tối đa')}</span>
+          </div>
+          <p class="text-xs text-secondary">
+            {t('Chạy toàn bộ các tầng (Rác thuần túy → Cache ứng dụng ít dùng → Nén gọn → Chuyển dữ liệu) để giải phóng nhiều dung lượng nhất.')}
+          </p>
+        </button>
+      </div>
+
+      <div class="flex justify-end">
+        <button
+          type="button"
+          onclick={() => (showGreenChoiceModal = false)}
+          class="px-4 py-1.5 rounded-lg border border-border text-xs font-medium text-secondary hover:text-primary"
+        >
+          {t('Hủy')}
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
 
 <!-- Single-Drive 2-Option Modal (shown ONLY when PC has no secondary backup drive) -->
 {#if showSingleDriveModal}
