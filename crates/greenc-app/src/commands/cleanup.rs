@@ -347,6 +347,7 @@ pub async fn execute_cleanup(
         let mut vault_archive_path = None;
         let mut compressed_vault_bytes = 0u64;
         let mut archived_refs: Vec<(String, String, String, u64)> = Vec::new(); // (archive_id, app_name, category, bytes)
+        let mut candidates_ready_for_unlink: Vec<greenc_core::models::CleanCandidate> = Vec::new();
 
         let grouped = greenc_vault::profiles::group_candidates_by_app(&candidates_to_clean);
 
@@ -383,6 +384,7 @@ pub async fn execute_cleanup(
                 let state_clone_for_progress = state_inner.clone();
                 let task_id_clone = task_id_worker.clone();
                 let base_bytes = cumulative_done_bytes;
+                let app_label = app_name.clone();
 
                 let manifest = pipeline
                     .archive_candidates(
@@ -401,7 +403,7 @@ pub async fn execute_cleanup(
                                     + ((done_now as f64 / total_bytes.max(1) as f64) * 55.0)
                                         as u32,
                                 phase: "archive".to_string(),
-                                title: format!("Đang sao lưu {}...", p.current_file),
+                                title: format!("Đang sao lưu {}...", app_label),
                                 detail: p.current_file,
                                 done_files: p.done_files,
                                 total_files,
@@ -425,14 +427,18 @@ pub async fn execute_cleanup(
                 compressed_vault_bytes =
                     compressed_vault_bytes.saturating_add(manifest.compressed_size);
                 cumulative_done_bytes =
-                    cumulative_done_bytes.saturating_add(manifest.original_size);
+                    cumulative_done_bytes.saturating_add(manifest.total_size);
                 archived_refs.push((
                     manifest.archive_id.clone(),
                     app_name.clone(),
                     category.clone(),
-                    manifest.original_size,
+                    manifest.total_size,
                 ));
+                // Only items from successfully archived groups are eligible for unlinking.
+                candidates_ready_for_unlink.extend(group_items.iter().cloned());
             }
+        } else {
+            candidates_ready_for_unlink = candidates_to_clean.clone();
         }
 
         // Step 2: Two-Phase Safe Deletion
@@ -471,7 +477,7 @@ pub async fn execute_cleanup(
             },
         );
 
-        let manifest_items: Vec<greenc_core::models::FileManifestItem> = candidates_to_clean
+        let manifest_items: Vec<greenc_core::models::FileManifestItem> = candidates_ready_for_unlink
             .iter()
             .enumerate()
             .map(|(i, c)| greenc_core::models::FileManifestItem {
@@ -492,43 +498,56 @@ pub async fn execute_cleanup(
             .unlink_archived_items(&manifest_items, &snapshots)
             .map_err(|e| format!("Lỗi xóa tệp tin: {}", e))?;
 
-        // Record savings events for analytics scorecard
+        // Record actual freed bytes (excluding skipped files) per app group for analytics scorecard
         if clean_res.bytes_freed > 0 {
+            let skipped_paths: std::collections::HashSet<std::path::PathBuf> = clean_res
+                .skipped_items
+                .iter()
+                .map(|(p, _)| p.clone())
+                .collect();
             let now = chrono::Utc::now();
             let ts = now.to_rfc3339();
             let date = now.format("%Y-%m-%d").to_string();
-            if enable_vault && !archived_refs.is_empty() {
-                for (aid, app_name, category, bytes) in &archived_refs {
+
+            let archive_id_by_app: HashMap<&str, &str> = archived_refs
+                .iter()
+                .map(|(aid, app, _, _)| (app.as_str(), aid.as_str()))
+                .collect();
+
+            for (app_name, category, items) in &grouped {
+                if enable_vault && !archive_id_by_app.contains_key(app_name.as_str()) {
+                    continue;
+                }
+                let actual_group_bytes: u64 = items
+                    .iter()
+                    .filter(|c| !skipped_paths.contains(&c.path))
+                    .map(|c| c.size_bytes)
+                    .fold(0u64, u64::saturating_add);
+                if actual_group_bytes > 0 {
+                    let (source_kind, source_ref) = if enable_vault {
+                        (
+                            "cleanup_vault",
+                            archive_id_by_app
+                                .get(app_name.as_str())
+                                .copied()
+                                .unwrap_or(task_id_worker.as_str())
+                                .to_string(),
+                        )
+                    } else {
+                        ("cleanup_direct", task_id_worker.clone())
+                    };
                     let _ = state_inner.db.record_savings_event(
                         &greenc_storage::SavingsEventInput {
                             timestamp: ts.clone(),
                             event_date: date.clone(),
-                            source_kind: "cleanup_vault".to_string(),
-                            source_ref: aid.clone(),
+                            source_kind: source_kind.to_string(),
+                            source_ref,
                             app_name: app_name.clone(),
                             category: category.clone(),
-                            bytes_freed: *bytes,
+                            bytes_freed: actual_group_bytes,
                             drive_letter: "C".to_string(),
                         },
                     );
-                }
-            } else {
-                for (app_name, category, items) in &grouped {
-                    let group_bytes: u64 = items.iter().map(|c| c.size_bytes).sum();
-                    if group_bytes > 0 {
-                        let _ = state_inner.db.record_savings_event(
-                            &greenc_storage::SavingsEventInput {
-                                timestamp: ts.clone(),
-                                event_date: date.clone(),
-                                source_kind: "cleanup_direct".to_string(),
-                                source_ref: task_id_worker.clone(),
-                                app_name: app_name.clone(),
-                                category: category.clone(),
-                                bytes_freed: group_bytes,
-                                drive_letter: "C".to_string(),
-                            },
-                        );
-                    }
                 }
             }
         }

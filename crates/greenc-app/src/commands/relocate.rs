@@ -848,12 +848,16 @@ pub async fn relocate_batch(
         let all_known = KnownFolderService::list_known_folders(drive_char, &shell_api)
             .unwrap_or_default();
 
-        let selected_known: Vec<_> = all_known
-            .into_iter()
-            .filter(|kf| {
-                known_folder_ids.contains(&kf.folder_id) && !kf.is_onedrive && !kf.is_redirected
-            })
-            .collect();
+        let selected_known: Vec<_> = if cfg!(feature = "store") {
+            Vec::new()
+        } else {
+            all_known
+                .into_iter()
+                .filter(|kf| {
+                    known_folder_ids.contains(&kf.folder_id) && !kf.is_onedrive && !kf.is_redirected
+                })
+                .collect()
+        };
         let selected_cands: Vec<_> = all_candidates
             .into_iter()
             .filter(|c| candidate_ids.contains(&c.id) && c.is_eligible && !c.is_locked)

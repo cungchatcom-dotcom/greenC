@@ -10,7 +10,7 @@
 use crate::state::{AppState, TaskProgressEvent};
 use chrono::Utc;
 use greenc_core::config::{default_vault_dir, MIN_VAULT_RESERVE_BYTES};
-use greenc_core::models::{DailySnapshot, RegenerableCacheMode};
+use greenc_core::models::RegenerableCacheMode;
 use greenc_core::task::TaskControl;
 use greenc_platform::app_lifecycle::{AppLifecycleApi, AppShutdownSession, NativeAppLifecycleApi};
 use greenc_platform::traits::{
@@ -205,7 +205,11 @@ pub async fn make_green_now(
 
         let backup_drive: Option<char> = explicit_drive
             .or(configured_drive)
-            .or_else(|| recommend_drive(&drives).map(|d| d.drive_letter));
+            .or_else(|| {
+                recommend_drive(&drives)
+                    .filter(|d| d.is_eligible && !d.is_system)
+                    .map(|d| d.drive_letter)
+            });
 
         let mut warnings: Vec<String> = Vec::new();
         let mut actions: Vec<MakeGreenActionItemDto> = Vec::new();
@@ -954,17 +958,22 @@ pub async fn make_green_now(
 
         // Update daily snapshot so Overview & History reflect the new C: state immediately.
         let now_utc = Utc::now();
-        let _ = state_inner.db.upsert_daily_snapshot(&DailySnapshot {
-            id: None,
-            drive_letter: sys_letter.to_string(),
-            snapshot_date: now_utc.format("%Y-%m-%d").to_string(),
+        let date_str = now_utc.format("%Y-%m-%d").to_string();
+        let drive_key =
+            greenc_scanner::tracker::DiskTracker::normalize_drive(&format!("{sys_letter}:"));
+        let _ = state_inner.db.upsert_daily_snapshot(
+            &drive_key,
+            &date_str,
             total_bytes,
-            used_bytes: after_used_bytes,
-            free_bytes: after_free_bytes,
-            net_change_bytes: -(total_freed_bytes as i64),
-            reclaimed_bytes: total_freed_bytes,
-            updated_at: now_utc,
-        });
+            after_used_bytes,
+            after_free_bytes,
+            Some(-(total_freed_bytes as i64)),
+        );
+        if total_freed_bytes > 0 {
+            let _ = state_inner
+                .db
+                .record_reclaimed_bytes(&drive_key, &date_str, total_freed_bytes);
+        }
 
         let cancelled = task_ctrl.is_cancelled();
         state_inner.emit_progress(&TaskProgressEvent {
