@@ -7,6 +7,22 @@ Ghi thay đổi mới vào mục **Unreleased**. Khi phát hành, `scripts/versi
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-11-28
+
+### Cải thiện
+- **Bộ máy dọn rác 5 tầng tính từ mục tiêu**:
+  - **Tầng 0**: Tính chính xác lượng dung lượng cần giải phóng từ mục tiêu ổ đĩa và dừng ngay khi đạt mục tiêu. Khi ổ C: đã xanh, bấm **Làm xanh ổ C: ngay** sẽ hỏi người dùng chọn **Dọn nhẹ (chỉ rác thuần túy — Tầng 1)** hoặc **Dọn sâu tối đa**.
+  - **Tầng 1 (Rác thuần túy)**: Dọn các tệp ít quan trọng nhất trước (Temp, Crash Dumps, Log cũ, phiên bản cũ).
+  - **Tầng 2 (Cache ứng dụng ít dùng nhất)**: Xếp hạng ứng dụng theo thời điểm ít sử dụng nhất trước, dọn bộ đệm an toàn tự tin nhất trước.
+  - **Tầng 3 (Dọn sâu theo ứng dụng ít dùng nhất)**: Nén gọn WOF không mất dữ liệu & di chuyển dữ liệu nặng sang ổ dự phòng theo thứ tự ít dùng nhất trước.
+  - **Tầng 4 (Sao lưu USB / ổ cứng di động)**: Nếu vẫn chưa đạt mục tiêu, tự động phát hiện USB/ổ cứng di động (hoặc mời cắm vào & bấm **Kiểm tra lại USB**), nén sao lưu ZIP có kiểm chứng SHA-256 sang USB (tuyệt đối không tạo NTFS junction lên USB tháo rời) để giải phóng ổ C: và vẫn khôi phục 1 chạm.
+  - **Tầng 5 (Gợi ý gỡ ứng dụng ít dùng nhất)**: Nếu vẫn chưa đạt mục tiêu, liệt kê các ứng dụng cài trên máy từ lâu không dùng & nặng nhất trước (loại trừ thành phần hệ thống/driver/runtime) kèm nút **Mở gỡ cài đặt** chính thức.
+
+### Sửa
+- Sửa lỗi biểu đồ cột trong **Hiệu quả của GreenC** (`SavingsScorecard`) bị xẹp chiều cao thành mẩu nhỏ do CSS `%` trong container `flex-1`.
+- Sửa lỗi ô **Chọn nhanh ổ đĩa...** trong Cài đặt tự reset về dòng chữ mặc định ngay sau khi người dùng chọn ổ.
+- Sửa lỗi đo dung lượng ổ hệ thống `/` trên Linux/macOS khi cập nhật snapshot sau khi chạy `make_green_now`.
+
 ## [2.3.0] - 2026-11-28
 
 ### Cải thiện
