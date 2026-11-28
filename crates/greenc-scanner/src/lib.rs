@@ -5,6 +5,7 @@
 
 pub mod attribution;
 pub mod forecast;
+pub mod installed_apps;
 pub mod orphans;
 pub mod profiles;
 pub mod space_lens;
