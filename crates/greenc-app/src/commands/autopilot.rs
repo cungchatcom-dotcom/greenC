@@ -17,7 +17,7 @@ use greenc_platform::traits::{
     NativeCompactionApi, NativeFileLockProbe, NativeProcessServiceProbe, NativeReparsePointApi,
     NativeShellFolderApi, NativeWin32VolumeApi, ProcessServiceProbe, Win32VolumeApi, WofAlgorithm,
 };
-use greenc_platform::volume::{list_drives_native, recommend_drive};
+use greenc_platform::volume::{list_drives_native, recommend_drive_info};
 use greenc_relocate::autopilot::{
     filter_non_overlapping_compaction_dirs, safe_profiles_for_mode,
     select_safe_relocation_candidates, LockedAppSummary,
@@ -206,7 +206,7 @@ pub async fn make_green_now(
         let backup_drive: Option<char> = explicit_drive
             .or(configured_drive)
             .or_else(|| {
-                recommend_drive(&drives)
+                recommend_drive_info(&drives)
                     .filter(|d| d.is_eligible && !d.is_system)
                     .map(|d| d.drive_letter)
             });
