@@ -296,6 +296,19 @@
     }
   }
 
+  let selectedQuickDrive = $derived.by(() => {
+    const cur = newDataRoot.trim().replaceAll('/', '\\').toLowerCase();
+    if (!cur) return '';
+    const match = drives
+      .filter((d) => d.is_eligible)
+      .sort((a, b) => b.root.length - a.root.length)
+      .find((d) => {
+        const rootNorm = d.root.replaceAll('/', '\\').toLowerCase();
+        return cur === rootNorm || cur.startsWith(rootNorm.endsWith('\\') ? rootNorm : rootNorm + '\\') || cur.startsWith(rootNorm);
+      });
+    return match ? match.root : '';
+  });
+
   async function handleMoveDataRoot() {
     if (!newDataRoot.trim() || isMovingVault) return;
     isMovingVault = true;
@@ -470,12 +483,12 @@
     <div class="flex flex-col sm:flex-row gap-2.5">
       <div class="flex items-center gap-1.5">
         <select
+          value={selectedQuickDrive}
           onchange={(e) => {
             const target = e.currentTarget as HTMLSelectElement;
             const root = target.value;
             if (root) {
               newDataRoot = dataRootForDrive(root);
-              target.value = "";
             }
           }}
           class="px-3 py-2 rounded-lg border border-border bg-subtle text-xs font-semibold text-primary max-w-[280px]"

@@ -164,32 +164,52 @@
           {/if}
         </div>
 
-        <div class="h-44 flex items-end gap-1.5 pt-4">
-          {#each stats.buckets as bucket, idx}
-            {@const pct = bucket.bytes_freed > 0 ? Math.max(8, Math.round((bucket.bytes_freed / maxBucketBytes) * 100)) : 3}
-            <button
-              type="button"
-              onmouseenter={() => (hoveredIdx = idx)}
-              onmouseleave={() => (hoveredIdx = null)}
-              onfocus={() => (hoveredIdx = idx)}
-              class="flex-1 h-full flex flex-col items-center justify-end gap-1.5 group outline-none"
-              title={`${bucket.label}: ${formatSize(bucket.bytes_freed)}`}
-            >
-              <div class="w-full flex-1 flex items-end">
+        <div class="pt-3 space-y-1.5">
+          <div class="relative h-36 flex items-end gap-1.5 border-b border-border/70 pb-0.5">
+            <!-- Subtle horizontal guide lines -->
+            <div class="pointer-events-none absolute inset-x-0 top-0 border-t border-dashed border-border/40"></div>
+            <div class="pointer-events-none absolute inset-x-0 top-1/2 border-t border-dashed border-border/40"></div>
+
+            {#each stats.buckets as bucket, idx}
+              {@const barPx = bucket.bytes_freed > 0
+                ? Math.max(10, Math.round((bucket.bytes_freed / maxBucketBytes) * 132))
+                : 3}
+              <button
+                type="button"
+                onmouseenter={() => (hoveredIdx = idx)}
+                onmouseleave={() => (hoveredIdx = null)}
+                onfocus={() => (hoveredIdx = idx)}
+                class="relative z-10 flex-1 h-full flex flex-col items-center justify-end group outline-none"
+                title={`${bucket.label}: ${formatSize(bucket.bytes_freed)}`}
+              >
+                {#if bucket.bytes_freed > 0}
+                  <span class="text-[9px] font-mono font-semibold text-accent mb-1 truncate max-w-full opacity-90 group-hover:opacity-100">
+                    {formatSize(bucket.bytes_freed)}
+                  </span>
+                {/if}
                 <div
-                  class={`w-full rounded-t-md transition-all duration-200 ${
+                  class={`w-full max-w-[36px] rounded-t-md transition-all duration-200 ${
                     bucket.bytes_freed > 0
-                      ? 'bg-accent/80 group-hover:bg-accent'
-                      : 'bg-border/50'
+                      ? 'bg-accent/85 group-hover:bg-accent shadow-sm'
+                      : 'bg-border/45 group-hover:bg-border/80'
                   }`}
-                  style={`height: ${pct}%`}
+                  style={`height: ${barPx}px`}
                 ></div>
-              </div>
-              <span class="text-[10px] text-secondary truncate max-w-full tabular-numbers">
+              </button>
+            {/each}
+          </div>
+
+          <div class="flex items-center gap-1.5">
+            {#each stats.buckets as bucket, idx}
+              <span
+                class={`flex-1 text-center text-[10px] truncate tabular-numbers ${
+                  hoveredIdx === idx ? 'text-accent font-semibold' : 'text-secondary'
+                }`}
+              >
                 {bucket.label}
               </span>
-            </button>
-          {/each}
+            {/each}
+          </div>
         </div>
       </div>
 
