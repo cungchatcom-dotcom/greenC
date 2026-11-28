@@ -7,6 +7,7 @@ import { controlTask, listenTaskProgress, type TaskProgressEvent } from './api';
 
 export type ManagedTaskKind =
   | 'make_green'
+  | 'external_backup'
   | 'relocate'
   | 'relocate_batch'
   | 'cleanup_execute'

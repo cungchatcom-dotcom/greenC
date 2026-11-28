@@ -65,6 +65,9 @@ pub fn run() {
             // Bootstrap & Overview (User Story 1)
             commands::analytics::get_savings_stats,
             commands::autopilot::make_green_now,
+            commands::autopilot::list_external_backup_drives,
+            commands::autopilot::backup_to_external_drive,
+            commands::autopilot::launch_app_uninstaller,
             commands::overview::get_bootstrap_state,
             commands::overview::complete_first_run,
             commands::overview::get_overview_summary,
