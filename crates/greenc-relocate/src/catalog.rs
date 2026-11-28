@@ -104,6 +104,41 @@ fn get_app_catalog_windows() -> Vec<AppCatalogProfile> {
         how_description: "Liên kết dữ liệu không gian làm việc Slack".to_string(),
     });
 
+    // 3b. Global Chat & Social desktop apps (safe NTFS junction targets outside MSIX Packages)
+    let user_profile = env::var("USERPROFILE").map(PathBuf::from).unwrap_or_default();
+    catalog.push(AppCatalogProfile {
+        app_id: "wechat".to_string(),
+        name: "WeChat Files".to_string(),
+        strategy: RelocationStrategyKind::Junction,
+        source_path: user_profile.join("Documents").join("WeChat Files"),
+        process_names: vec!["wechat.exe".to_string(), "weixin.exe".to_string()],
+        how_description: "Liên kết dữ liệu chat và media WeChat bằng NTFS Junction".to_string(),
+    });
+    catalog.push(AppCatalogProfile {
+        app_id: "viber".to_string(),
+        name: "Viber".to_string(),
+        strategy: RelocationStrategyKind::Junction,
+        source_path: appdata.join("ViberPC"),
+        process_names: vec!["viber.exe".to_string()],
+        how_description: "Liên kết dữ liệu chat và tệp tải về Viber bằng NTFS Junction".to_string(),
+    });
+    catalog.push(AppCatalogProfile {
+        app_id: "line".to_string(),
+        name: "LINE".to_string(),
+        strategy: RelocationStrategyKind::Junction,
+        source_path: local_appdata.join("LINE").join("Data"),
+        process_names: vec!["line.exe".to_string()],
+        how_description: "Liên kết dữ liệu chat và ảnh LINE bằng NTFS Junction".to_string(),
+    });
+    catalog.push(AppCatalogProfile {
+        app_id: "dingtalk".to_string(),
+        name: "DingTalk".to_string(),
+        strategy: RelocationStrategyKind::Junction,
+        source_path: local_appdata.join("DingTalk"),
+        process_names: vec!["dingtalk.exe".to_string()],
+        how_description: "Liên kết bộ nhớ đệm và dữ liệu DingTalk bằng NTFS Junction".to_string(),
+    });
+
     // 4. CapCut
     catalog.push(AppCatalogProfile {
         app_id: "capcut".to_string(),

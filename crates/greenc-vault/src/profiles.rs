@@ -84,9 +84,10 @@ impl PresetProfiles {
             },
             CleanupProfile {
                 id: "chat_media".to_string(),
-                name: "Bộ nhớ đệm Chat (Zalo & DingTalk)".to_string(),
-                description: "Tệp đệm hình ảnh, âm thanh và phiên bản cũ Zalo / DingTalk"
-                    .to_string(),
+                name: "Ứng dụng Chat & Mạng xã hội".to_string(),
+                description:
+                    "Tệp đệm có thể tái tạo của Telegram, Discord, Slack, Teams, WhatsApp, WeChat, LINE, Viber, DingTalk, Zalo"
+                        .to_string(),
                 category: ProfileCategory::Communication,
                 default_enabled: true,
                 min_file_age_seconds: 60,
@@ -252,8 +253,42 @@ impl PresetProfiles {
                 // Zalo caches & obsolete versions are scanned via the strict allowlist in
                 // `crate::zalo_cleanup::scan_zalo_cleanup_units` (never touching `message`,
                 // `media`, `Local Storage`, `IndexedDB`, `config.json`, or `*.db*`).
+                let roaming = std::env::var("APPDATA").map(PathBuf::from).ok();
                 if let Some(ref lad) = local_app_data {
                     paths.push(lad.join(r"DingTalk\dumps"));
+                    paths.push(lad.join(r"DingTalk\Cache"));
+                    paths.push(lad.join(r"LINE\Cache"));
+                    // Microsoft Teams (New MSIX WebView cache)
+                    paths.push(lad.join(
+                        r"Packages\MSTeams_8wekyb3d8bbwe\LocalCache\Microsoft\MSTeams\EBWebView\Default\Cache",
+                    ));
+                    // WhatsApp Desktop (MSIX regenerable cache)
+                    paths.push(lad.join(
+                        r"Packages\5319275A.WhatsAppDesktop_cv1g1gvanyjgm\LocalCache\Roaming\Caches",
+                    ));
+                }
+                if let Some(ref appdata) = roaming {
+                    // Discord
+                    paths.push(appdata.join(r"discord\Cache"));
+                    paths.push(appdata.join(r"discord\Code Cache"));
+                    paths.push(appdata.join(r"discord\GPUCache"));
+                    // Slack
+                    paths.push(appdata.join(r"Slack\Cache"));
+                    paths.push(appdata.join(r"Slack\Code Cache"));
+                    paths.push(appdata.join(r"Slack\GPUCache"));
+                    // Telegram Desktop (regenerable media/user cache only)
+                    paths.push(appdata.join(r"Telegram Desktop\tdata\user_data\cache"));
+                    paths.push(appdata.join(r"Telegram Desktop\tdata\user_data\media_cache"));
+                    // Microsoft Teams (Classic)
+                    paths.push(appdata.join(r"Microsoft\Teams\Cache"));
+                    paths.push(appdata.join(r"Microsoft\Teams\Code Cache"));
+                    paths.push(appdata.join(r"Microsoft\Teams\GPUCache"));
+                    // Viber thumbnails
+                    paths.push(appdata.join(r"ViberPC\Thumbnails"));
+                }
+                if let Some(ref up) = user_profile {
+                    // WeChat temporary cache only (never messages/config)
+                    paths.push(up.join(r"Documents\WeChat Files\All Users\Temp"));
                 }
             }
             "crash_dumps" => {
@@ -674,5 +709,119 @@ impl PresetProfiles {
                 });
             }
         }
+    }
+}
+
+/// Infers a friendly user-facing app name and category from a file path and profile ID.
+pub fn infer_friendly_app_name(path: &Path, profile_id: &str) -> (String, String) {
+    let fallback = match profile_id {
+        "windows_temp" => ("Windows Temp", "system"),
+        "browser_cache" => ("Browser Cache", "browser"),
+        "chat_media" => ("Chat & Social", "chat"),
+        "crash_dumps" => ("Crash Dumps", "diagnostic"),
+        "package_managers" => ("Dev Cache", "dev"),
+        "app_logs" => ("System Logs", "logs"),
+        "old_versions" => ("Old Versions", "system"),
+        "orphan_radar" => ("Orphan Data", "other"),
+        _ => ("System Cleanup", "other"),
+    };
+    let (name, cat) =
+        greenc_storage::infer_app_from_path_str(&path.to_string_lossy(), fallback.0);
+    let final_cat = if cat == "other" {
+        fallback.1.to_string()
+    } else {
+        cat
+    };
+    (name, final_cat)
+}
+
+/// Groups cleanup candidates by friendly `(app_name, category)` so each app gets its own Vault archive.
+pub fn group_candidates_by_app(
+    candidates: &[CleanCandidate],
+) -> Vec<(String, String, Vec<CleanCandidate>)> {
+    let mut map: std::collections::BTreeMap<String, (String, Vec<CleanCandidate>)> =
+        std::collections::BTreeMap::new();
+    for c in candidates {
+        let (app_name, category) = infer_friendly_app_name(&c.path, &c.profile_id);
+        let entry = map
+            .entry(app_name)
+            .or_insert_with(|| (category, Vec::new()));
+        entry.1.push(c.clone());
+    }
+    map.into_iter()
+        .map(|(app_name, (category, items))| (app_name, category, items))
+        .collect()
+}
+
+#[cfg(test)]
+mod profile_app_grouping_tests {
+    use super::*;
+
+    #[test]
+    fn infers_friendly_global_app_names_and_groups_candidates() {
+        let now = SystemTime::now();
+        let mk = |p: &str, pid: &str, sz: u64| CleanCandidate {
+            path: PathBuf::from(p),
+            size_bytes: sz,
+            mtime: now,
+            is_locked: false,
+            profile_id: pid.to_string(),
+            is_canary: false,
+            is_orphan: false,
+            hardlink_siblings: vec![PathBuf::from(p)],
+        };
+
+        assert_eq!(
+            infer_friendly_app_name(
+                Path::new(r"C:\Users\A\AppData\Local\Google\Chrome\User Data\Default\Cache\f1"),
+                "browser_cache"
+            ),
+            ("Google Chrome".to_string(), "browser".to_string())
+        );
+        assert_eq!(
+            infer_friendly_app_name(
+                Path::new(r"C:\Users\A\AppData\Roaming\Telegram Desktop\tdata\user_data\cache\a.bin"),
+                "chat_media"
+            ),
+            ("Telegram Desktop".to_string(), "chat".to_string())
+        );
+        assert_eq!(
+            infer_friendly_app_name(
+                Path::new(r"C:\Users\A\AppData\Roaming\discord\Cache\data_1"),
+                "chat_media"
+            ),
+            ("Discord".to_string(), "chat".to_string())
+        );
+        assert_eq!(
+            infer_friendly_app_name(
+                Path::new(r"C:\Users\A\AppData\Local\Packages\MSTeams_8wekyb3d8bbwe\LocalCache\Microsoft\MSTeams\EBWebView\Default\Cache\x"),
+                "chat_media"
+            ),
+            ("Microsoft Teams".to_string(), "chat".to_string())
+        );
+        assert_eq!(
+            infer_friendly_app_name(
+                Path::new(r"C:\Users\A\AppData\Local\Packages\5319275A.WhatsAppDesktop_cv1g1gvanyjgm\LocalCache\Roaming\Caches\y"),
+                "chat_media"
+            ),
+            ("WhatsApp".to_string(), "chat".to_string())
+        );
+
+        let grouped = group_candidates_by_app(&[
+            mk(r"C:\Users\A\AppData\Roaming\discord\Cache\1", "chat_media", 100),
+            mk(r"C:\Users\A\AppData\Roaming\discord\Cache\2", "chat_media", 200),
+            mk(r"C:\Users\A\AppData\Local\Google\Chrome\User Data\Default\Cache\3", "browser_cache", 500),
+        ]);
+        assert_eq!(grouped.len(), 2);
+        assert_eq!(grouped[0].0, "Discord");
+        assert_eq!(grouped[0].2.len(), 2);
+        assert_eq!(grouped[1].0, "Google Chrome");
+        assert_eq!(grouped[1].2.len(), 1);
+    }
+
+    #[test]
+    fn chat_media_profile_is_internationalized() {
+        let p = PresetProfiles::get_by_id("chat_media").unwrap();
+        assert!(!p.name.contains("Zalo & DingTalk"));
     }
 }

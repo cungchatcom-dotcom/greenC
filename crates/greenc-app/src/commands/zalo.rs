@@ -427,6 +427,30 @@ pub async fn clean_zalo_now(
         )
         .map_err(|e| format!("Không dọn được Zalo: {e}"))?;
 
+        if report.logical_freed_bytes > 0 {
+            let now_utc = chrono::Utc::now();
+            let source_kind = if report.vault_archive_id.is_some() {
+                "cleanup_vault"
+            } else {
+                "cleanup_direct"
+            };
+            let _ = state_inner
+                .db
+                .record_savings_event(&greenc_storage::SavingsEventInput {
+                    timestamp: now_utc.to_rfc3339(),
+                    event_date: now_utc.format("%Y-%m-%d").to_string(),
+                    source_kind: source_kind.to_string(),
+                    source_ref: report
+                        .vault_archive_id
+                        .clone()
+                        .unwrap_or_else(|| task_id_worker.clone()),
+                    app_name: "Zalo PC".to_string(),
+                    category: "chat".to_string(),
+                    bytes_freed: report.logical_freed_bytes,
+                    drive_letter: "C".to_string(),
+                });
+        }
+
         state_inner.emit_progress(&TaskProgressEvent {
             task_id: task_id_worker,
             kind: "zalo_clean".to_string(),

@@ -342,10 +342,13 @@ pub async fn execute_cleanup(
             }
         }
 
-        // Step 1: Canary Vault Archiving (if enabled)
+        // Step 1: Per-app Canary Vault Archiving (if enabled)
         let mut vault_archive_id = None;
         let mut vault_archive_path = None;
         let mut compressed_vault_bytes = 0u64;
+        let mut archived_refs: Vec<(String, String, String, u64)> = Vec::new(); // (archive_id, app_name, category, bytes)
+
+        let grouped = greenc_vault::profiles::group_candidates_by_app(&candidates_to_clean);
 
         if enable_vault {
             state_inner.emit_progress(&TaskProgressEvent {
@@ -354,7 +357,7 @@ pub async fn execute_cleanup(
                 state: "running".to_string(),
                 percent: 10,
                 phase: "archive".to_string(),
-                title: "Đang lưu trữ vào Kho an toàn (Canary Vault)...".to_string(),
+                title: "Đang lưu trữ vào Kho dự phòng...".to_string(),
                 detail: format!("Nén {} tệp tin...", total_files),
                 done_files: 0,
                 total_files,
@@ -371,46 +374,65 @@ pub async fn execute_cleanup(
             };
 
             let pipeline = ArchiverPipeline::new(arch_options);
-            let state_clone_for_progress = state_inner.clone();
-            let task_id_clone = task_id_worker.clone();
+            let mut cumulative_done_bytes = 0u64;
 
-            let manifest = pipeline
-                .archive_candidates(
-                    0, // Ad-hoc cleanup
-                    "QuickCleanup",
-                    &candidates_to_clean,
-                    &volume_api,
-                    &task_ctrl,
-                    move |p| {
-                        state_clone_for_progress.emit_progress(&TaskProgressEvent {
-                            task_id: task_id_clone.clone(),
-                            kind: "cleanup_execute".to_string(),
-                            state: "running".to_string(),
-                            percent: 10
-                                + ((p.done_bytes as f64 / p.total_bytes.max(1) as f64) * 50.0)
-                                    as u32,
-                            phase: "archive".to_string(),
-                            title: "Đang nén dữ liệu vào Kho an toàn...".to_string(),
-                            detail: p.current_file,
-                            done_files: p.done_files,
-                            total_files: p.total_files,
-                            done_bytes: p.done_bytes,
-                            total_bytes: p.total_bytes,
-                            throughput_bps: p.throughput_bps,
-                            eta_seconds: p.eta_seconds,
-                        });
-                    },
-                )
-                .map_err(|e| format!("Lỗi tạo kho an toàn: {}", e))?;
+            for (app_name, category, group_items) in &grouped {
+                if task_ctrl.is_cancelled() {
+                    break;
+                }
+                let state_clone_for_progress = state_inner.clone();
+                let task_id_clone = task_id_worker.clone();
+                let base_bytes = cumulative_done_bytes;
 
-            // Persist manifest to SQLite
-            let zip_p = vault_dir.join(format!("{}.zip", manifest.archive_id));
-            let man_p = vault_dir.join(format!("{}.manifest.json", manifest.archive_id));
-            let _ = manifest.persist_to_db(&state_inner.db, &zip_p, &man_p);
+                let manifest = pipeline
+                    .archive_candidates(
+                        0,
+                        app_name,
+                        group_items,
+                        &volume_api,
+                        &task_ctrl,
+                        move |p| {
+                            let done_now = base_bytes.saturating_add(p.done_bytes);
+                            state_clone_for_progress.emit_progress(&TaskProgressEvent {
+                                task_id: task_id_clone.clone(),
+                                kind: "cleanup_execute".to_string(),
+                                state: "running".to_string(),
+                                percent: 10
+                                    + ((done_now as f64 / total_bytes.max(1) as f64) * 55.0)
+                                        as u32,
+                                phase: "archive".to_string(),
+                                title: format!("Đang sao lưu {}...", p.current_file),
+                                detail: p.current_file,
+                                done_files: p.done_files,
+                                total_files,
+                                done_bytes: done_now,
+                                total_bytes,
+                                throughput_bps: p.throughput_bps,
+                                eta_seconds: p.eta_seconds,
+                            });
+                        },
+                    )
+                    .map_err(|e| format!("Lỗi tạo kho dự phòng: {}", e))?;
 
-            vault_archive_id = Some(manifest.archive_id.clone());
-            vault_archive_path = Some(zip_p.to_string_lossy().to_string());
-            compressed_vault_bytes = manifest.compressed_size;
+                let zip_p = vault_dir.join(format!("{}.zip", manifest.archive_id));
+                let man_p = vault_dir.join(format!("{}.manifest.json", manifest.archive_id));
+                let _ = manifest.persist_to_db(&state_inner.db, &zip_p, &man_p);
+
+                if vault_archive_id.is_none() {
+                    vault_archive_id = Some(manifest.archive_id.clone());
+                    vault_archive_path = Some(zip_p.to_string_lossy().to_string());
+                }
+                compressed_vault_bytes =
+                    compressed_vault_bytes.saturating_add(manifest.compressed_size);
+                cumulative_done_bytes =
+                    cumulative_done_bytes.saturating_add(manifest.original_size);
+                archived_refs.push((
+                    manifest.archive_id.clone(),
+                    app_name.clone(),
+                    category.clone(),
+                    manifest.original_size,
+                ));
+            }
         }
 
         // Step 2: Two-Phase Safe Deletion
@@ -469,6 +491,47 @@ pub async fn execute_cleanup(
         let clean_res = cleaner
             .unlink_archived_items(&manifest_items, &snapshots)
             .map_err(|e| format!("Lỗi xóa tệp tin: {}", e))?;
+
+        // Record savings events for analytics scorecard
+        if clean_res.bytes_freed > 0 {
+            let now = chrono::Utc::now();
+            let ts = now.to_rfc3339();
+            let date = now.format("%Y-%m-%d").to_string();
+            if enable_vault && !archived_refs.is_empty() {
+                for (aid, app_name, category, bytes) in &archived_refs {
+                    let _ = state_inner.db.record_savings_event(
+                        &greenc_storage::SavingsEventInput {
+                            timestamp: ts.clone(),
+                            event_date: date.clone(),
+                            source_kind: "cleanup_vault".to_string(),
+                            source_ref: aid.clone(),
+                            app_name: app_name.clone(),
+                            category: category.clone(),
+                            bytes_freed: *bytes,
+                            drive_letter: "C".to_string(),
+                        },
+                    );
+                }
+            } else {
+                for (app_name, category, items) in &grouped {
+                    let group_bytes: u64 = items.iter().map(|c| c.size_bytes).sum();
+                    if group_bytes > 0 {
+                        let _ = state_inner.db.record_savings_event(
+                            &greenc_storage::SavingsEventInput {
+                                timestamp: ts.clone(),
+                                event_date: date.clone(),
+                                source_kind: "cleanup_direct".to_string(),
+                                source_ref: task_id_worker.clone(),
+                                app_name: app_name.clone(),
+                                category: category.clone(),
+                                bytes_freed: group_bytes,
+                                drive_letter: "C".to_string(),
+                            },
+                        );
+                    }
+                }
+            }
+        }
 
         let skipped_dtos = clean_res
             .skipped_items
