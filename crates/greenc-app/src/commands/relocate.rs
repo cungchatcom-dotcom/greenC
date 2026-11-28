@@ -626,6 +626,9 @@ pub async fn undo_relocation(
         }
 
         let undone_rec = undo_res.map_err(|e| format!("Không thể hoàn tác: {e}"))?;
+        let _ = state_inner
+            .db
+            .revert_savings_by_ref("relocate", &record_id.to_string());
 
         Ok(RelocationResultDto {
             id: undone_rec.id,

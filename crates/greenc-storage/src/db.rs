@@ -1640,6 +1640,108 @@ impl GreenCDb {
             Ok(out)
         })
     }
+
+    /// Records a space-savings event for analytics scorecard reporting.
+    pub fn record_savings_event(&self, event: &SavingsEventInput) -> Result<i64> {
+        if event.bytes_freed == 0 {
+            return Ok(0);
+        }
+        self.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO savings_events
+                    (timestamp, event_date, source_kind, source_ref, app_name, category, bytes_freed, drive_letter, reverted)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0);",
+                params![
+                    event.timestamp,
+                    event.event_date,
+                    event.source_kind,
+                    event.source_ref,
+                    event.app_name,
+                    event.category,
+                    event.bytes_freed as i64,
+                    event.drive_letter,
+                ],
+            )
+            .map_err(|e| GreenCError::Sqlite(e.to_string()))?;
+            Ok(conn.last_insert_rowid())
+        })
+    }
+
+    /// Marks savings events matching `(source_kind, source_ref)` as reverted (e.g. on restore/undo).
+    pub fn revert_savings_by_ref(&self, source_kind: &str, source_ref: &str) -> Result<usize> {
+        self.with_conn(|conn| {
+            let changed = conn
+                .execute(
+                    "UPDATE savings_events
+                     SET reverted = 1
+                     WHERE source_kind = ?1 AND source_ref = ?2 AND reverted = 0;",
+                    params![source_kind, source_ref],
+                )
+                .map_err(|e| GreenCError::Sqlite(e.to_string()))?;
+            Ok(changed)
+        })
+    }
+
+    /// Returns all savings events ordered by date ascending.
+    pub fn query_savings_events(&self) -> Result<Vec<SavingsEventRow>> {
+        self.with_conn(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, timestamp, event_date, source_kind, source_ref, app_name, category, bytes_freed, drive_letter, reverted
+                     FROM savings_events
+                     ORDER BY event_date ASC, id ASC;",
+                )
+                .map_err(|e| GreenCError::Sqlite(e.to_string()))?;
+            let rows = stmt
+                .query_map([], |r| {
+                    Ok(SavingsEventRow {
+                        id: r.get(0)?,
+                        timestamp: r.get(1)?,
+                        event_date: r.get(2)?,
+                        source_kind: r.get(3)?,
+                        source_ref: r.get(4)?,
+                        app_name: r.get(5)?,
+                        category: r.get(6)?,
+                        bytes_freed: r.get::<_, i64>(7)?.max(0) as u64,
+                        drive_letter: r.get(8)?,
+                        reverted: r.get::<_, i64>(9)? != 0,
+                    })
+                })
+                .map_err(|e| GreenCError::Sqlite(e.to_string()))?;
+
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(row.map_err(|e| GreenCError::Sqlite(e.to_string()))?);
+            }
+            Ok(out)
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SavingsEventInput {
+    pub timestamp: String,
+    pub event_date: String,
+    pub source_kind: String,
+    pub source_ref: String,
+    pub app_name: String,
+    pub category: String,
+    pub bytes_freed: u64,
+    pub drive_letter: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct SavingsEventRow {
+    pub id: i64,
+    pub timestamp: String,
+    pub event_date: String,
+    pub source_kind: String,
+    pub source_ref: String,
+    pub app_name: String,
+    pub category: String,
+    pub bytes_freed: u64,
+    pub drive_letter: String,
+    pub reverted: bool,
 }
 
 #[cfg(test)]
@@ -1880,5 +1982,137 @@ mod drive_quota_db_tests {
         let after = db.get_zalo_retained_original(rid).unwrap().unwrap();
         assert_eq!(after.status, ZaloRetainedStatus::Purged);
         assert!(after.resolved_at.is_some());
+    }
+
+    #[test]
+    fn schema_v5_migrates_to_v6_with_idempotent_backfill_and_quickcleanup_app_inference() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("v5_to_v6.db");
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE vault_archives (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    rule_id INTEGER NOT NULL,
+                    app_name TEXT NOT NULL,
+                    zip_path TEXT NOT NULL,
+                    manifest_path TEXT NOT NULL,
+                    file_count INTEGER NOT NULL,
+                    original_bytes INTEGER NOT NULL,
+                    compressed_bytes INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    status_reason TEXT NOT NULL,
+                    resolved_at TEXT NOT NULL DEFAULT ''
+                );
+                CREATE TABLE vault_files (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    archive_id INTEGER NOT NULL,
+                    original_path TEXT NOT NULL,
+                    rel_arcname TEXT NOT NULL,
+                    size_bytes INTEGER NOT NULL,
+                    sha256 TEXT NOT NULL,
+                    mtime REAL NOT NULL,
+                    atime REAL NOT NULL,
+                    hardlink_paths_json TEXT NOT NULL DEFAULT '[]',
+                    restored_individually INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE TABLE direct_delete_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    drive_root TEXT NOT NULL,
+                    profile_id TEXT NOT NULL,
+                    unit_kind TEXT NOT NULL,
+                    unit_path TEXT NOT NULL,
+                    file_count INTEGER NOT NULL,
+                    logical_bytes INTEGER NOT NULL,
+                    reason TEXT NOT NULL
+                );
+                CREATE TABLE relocations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    app_id TEXT NOT NULL,
+                    app_name TEXT NOT NULL,
+                    strategy TEXT NOT NULL,
+                    source_path TEXT NOT NULL,
+                    target_path TEXT NOT NULL,
+                    size_bytes INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL,
+                    health_status TEXT NOT NULL DEFAULT 'healthy',
+                    process_names TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    detail TEXT NOT NULL DEFAULT ''
+                );
+                CREATE TABLE compaction_records (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    target_path TEXT NOT NULL UNIQUE,
+                    kind TEXT NOT NULL,
+                    algorithm TEXT NOT NULL,
+                    logical_bytes INTEGER NOT NULL,
+                    physical_before_bytes INTEGER NOT NULL,
+                    physical_after_bytes INTEGER NOT NULL,
+                    file_count INTEGER NOT NULL DEFAULT 1,
+                    status TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                INSERT INTO vault_archives (rule_id, app_name, zip_path, manifest_path, file_count, original_bytes, compressed_bytes, created_at, expires_at, status, status_reason)
+                VALUES (0, 'QuickCleanup', 'D:\\GreenC\\Vault\\v1.zip', 'D:\\GreenC\\Vault\\v1.manifest.json', 2, 3000, 1000, '2026-11-27T10:00:00Z', '2026-12-10T10:00:00Z', 'QUARANTINED', '');
+                INSERT INTO vault_files (archive_id, original_path, rel_arcname, size_bytes, sha256, mtime, atime)
+                VALUES
+                    (1, 'C:\\Users\\A\\AppData\\Local\\Google\\Chrome\\User Data\\Default\\Cache\\f1', 'f1', 2000, 'a', 0, 0),
+                    (1, 'C:\\Users\\A\\AppData\\Roaming\\discord\\Cache\\f2', 'f2', 1000, 'b', 0, 0);
+                INSERT INTO vault_archives (rule_id, app_name, zip_path, manifest_path, file_count, original_bytes, compressed_bytes, created_at, expires_at, status, status_reason)
+                VALUES (0, 'RolledBackApp', 'D:\\GreenC\\Vault\\v2.zip', 'D:\\GreenC\\Vault\\v2.manifest.json', 1, 9999, 5000, '2026-11-27T10:00:00Z', '2026-12-10T10:00:00Z', 'ROLLED_BACK', '');
+                INSERT INTO relocations (app_id, app_name, strategy, source_path, target_path, size_bytes, status, created_at)
+                VALUES ('telegram', 'Telegram Desktop', 'junction', 'C:\\Users\\A\\AppData\\Roaming\\Telegram Desktop', 'D:\\GreenC\\Relocated\\telegram', 5000, 'done', '2026-11-26T08:00:00Z');
+                INSERT INTO compaction_records (target_path, kind, algorithm, logical_bytes, physical_before_bytes, physical_after_bytes, file_count, status, updated_at)
+                VALUES ('C:\\Users\\A\\.rustup', 'wof_directory', 'XPRESS8K', 4000, 4000, 2500, 10, 'compacted', '2026-11-25T08:00:00Z');
+                PRAGMA user_version = 5;",
+            )
+            .unwrap();
+        }
+
+        let db = GreenCDb::open(&db_path).unwrap();
+        let events = db.query_savings_events().unwrap();
+        // Expect Chrome (2000), Discord (1000), Telegram Desktop (5000), Compact (1500); RolledBackApp excluded.
+        assert_eq!(events.len(), 4);
+        assert!(events.iter().any(|e| e.app_name == "Google Chrome" && e.bytes_freed == 2000));
+        assert!(events.iter().any(|e| e.app_name == "Discord" && e.bytes_freed == 1000));
+        assert!(events.iter().any(|e| e.app_name == "Telegram Desktop" && e.bytes_freed == 5000));
+        assert!(events.iter().any(|e| e.source_kind == "compact" && e.bytes_freed == 1500));
+
+        // Re-opening must be idempotent (no duplicate backfill rows).
+        drop(db);
+        let db2 = GreenCDb::open(&db_path).unwrap();
+        assert_eq!(db2.query_savings_events().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn savings_event_record_query_and_revert_by_ref() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = GreenCDb::open(dir.path().join("savings.db")).unwrap();
+        let id = db
+            .record_savings_event(&SavingsEventInput {
+                timestamp: "2026-11-28T10:00:00Z".to_string(),
+                event_date: "2026-11-28".to_string(),
+                source_kind: "cleanup_vault".to_string(),
+                source_ref: "archive-123".to_string(),
+                app_name: "Telegram Desktop".to_string(),
+                category: "chat".to_string(),
+                bytes_freed: 12_000,
+                drive_letter: "C".to_string(),
+            })
+            .unwrap();
+        assert!(id > 0);
+        let rows = db.query_savings_events().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(!rows[0].reverted);
+
+        let changed = db
+            .revert_savings_by_ref("cleanup_vault", "archive-123")
+            .unwrap();
+        assert_eq!(changed, 1);
+        let rows_after = db.query_savings_events().unwrap();
+        assert!(rows_after[0].reverted);
     }
 }

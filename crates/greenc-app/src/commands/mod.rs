@@ -1,3 +1,4 @@
+pub mod analytics;
 pub mod cleanup;
 pub mod compact;
 pub mod drive_quota;

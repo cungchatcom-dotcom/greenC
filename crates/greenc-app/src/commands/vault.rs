@@ -161,6 +161,13 @@ pub async fn restore_vault_archive(
             .rollback_archive(db_id, "User requested 1-click restore from UI", false)
             .map_err(|e| format!("Rollback failed: {}", e))?;
 
+        let _ = state_inner
+            .db
+            .revert_savings_by_ref("cleanup_vault", &archive_id);
+        let _ = state_inner
+            .db
+            .revert_savings_by_ref("cleanup_vault", &db_id.to_string());
+
         let restored_paths: Vec<String> = result
             .restored_paths
             .into_iter()
