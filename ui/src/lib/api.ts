@@ -935,4 +935,168 @@ export async function restoreZaloRetainedOriginal(retainedId: number): Promise<s
   }));
 }
 
+// =========================================================================
+// Savings Analytics Scorecard (Schema v6)
+// =========================================================================
+
+export type SavingsPeriod = 'day' | 'week' | 'month' | 'year';
+
+export interface SavingsBucketDto {
+  label: string;
+  date_key: string;
+  bytes_freed: number;
+}
+
+export interface TopJunkAppDto {
+  app_name: string;
+  category: string;
+  bytes_freed: number;
+  event_count: number;
+  share_pct: number;
+}
+
+export interface SavingsStatsDto {
+  period: SavingsPeriod;
+  today_freed_bytes: number;
+  period_freed_bytes: number;
+  all_time_freed_bytes: number;
+  total_events: number;
+  buckets: SavingsBucketDto[];
+  top_apps: TopJunkAppDto[];
+}
+
+export async function getSavingsStats(period: SavingsPeriod = 'day'): Promise<SavingsStatsDto> {
+  return await invoke<SavingsStatsDto>('get_savings_stats', { period });
+}
+
+// =========================================================================
+// One-Click "Make Green Now" Autopilot
+// =========================================================================
+
+export interface MakeGreenOptionsDto {
+  target_drive?: string | null;
+  single_drive_mode?: 'direct_cache' | 'local_vault' | null;
+  close_app_ids?: string[];
+  confirm_close_running_apps?: boolean;
+  include_known_folders?: boolean;
+}
+
+export interface MakeGreenActionItemDto {
+  name: string;
+  action_kind: 'clean' | 'compact' | 'relocate' | string;
+  bytes_freed: number;
+  detail: string | null;
+}
+
+export interface LockedAppSummaryDto {
+  app_id: string;
+  app_name: string;
+  size_bytes: number;
+  process_names: string[];
+  reason: string;
+}
+
+export interface MakeGreenReportDto {
+  task_id: string;
+  before_used_bytes: number;
+  after_used_bytes: number;
+  before_free_bytes: number;
+  after_free_bytes: number;
+  total_bytes: number;
+  cleaned_bytes: number;
+  compacted_bytes: number;
+  relocated_bytes: number;
+  total_freed_bytes: number;
+  backup_drive: string | null;
+  single_drive_mode: string | null;
+  actions: MakeGreenActionItemDto[];
+  skipped_locked: LockedAppSummaryDto[];
+  reopened_apps: string[];
+  warnings: string[];
+  cancelled: boolean;
+}
+
+export async function makeGreenNow(options?: MakeGreenOptionsDto): Promise<MakeGreenReportDto> {
+  return await changingFiles(() =>
+    invoke<MakeGreenReportDto>('make_green_now', {
+      options: options ?? null,
+    })
+  );
+}
+
+// =========================================================================
+// Batch Relocation & Safe WSL2 1-Click PowerShell
+// =========================================================================
+
+export interface BatchRelocateItemDto {
+  id: string;
+  name: string;
+  success: boolean;
+  moved_bytes: number;
+  target_path: string | null;
+  error: string | null;
+}
+
+export interface BatchRelocateReportDto {
+  task_id: string;
+  target_drive: string;
+  succeeded_count: number;
+  failed_count: number;
+  total_moved_bytes: number;
+  cancelled: boolean;
+  items: BatchRelocateItemDto[];
+}
+
+export async function relocateBatch(
+  candidateIds: string[],
+  knownFolderIds: string[],
+  targetDrive: string
+): Promise<BatchRelocateReportDto> {
+  return await changingFiles(() =>
+    invoke<BatchRelocateReportDto>('relocate_batch', {
+      candidateIds,
+      knownFolderIds,
+      targetDrive,
+    })
+  );
+}
+
+export interface WslDistroInfo {
+  name: string;
+  is_docker_internal: boolean;
+}
+
+export interface WslMoveScript {
+  distro: string;
+  target_drive: string;
+  target_dir: string;
+  tar_path: string;
+  one_line_command: string;
+  script_body: string;
+}
+
+export async function listWslDistros(): Promise<WslDistroInfo[]> {
+  return await invoke<WslDistroInfo[]>('list_wsl_distros');
+}
+
+export async function buildWslMoveCommand(
+  distro: string,
+  targetDrive: string
+): Promise<WslMoveScript> {
+  return await invoke<WslMoveScript>('build_wsl_move_command', {
+    distro,
+    targetDrive,
+  });
+}
+
+export async function launchWslMovePowershell(
+  distro: string,
+  targetDrive: string
+): Promise<boolean> {
+  return await invoke<boolean>('launch_wsl_move_powershell', {
+    distro,
+    targetDrive,
+  });
+}
+
 

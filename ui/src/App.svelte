@@ -5,51 +5,49 @@
     getBootstrapState,
     hideToTray,
     listenWatchdogAlert,
-    updateSettings,
     checkForUpdates,
     downloadAndInstallUpdate,
     type BootstrapState,
     type WatchdogAlertEvent,
     type UpdateCheckDto,
   } from "$lib/api";
-  import OverviewPage from "./pages/OverviewPage.svelte";
-  import CleanupPage from "./pages/CleanupPage.svelte";
-  import RelocatePage from "./pages/RelocatePage.svelte";
-  import CompactPage from "./pages/CompactPage.svelte";
-  import VaultPage from "./pages/VaultPage.svelte";
+  import { taskStore } from "$lib/tasks.svelte";
+  import HomePage from "./pages/HomePage.svelte";
+  import RestorePage from "./pages/RestorePage.svelte";
+  import AdvancedPage from "./pages/AdvancedPage.svelte";
   import SettingsPage from "./pages/SettingsPage.svelte";
   import FirstRunModal from "./lib/components/FirstRunModal.svelte";
   import BrandLogo from "./lib/components/BrandLogo.svelte";
-  import GoalContextStrip from "./lib/components/GoalContextStrip.svelte";
-  import { AlertTriangle, X, Minimize2, Power, Download } from "lucide-svelte";
+  import TaskProgressOverlay from "./lib/components/TaskProgressOverlay.svelte";
+  import {
+    Home,
+    RotateCcw,
+    SlidersHorizontal,
+    Settings,
+    Minimize2,
+    AlertTriangle,
+    X,
+    Download,
+    RefreshCw,
+  } from "lucide-svelte";
 
-  type TabId =
-    | "overview"
-    | "cleanup"
-    | "relocate"
-    | "compact"
-    | "vault"
-    | "settings";
+  type NavView = "home" | "restore" | "advanced" | "settings";
 
-  let activeTab = $state<TabId>("overview");
+  let activeView = $state<NavView>("home");
   let bootstrap = $state<BootstrapState | null>(null);
   let showFirstRun = $state(false);
   let activeAlert = $state<WatchdogAlertEvent | null>(null);
   let autostartEnabled = $state(false);
-  let togglingAutostart = $state(false);
   let goalRefreshKey = $state(0);
   let updateInfo = $state<UpdateCheckDto | null>(null);
   let updateDismissed = $state(false);
   let installingUpdate = $state(false);
   let updateError = $state<string | null>(null);
 
-  const tabDefs: ReadonlyArray<{ id: TabId; labelKey: string }> = [
-    { id: "overview", labelKey: "Tổng quan" },
-    { id: "cleanup", labelKey: "Dọn dẹp" },
-    { id: "relocate", labelKey: "Di chuyển" },
-    { id: "compact", labelKey: "Thu gọn" },
-    { id: "vault", labelKey: "Kho dự phòng" },
-    { id: "settings", labelKey: "Cài đặt" },
+  const primaryTabs: ReadonlyArray<{ id: NavView; labelKey: string; icon: typeof Home }> = [
+    { id: "home", labelKey: "Trang chủ", icon: Home },
+    { id: "restore", labelKey: "Khôi phục", icon: RotateCcw },
+    { id: "advanced", labelKey: "Tùy chỉnh", icon: SlidersHorizontal },
   ];
 
   async function refreshBootstrap() {
@@ -70,27 +68,6 @@
       await hideToTray();
     } catch (err) {
       console.error("Failed to hide to tray:", err);
-    }
-  }
-
-  async function handleToggleAutostart() {
-    if (togglingAutostart) return;
-    togglingAutostart = true;
-    const next = !autostartEnabled;
-    try {
-      const updated = await updateSettings({ autostart_enabled: next });
-      autostartEnabled = updated.autostart_enabled;
-    } catch (err) {
-      console.error("Failed to toggle autostart:", err);
-      activeAlert = {
-        kind: "autostart_error",
-        severity: "critical",
-        title: t("Khởi động cùng hệ điều hành"),
-        detail: err instanceof Error ? err.message : String(err),
-        archive_id: null,
-      };
-    } finally {
-      togglingAutostart = false;
     }
   }
 
@@ -116,10 +93,9 @@
   }
 
   onMount(() => {
+    const unlistenTasks = taskStore.initListener();
     let updateTimer: number | undefined;
     void refreshBootstrap().then(() => {
-      // Silently auto-check GitHub releases 4s after startup ONLY for standard builds.
-      // Microsoft Store builds update exclusively through Microsoft Store.
       if (bootstrap?.is_store_build) return;
       updateTimer = window.setTimeout(async () => {
         try {
@@ -128,244 +104,205 @@
             updateInfo = res;
           }
         } catch {
-          // Offline or rate-limited — stay silent on auto-check
+          // Offline or rate-limited
         }
       }, 4000);
     });
-    const unlistenPromise = listenWatchdogAlert((alert) => {
+    const unlistenAlert = listenWatchdogAlert((alert) => {
       activeAlert = alert;
     });
     return () => {
+      unlistenTasks();
       if (updateTimer !== undefined) {
         window.clearTimeout(updateTimer);
       }
-      unlistenPromise.then((unlisten) => unlisten());
+      unlistenAlert.then((unlisten) => unlisten());
     };
   });
 </script>
 
 <div
-  class={`flex h-screen w-screen overflow-hidden ${i18n.isDark ? "dark" : ""}`}
+  class={`flex flex-col h-screen w-screen overflow-hidden bg-canvas ${i18n.isDark ? "dark" : ""}`}
   dir={i18n.isRtl ? "rtl" : "ltr"}
 >
-  <!-- Sidebar Navigation -->
-  <aside
-    class="w-64 border-e border-border bg-subtle p-4 flex flex-col justify-between shrink-0"
+  <!-- Compact Top Navigation Bar (No Left Sidebar) -->
+  <header
+    class="h-14 border-b border-border bg-card px-4 sm:px-6 flex items-center justify-between gap-3 shrink-0"
   >
-    <div>
-      <div class="flex items-center gap-2.5 mb-6 px-2">
-        <BrandLogo size={28} />
-        <div class="leading-tight">
-          <div class="font-bold text-base text-primary">GreenC</div>
-          <div class="text-[10px] text-secondary">{t("Ổ đĩa luôn xanh")}</div>
-        </div>
-      </div>
-      <nav class="space-y-1">
-        {#each tabDefs as tab}
-          <button
-            type="button"
-            class={`w-full text-start px-3 py-2 rounded-md font-medium text-sm transition-colors ${
-              activeTab === tab.id
-                ? "bg-card text-accent shadow-sm"
-                : "text-secondary hover:bg-card/50"
-            }`}
-            onclick={() => (activeTab = tab.id)}
-          >
-            {t(tab.labelKey)}
-          </button>
-        {/each}
-      </nav>
-    </div>
+    <!-- Brand -->
+    <button
+      type="button"
+      onclick={() => (activeView = "home")}
+      class="flex items-center gap-2 text-left shrink-0"
+    >
+      <BrandLogo size={24} />
+      <span class="font-bold text-base text-primary tracking-tight">GreenC</span>
+    </button>
 
-    <!-- Bottom Quick Controls: Autostart & Version -->
-    <div class="space-y-3 pt-3 border-t border-border/60">
-      <button
-        type="button"
-        disabled={togglingAutostart}
-        onclick={handleToggleAutostart}
-        class="w-full flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg border border-border bg-card hover:bg-subtle/80 text-xs transition-colors disabled:opacity-60"
-        title={t("Khởi động cùng hệ điều hành")}
-      >
-        <span
-          class="flex items-center gap-1.5 text-primary font-medium truncate"
-        >
-          <Power
-            class={`h-3.5 w-3.5 shrink-0 ${autostartEnabled ? "text-accent" : "text-disabled"}`}
-          />
-          <span class="truncate">{t("Khởi động cùng OS")}</span>
-        </span>
-        <span
-          class={`px-1.5 py-0.5 rounded text-[10px] font-bold shrink-0 ${
-            autostartEnabled
-              ? "bg-accent/15 text-accent"
-              : "bg-subtle text-disabled"
+    <!-- Primary Compact Icon Tabs -->
+    <nav class="flex items-center gap-1 bg-subtle/80 p-1 rounded-xl border border-border/80">
+      {#each primaryTabs as tab}
+        {@const Icon = tab.icon}
+        <button
+          type="button"
+          onclick={() => (activeView = tab.id)}
+          class={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+            activeView === tab.id
+              ? "bg-card text-accent shadow-sm"
+              : "text-secondary hover:text-primary"
           }`}
         >
-          {autostartEnabled ? t("Bật") : t("Tắt")}
-        </span>
+          <Icon class="h-4 w-4" />
+          <span class="hidden sm:inline">{t(tab.labelKey)}</span>
+        </button>
+      {/each}
+    </nav>
+
+    <!-- Right Compact Controls: Background Task Pill, Settings, Hide to Tray -->
+    <div class="flex items-center gap-2 shrink-0">
+      {#if taskStore.active && taskStore.active.minimized}
+        <button
+          type="button"
+          onclick={() => taskStore.restore()}
+          class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent/15 text-accent border border-accent/30 text-xs font-semibold hover:bg-accent/25 transition-colors"
+          title={t("Mở xem tiến trình đang chạy ngầm")}
+        >
+          <RefreshCw class="h-3.5 w-3.5 animate-spin" />
+          <span class="tabular-numbers">{taskStore.active.percent}%</span>
+        </button>
+      {/if}
+
+      <button
+        type="button"
+        onclick={() => (activeView = activeView === "settings" ? "home" : "settings")}
+        class={`p-2 rounded-lg border transition-colors ${
+          activeView === "settings"
+            ? "border-accent/40 bg-accent/10 text-accent"
+            : "border-border bg-subtle hover:bg-card text-secondary hover:text-primary"
+        }`}
+        title={t("Cài đặt")}
+        aria-label={t("Cài đặt")}
+      >
+        <Settings class="h-4 w-4" />
       </button>
 
-      <div dir="ltr" class="text-xs text-disabled px-2 ltr-isolate">
-        GreenC v{bootstrap?.app_version ?? "2.2.3"} (Rust)
-      </div>
-    </div>
-  </aside>
-
-  <!-- Main Content Area -->
-  <main class="flex-1 flex flex-col overflow-hidden bg-canvas">
-    <header
-      class="h-12 border-b border-border bg-card px-6 flex items-center justify-between gap-3 shrink-0"
-    >
-      <h1 class="text-base font-semibold text-primary">
-        {t(
-          tabDefs.find((item) => item.id === activeTab)?.labelKey ??
-            "Tổng quan",
-        )}
-      </h1>
-
-      <div class="flex items-center gap-3">
-        {#if bootstrap?.current_data_root}
-          <span
-            dir="ltr"
-            class="hidden md:inline text-xs text-secondary font-mono ltr-isolate"
-          >
-            {bootstrap.current_data_root}
-          </span>
-        {/if}
-
-        <button
-          type="button"
-          onclick={handleHideToTray}
-          class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border bg-subtle hover:bg-card text-xs font-medium text-primary transition-colors"
-          title={t("Thu gọn xuống khay hệ thống và chạy ngầm (< 15 MB RAM)")}
-        >
-          <Minimize2 class="h-3.5 w-3.5 text-accent" />
-          <span>{t("Chạy ngầm")}</span>
-        </button>
-      </div>
-    </header>
-
-    {#if !bootstrap?.is_store_build && updateInfo?.has_update && !updateInfo?.managed_by_store && !updateDismissed}
-      <div
-        class="mx-6 mt-4 rounded-lg border border-accent/35 bg-accent/10 px-4 py-2.5 text-xs flex items-center justify-between gap-3"
+      <button
+        type="button"
+        onclick={handleHideToTray}
+        class="inline-flex items-center gap-1.5 px-2.5 py-2 rounded-lg border border-border bg-subtle hover:bg-card text-xs font-medium text-primary transition-colors"
+        title={t("Thu gọn xuống khay hệ thống và chạy ngầm (< 15 MB RAM)")}
       >
-        <div class="flex items-center gap-2 min-w-0 text-primary">
-          <Download class="h-4 w-4 shrink-0 text-accent" />
-          <div class="truncate">
-            <strong>{t("Có phiên bản mới")} v{updateInfo.latest_version}</strong
-            >
-            {#if updateError}
-              <span class="text-danger ms-2">— {updateError}</span>
-            {:else}
-              <span class="text-secondary ms-1.5"
-                >({t("Hiện tại")}: v{updateInfo.current_version})</span
-              >
-            {/if}
-          </div>
-        </div>
-        <div class="flex items-center gap-2 shrink-0">
-          {#if updateInfo.download_url && updateInfo.asset_name}
-            <button
-              type="button"
-              disabled={installingUpdate}
-              onclick={handleInstallUpdate}
-              class="px-3 py-1 rounded-md bg-accent hover:bg-accent-hover text-white font-semibold disabled:opacity-60"
-            >
-              {installingUpdate
-                ? t("Đang tải bản cập nhật...")
-                : t("Cập nhật ngay")}
-            </button>
+        <Minimize2 class="h-4 w-4 text-accent" />
+        <span class="hidden md:inline">{t("Chạy ngầm")}</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- Optional Update Notification Strip -->
+  {#if !bootstrap?.is_store_build && updateInfo?.has_update && !updateInfo?.managed_by_store && !updateDismissed}
+    <div
+      class="mx-4 sm:mx-6 mt-3 rounded-xl border border-accent/35 bg-accent/10 px-4 py-2 text-xs flex items-center justify-between gap-3 max-w-6xl w-auto self-center"
+    >
+      <div class="flex items-center gap-2 min-w-0 text-primary">
+        <Download class="h-4 w-4 shrink-0 text-accent" />
+        <div class="truncate">
+          <strong>{t("Có phiên bản mới")} v{updateInfo.latest_version}</strong>
+          {#if updateError}
+            <span class="text-danger ms-2">— {updateError}</span>
           {:else}
-            <a
-              href={updateInfo.release_url}
-              target="_blank"
-              rel="noreferrer"
-              class="px-3 py-1 rounded-md bg-accent hover:bg-accent-hover text-white font-semibold"
+            <span class="text-secondary ms-1.5"
+              >({t("Hiện tại")}: v{updateInfo.current_version})</span
             >
-              {t("Tải bản mới")}
-            </a>
           {/if}
+        </div>
+      </div>
+      <div class="flex items-center gap-2 shrink-0">
+        {#if updateInfo.download_url && updateInfo.asset_name}
           <button
             type="button"
-            onclick={() => (updateDismissed = true)}
-            class="p-1 rounded hover:bg-black/5 text-secondary"
-            aria-label={t("Đóng")}
+            disabled={installingUpdate}
+            onclick={handleInstallUpdate}
+            class="px-3 py-1 rounded-md bg-accent hover:bg-accent-hover text-white font-semibold disabled:opacity-60"
           >
-            <X class="h-3.5 w-3.5" />
+            {installingUpdate ? t("Đang tải bản cập nhật...") : t("Cập nhật ngay")}
           </button>
-        </div>
-      </div>
-    {/if}
-
-    {#if activeAlert}
-      <div
-        class={`mx-6 mt-4 rounded-lg border px-4 py-2.5 text-xs flex items-center justify-between gap-3 ${
-          activeAlert.severity === "critical"
-            ? "border-danger/30 bg-danger/10 text-danger"
-            : "border-accent/30 bg-accent/10 text-primary"
-        }`}
-      >
-        <div class="flex items-center gap-2 min-w-0">
-          <AlertTriangle class="h-4 w-4 shrink-0" />
-          <div class="truncate">
-            <strong>{activeAlert.title}</strong> — {activeAlert.detail}
-          </div>
-        </div>
+        {:else}
+          <a
+            href={updateInfo.release_url}
+            target="_blank"
+            rel="noreferrer"
+            class="px-3 py-1 rounded-md bg-accent hover:bg-accent-hover text-white font-semibold"
+          >
+            {t("Tải bản mới")}
+          </a>
+        {/if}
         <button
           type="button"
-          onclick={() => (activeAlert = null)}
-          class="p-1 rounded hover:bg-black/5"
+          onclick={() => (updateDismissed = true)}
+          class="p-1 rounded hover:bg-black/5 text-secondary"
           aria-label={t("Đóng")}
         >
           <X class="h-3.5 w-3.5" />
         </button>
       </div>
-    {/if}
+    </div>
+  {/if}
 
-    <div class="flex-1 overflow-auto p-6">
-      {#if activeTab === "overview"}
-        <OverviewPage
-          {goalRefreshKey}
-          onNavigateCleanup={() => (activeTab = "cleanup")}
-          onNavigateSettings={() => (activeTab = "settings")}
-        />
-      {:else if activeTab === "cleanup"}
-        <GoalContextStrip
-          mode="strip"
-          refreshKey={goalRefreshKey}
-          onConfigureGoal={() => (activeTab = "settings")}
-        />
-        <CleanupPage />
-      {:else if activeTab === "relocate"}
-        <GoalContextStrip
-          mode="strip"
-          refreshKey={goalRefreshKey}
-          onConfigureGoal={() => (activeTab = "settings")}
-        />
-        <RelocatePage />
-      {:else if activeTab === "compact"}
-        <GoalContextStrip
-          mode="strip"
-          refreshKey={goalRefreshKey}
-          onConfigureGoal={() => (activeTab = "settings")}
-        />
-        <CompactPage />
-      {:else if activeTab === "vault"}
-        <GoalContextStrip
-          mode="strip"
-          refreshKey={goalRefreshKey}
-          onConfigureGoal={() => (activeTab = "settings")}
-        />
-        <VaultPage />
-      {:else}
+  <!-- Optional Watchdog Alert Strip -->
+  {#if activeAlert}
+    <div
+      class={`mx-4 sm:mx-6 mt-3 rounded-xl border px-4 py-2 text-xs flex items-center justify-between gap-3 ${
+        activeAlert.severity === "critical"
+          ? "border-danger/30 bg-danger/10 text-danger"
+          : "border-accent/30 bg-accent/10 text-primary"
+      }`}
+    >
+      <div class="flex items-center gap-2 min-w-0">
+        <AlertTriangle class="h-4 w-4 shrink-0" />
+        <div class="truncate">
+          <strong>{activeAlert.title}</strong> — {activeAlert.detail}
+        </div>
+      </div>
+      <button
+        type="button"
+        onclick={() => (activeAlert = null)}
+        class="p-1 rounded hover:bg-black/5"
+        aria-label={t("Đóng")}
+      >
+        <X class="h-3.5 w-3.5" />
+      </button>
+    </div>
+  {/if}
+
+  <!-- Full-Width Content Canvas -->
+  <main class="flex-1 overflow-auto px-4 sm:px-6 py-5">
+    {#if activeView === "home"}
+      <HomePage
+        {goalRefreshKey}
+        onNavigateRestore={() => (activeView = "restore")}
+        onNavigateAdvanced={() => (activeView = "advanced")}
+        onNavigateSettings={() => (activeView = "settings")}
+      />
+    {:else if activeView === "restore"}
+      <RestorePage />
+    {:else if activeView === "advanced"}
+      <AdvancedPage
+        {goalRefreshKey}
+        onNavigateSettings={() => (activeView = "settings")}
+      />
+    {:else}
+      <div class="max-w-5xl mx-auto w-full">
         <SettingsPage
           {autostartEnabled}
           onAutostartChanged={(v) => (autostartEnabled = v)}
         />
-      {/if}
-    </div>
+      </div>
+    {/if}
   </main>
 </div>
+
+<!-- Global Background-Capable Progress Overlay & Toast -->
+<TaskProgressOverlay />
 
 {#if showFirstRun && bootstrap}
   <FirstRunModal

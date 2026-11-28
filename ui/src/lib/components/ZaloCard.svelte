@@ -22,6 +22,7 @@
   import GuidedModal from '$lib/components/GuidedModal.svelte';
   import { peek, refresh as rescan } from '$lib/cache';
   import { fileActions, onFilesChanged } from '$lib/busy.svelte';
+  import { taskStore } from '$lib/tasks.svelte';
   import { untrack } from 'svelte';
   import {
     MessageSquare,
@@ -37,9 +38,10 @@
 
   interface Props {
     preferredDrive?: string;
+    mode?: 'all' | 'relocate' | 'cleanup';
   }
 
-  let { preferredDrive = undefined }: Props = $props();
+  let { preferredDrive = undefined, mode = 'all' }: Props = $props();
 
   let status = $state<ZaloStatusDto | null>(null);
   let drives = $state<DriveInfo[]>([]);
@@ -206,25 +208,27 @@
     showConfirmModal = false;
     isMoving = true;
     feedback = null;
-    currentTaskId = null;
-    moveProgress = {
-      task_id: '',
-      kind: 'zalo_move',
-      state: 'running',
-      percent: 2,
-      phase: 'preparing',
-      title: t('Chuẩn bị'),
-      detail: '',
-      done_files: 0,
-      total_files: 0,
-      done_bytes: 0,
-      total_bytes: status?.chat_data_bytes ?? 0,
-      throughput_bps: 0,
-      eta_seconds: 0,
-    };
 
     try {
-      const res = await moveZaloData(selectedDrive, reopenAfterMove);
+      const res = await taskStore.run(
+        {
+          kind: 'zalo_move',
+          title: t('Đang chuyển dữ liệu Zalo PC'),
+          phase: 'preparing',
+          totalBytes: status?.chat_data_bytes ?? 0,
+          steps: moveSteps,
+        },
+        () => moveZaloData(selectedDrive, reopenAfterMove),
+        (moveRes, wasMinimized) =>
+          wasMinimized
+            ? {
+                kind: 'ok',
+                title: t('Đã chuyển dữ liệu Zalo sang ổ {drive}: thành công.', {
+                  drive: moveRes.target_drive,
+                }),
+              }
+            : null
+      );
       feedback = {
         kind: 'ok',
         text: res.already_on_other_drive
@@ -239,8 +243,6 @@
       };
     } finally {
       isMoving = false;
-      moveProgress = null;
-      currentTaskId = null;
     }
   }
 
@@ -352,9 +354,25 @@
       unlistenPromise.then((u) => u());
     };
   });
+  // Strict actionability rule: never show a dead-end Zalo card when chat data is already on
+  // another drive and there is nothing actionable to move or clean.
+  let hasSafetyCopies = $derived(Boolean(status?.safety_copies && status.safety_copies.length > 0));
+  let hasMovableOnC = $derived(Boolean(status?.data_dir && status?.data_on_system_drive));
+  let hasActiveReloc = $derived(Boolean(status?.active_relocation_id));
+  let hasCleanableCache = $derived(
+    Boolean(status && (status.total_reclaimable_bytes > 0 || status.total_locked_bytes > 0))
+  );
+  let shouldShowCard = $derived.by(() => {
+    if (!status) return false;
+    if (hasSafetyCopies || hasActiveReloc) return true;
+    if (!status.installed) return false;
+    if (mode === 'relocate') return hasMovableOnC;
+    if (mode === 'cleanup') return hasCleanableCache;
+    return hasMovableOnC || hasCleanableCache;
+  });
 </script>
 
-{#if status?.installed || (status?.safety_copies && status.safety_copies.length > 0)}
+{#if shouldShowCard && status}
   <section class="rounded-xl border border-border bg-card p-5 shadow-sm space-y-4">
     <div class="flex items-start justify-between gap-3 flex-wrap">
       <div class="flex items-center gap-2.5">
@@ -382,32 +400,30 @@
       </button>
     </div>
 
-    <!-- 3 clear size rows -->
+    <!-- Show only actionable rows (never show non-actionable chat data already on another drive) -->
     <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
-      <!-- Row 1: Chat data -->
-      <div class="rounded-lg border border-border/80 bg-subtle/40 p-3.5 space-y-1">
-        <div class="text-xs font-medium text-secondary">{t('Dữ liệu chat')}</div>
-        <div class="text-lg font-bold text-primary tabular-numbers">
-          {formatSize(status.chat_data_bytes)}
+      {#if !status.already_on_other_drive}
+        <!-- Row 1: Chat data -->
+        <div class="rounded-lg border border-border/80 bg-subtle/40 p-3.5 space-y-1">
+          <div class="text-xs font-medium text-secondary">{t('Dữ liệu chat')}</div>
+          <div class="text-lg font-bold text-primary tabular-numbers">
+            {formatSize(status.chat_data_bytes)}
+          </div>
+          {#if status.active_relocation_target}
+            <div class="text-[11px] text-emerald-600 dark:text-emerald-400 font-medium truncate" title={status.active_relocation_target}>
+              {t('Đã chuyển sang {target}', { target: status.active_relocation_target })}
+            </div>
+          {:else if status.data_drive}
+            <div class="text-[11px] text-secondary">
+              {t('Tin nhắn và ảnh trên ổ {drive}', { drive: status.data_drive })}
+            </div>
+          {:else}
+            <div class="text-[11px] text-secondary">
+              {t('Không đọc được vị trí dữ liệu chat')}
+            </div>
+          {/if}
         </div>
-        {#if status.already_on_other_drive}
-          <div class="text-[11px] text-emerald-600 dark:text-emerald-400 font-medium">
-            {t('Đã ở ổ {drive}, không cần chuyển.', { drive: status.data_drive ?? '' })}
-          </div>
-        {:else if status.active_relocation_target}
-          <div class="text-[11px] text-emerald-600 dark:text-emerald-400 font-medium truncate" title={status.active_relocation_target}>
-            {t('Đã chuyển sang {target}', { target: status.active_relocation_target })}
-          </div>
-        {:else if status.data_drive}
-          <div class="text-[11px] text-secondary">
-            {t('Tin nhắn và ảnh trên ổ {drive}', { drive: status.data_drive })}
-          </div>
-        {:else}
-          <div class="text-[11px] text-secondary">
-            {t('Không đọc được vị trí dữ liệu chat')}
-          </div>
-        {/if}
-      </div>
+      {/if}
 
       <!-- Row 2: Cache -->
       <div class="rounded-lg border border-border/80 bg-subtle/40 p-3.5 space-y-1">
@@ -703,62 +719,6 @@
           {t('Chuyển sang ổ khác')}
         </button>
       </div>
-    </div>
-  </div>
-{/if}
-
-<!-- Clear 6-step progress dialog -->
-{#if isMoving && moveProgress}
-  {@const activeIdx = normalizedStepIndex(moveProgress.phase)}
-  <div class="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
-    <div class="rounded-xl border border-border bg-card p-6 shadow-2xl max-w-md w-full space-y-4">
-      <div class="flex items-center justify-between">
-        <h3 class="font-bold text-base text-primary flex items-center gap-2">
-          <RefreshCw class="h-4 w-4 text-accent animate-spin" />
-          {moveProgress.title ? t(moveProgress.title) : t('Đang chuyển')}
-        </h3>
-        <button
-          type="button"
-          onclick={handleCancelMove}
-          class="text-xs font-medium text-rose-500 hover:text-rose-600"
-        >
-          {t('Hủy')}
-        </button>
-      </div>
-
-      <div class="grid grid-cols-3 gap-1.5 text-[11px]">
-        {#each moveSteps as step, idx}
-          <div
-            class={`px-2 py-1 rounded text-center font-medium ${
-              idx < activeIdx
-                ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
-                : idx === activeIdx
-                  ? 'bg-accent text-white'
-                  : 'bg-subtle text-secondary'
-            }`}
-          >
-            {t(step.label)}
-          </div>
-        {/each}
-      </div>
-
-      <div class="w-full bg-subtle rounded-full h-2.5 overflow-hidden">
-        <div
-          class="bg-accent h-2.5 rounded-full transition-all duration-150"
-          style={`width: ${moveProgress.percent}%`}
-        ></div>
-      </div>
-
-      <div class="flex items-center justify-between text-xs text-secondary font-mono">
-        <span>{moveProgress.percent}%</span>
-        <span>{formatSize(moveProgress.done_bytes)} / {formatSize(moveProgress.total_bytes)}</span>
-      </div>
-
-      {#if moveProgress.detail}
-        <p class="text-xs text-secondary truncate bg-subtle px-2.5 py-1.5 rounded">
-          {moveProgress.detail}
-        </p>
-      {/if}
     </div>
   </div>
 {/if}

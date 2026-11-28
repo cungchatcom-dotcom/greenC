@@ -7,17 +7,14 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { fileActions, onFilesChanged } from '$lib/busy.svelte';
+  import { taskStore } from '$lib/tasks.svelte';
   import { t, formatSize } from '$lib/i18n.svelte';
   import {
     scanCleanupCandidates,
     executeCleanup,
-    listenTaskProgress,
-    controlTask,
     type CleanupCandidateDto,
     type CleanupReportDto,
-    type TaskProgressEvent,
   } from '$lib/api';
-  import ZaloCard from '$lib/components/ZaloCard.svelte';
   import UpdateStatus from '$lib/components/UpdateStatus.svelte';
   import { createLoader } from '$lib/cache';
   import { DEFAULT_CLEANUP_PROFILES, cleanupKey } from '$lib/scans';
@@ -53,7 +50,7 @@
   const allProfiles = [
     { id: 'windows_temp', name: 'Temp Windows' },
     { id: 'browser_cache', name: 'Trình duyệt' },
-    { id: 'chat_media', name: 'Zalo & DingTalk' },
+    { id: 'chat_media', name: 'Chat & Mạng xã hội' },
     { id: 'crash_dumps', name: 'Crash Dumps' },
     { id: 'package_managers', name: 'Gói Dev' },
     { id: 'app_logs', name: 'Nhật ký' },
@@ -63,9 +60,6 @@
 
   let selectedProfileIds = $state<string[]>([...DEFAULT_CLEANUP_PROFILES]);
 
-  // Telemetry & Progress state
-  let currentTaskId = $state<string | null>(null);
-  let progressState = $state<TaskProgressEvent | null>(null);
   let cleanupReport = $state<CleanupReportDto | null>(null);
   let showReportModal = $state(false);
 
@@ -132,62 +126,39 @@
     if (selectedIds.length === 0) return;
 
     cleanupReport = null;
-    currentTaskId = null;
-    // Show the prepare state right away: the backend re-checks every group before its first
-    // event, and the last scan's "completed" event must never pass for a finished cleanup.
-    progressState = {
-      task_id: '',
-      kind: 'cleanup_execute',
-      state: 'running',
-      percent: 0,
-      phase: 'prepare',
-      title: t('Đang chuẩn bị dọn dẹp...'),
-      detail: '',
-      done_files: 0,
-      total_files: selectedIds.length,
-      done_bytes: 0,
-      total_bytes: 0,
-      throughput_bps: 0,
-      eta_seconds: 0,
-    };
     isExecuting = true;
 
     try {
-      const report = await executeCleanup(selectedIds, enableVault, isPermanent);
+      const report = await taskStore.run(
+        {
+          kind: 'cleanup_execute',
+          title: t('Đang dọn dẹp an toàn...'),
+          phase: 'prepare',
+          totalFiles: selectedIds.length,
+        },
+        () => executeCleanup(selectedIds, enableVault, isPermanent),
+        (res, wasMinimized) =>
+          wasMinimized
+            ? {
+                kind: 'ok',
+                title: t('Dọn dẹp thành công!'),
+                detail: t('Đã giải phóng {size}', { size: formatSize(res.total_reclaimed_bytes) }),
+              }
+            : null
+      );
       cleanupReport = report;
       showReportModal = true;
-    } catch (err) {
-      alert(t('Không dọn được: {errors}', { errors: String(err) }));
+    } catch {
+      // Toast handled by taskStore
     } finally {
       isExecuting = false;
-      progressState = null;
-      currentTaskId = null;
     }
   }
 
   onFilesChanged(() => triggerScan(true));
 
-  async function handleCancelTask() {
-    if (currentTaskId) {
-      await controlTask(currentTaskId, 'cancel');
-    }
-  }
-
   onMount(() => {
     triggerScan();
-
-    const unlistenPromise = listenTaskProgress((event) => {
-      // Only the running cleanup drives the progress dialog; scan events (including the
-      // re-scan after cleanup) would otherwise show up as a finished cleanup.
-      if (isExecuting && event.kind === 'cleanup_execute') {
-        progressState = event;
-        currentTaskId = event.task_id;
-      }
-    });
-
-    return () => {
-      unlistenPromise.then((unlisten) => unlisten());
-    };
   });
 </script>
 
@@ -291,9 +262,6 @@
       </div>
     </div>
   </div>
-
-  <!-- Zalo PC Quick Card -->
-  <ZaloCard />
 
   <!-- Candidates Table -->
   <div class="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
@@ -400,53 +368,6 @@
     {/if}
   </div>
 </div>
-
-<!-- Real-time Progress Telemetry Modal / Overlay -->
-{#if isExecuting && progressState}
-  <div class="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
-    <div class="bg-card border border-border rounded-2xl p-6 max-w-md w-full shadow-2xl space-y-4 max-h-full overflow-y-auto">
-      <div class="flex items-center justify-between">
-        <div class="flex items-center gap-2">
-          <RefreshCw class="h-5 w-5 text-accent animate-spin" />
-          <h3 class="font-semibold text-primary text-base">{progressState.title}</h3>
-        </div>
-        <button
-          class="text-secondary hover:text-primary text-xs px-2.5 py-1 rounded bg-subtle"
-          onclick={handleCancelTask}
-        >
-          {t('Hủy')}
-        </button>
-      </div>
-
-      <!-- Progress Bar -->
-      <div class="space-y-1.5">
-        <div class="flex justify-between text-xs font-medium text-secondary">
-          <span>{progressState.phase.toUpperCase()}</span>
-          <span>{progressState.percent}%</span>
-        </div>
-        <div class="w-full h-2.5 bg-subtle rounded-full overflow-hidden">
-          <div
-            class="h-full bg-accent transition-all duration-150 rounded-full"
-            style={`width: ${progressState.percent}%`}
-          ></div>
-        </div>
-      </div>
-
-      <p class="text-xs text-secondary truncate" title={progressState.detail}>
-        {progressState.detail}
-      </p>
-
-      <div class="grid grid-cols-2 gap-2 text-xs text-disabled pt-2 border-t border-border">
-        {#if progressState.phase === 'prepare'}
-          <div>{t('Chuẩn bị: {done} / {total} nhóm', { done: progressState.done_files, total: progressState.total_files })}</div>
-        {:else}
-          <div>{t('Đã xử lý: {done} / {total} tệp', { done: progressState.done_files, total: progressState.total_files })}</div>
-        {/if}
-        <div class="text-right">{formatSize(progressState.done_bytes)}</div>
-      </div>
-    </div>
-  </div>
-{/if}
 
 <!-- Post-Cleanup Summary Report Dialog -->
 {#if showReportModal && cleanupReport}
