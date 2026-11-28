@@ -447,7 +447,7 @@ pub async fn make_green_now(
                     && q.drive_root
                         .chars()
                         .next()
-                        .is_some_and(|c| c.to_ascii_uppercase() == sys_letter.to_ascii_uppercase())
+                        .is_some_and(|c| c.eq_ignore_ascii_case(&sys_letter))
             })
             .or_else(|| quotas.iter().find(|q| q.enabled))
             .or_else(|| quotas.first());
@@ -670,7 +670,8 @@ pub async fn make_green_now(
             record_locked_candidates(&t2_locked, &mut skipped_locked);
 
             // Order Tier 2 app groups LEAST-RECENTLY-USED first (tie-break: largest first)
-            let mut keyed_t2: Vec<(u64, u64, (String, String, Vec<CleanCandidate>))> =
+            type CleanupAppGroup = (String, String, Vec<CleanCandidate>);
+            let mut keyed_t2: Vec<(u64, u64, CleanupAppGroup)> =
                 group_candidates_by_app(&t2_unlocked)
                     .into_iter()
                     .map(|g| {
@@ -1173,8 +1174,6 @@ pub async fn make_green_now(
                                         {
                                             relocated_bytes =
                                                 relocated_bytes.saturating_add(rep.moved_bytes);
-                                            freed_so_far =
-                                                freed_so_far.saturating_add(rep.moved_bytes);
                                             let now_utc = Utc::now();
                                             let _ = state_inner.db.record_savings_event(
                                                 &SavingsEventInput {
