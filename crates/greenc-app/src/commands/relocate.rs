@@ -285,13 +285,18 @@ pub async fn relocate_directory(
         let task_id_clone = task_id_worker.clone();
         let cand_name = candidate.name.clone();
         let total_bytes = candidate.size_bytes;
+        let total_files = candidate.file_count;
 
         let options = MoveOptions {
             target_drive: drive_char,
             custom_target_path: None,
         };
 
-        let move_res = TransactionalMover::relocate_junction(
+        let mut last_emit = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_millis(200))
+            .unwrap_or_else(std::time::Instant::now);
+
+        let move_res = TransactionalMover::relocate_junction_with_file(
             &candidate,
             options,
             &state_inner.db,
@@ -300,9 +305,15 @@ pub async fn relocate_directory(
             &proc_probe,
             &shell_api,
             &task_ctrl,
-            move |done_b, done_f| {
+            move |done_b, done_f, rel_file| {
+                if last_emit.elapsed() < std::time::Duration::from_millis(100)
+                    && done_b < total_bytes
+                {
+                    return;
+                }
+                last_emit = std::time::Instant::now();
                 let percent = if total_bytes > 0 {
-                    ((done_b as f64 / total_bytes as f64) * 100.0) as u32
+                    (((done_b as f64 / total_bytes as f64) * 98.0) as u32).min(99)
                 } else {
                     0
                 };
@@ -313,9 +324,9 @@ pub async fn relocate_directory(
                     percent,
                     phase: "moving".to_string(),
                     title: format!("Đang chuyển {}", cand_name),
-                    detail: format!("Đã chuyển {} tệp", done_f),
+                    detail: rel_file.to_string(),
                     done_files: done_f,
-                    total_files: 0,
+                    total_files,
                     done_bytes: done_b,
                     total_bytes,
                     throughput_bps: 0,
@@ -326,6 +337,21 @@ pub async fn relocate_directory(
 
         match move_res {
             Ok(rec) => {
+                if rec.size_bytes > 0 {
+                    let now_utc = chrono::Utc::now();
+                    let _ = state_inner.db.record_savings_event(
+                        &greenc_storage::SavingsEventInput {
+                            timestamp: now_utc.to_rfc3339(),
+                            event_date: now_utc.format("%Y-%m-%d").to_string(),
+                            source_kind: "relocate".to_string(),
+                            source_ref: rec.id.map(|id| id.to_string()).unwrap_or_default(),
+                            app_name: rec.app_name.clone(),
+                            category: "relocate".to_string(),
+                            bytes_freed: rec.size_bytes,
+                            drive_letter: "C".to_string(),
+                        },
+                    );
+                }
                 state_inner.emit_progress(&TaskProgressEvent {
                     task_id: task_id_worker,
                     kind: "relocate".to_string(),
@@ -334,8 +360,8 @@ pub async fn relocate_directory(
                     phase: "done".to_string(),
                     title: format!("Đã chuyển {}", rec.app_name),
                     detail: format!("Dữ liệu mới ở {}", rec.target_path.display()),
-                    done_files: 1,
-                    total_files: 1,
+                    done_files: total_files.max(1),
+                    total_files: total_files.max(1),
                     done_bytes: rec.size_bytes,
                     total_bytes: rec.size_bytes,
                     throughput_bps: 0,
@@ -429,6 +455,7 @@ pub async fn relocate_known_folder(
         state.register_task(task_id.clone(), task_ctrl.clone());
 
         let state_inner = state.inner().clone();
+        let task_id_worker = task_id.clone();
         let result = tokio::task::spawn_blocking(move || {
             let drive_char = target_drive
                 .chars()
@@ -437,8 +464,23 @@ pub async fn relocate_known_folder(
 
             let shell_api = NativeShellFolderApi;
             let vol_api = NativeWin32VolumeApi;
+            let folder_meta = KnownFolderService::list_known_folders(drive_char, &shell_api)
+                .ok()
+                .and_then(|list| list.into_iter().find(|f| f.folder_id == folder_id));
+            let total_bytes = folder_meta.as_ref().map(|f| f.size_bytes).unwrap_or(0);
+            let total_files = folder_meta.as_ref().map(|f| f.file_count).unwrap_or(0);
+            let display_name = folder_meta
+                .as_ref()
+                .map(|f| f.name.clone())
+                .unwrap_or_else(|| folder_id.clone());
 
-            let rec = KnownFolderService::relocate_known_folder(
+            let state_progress = state_inner.clone();
+            let task_id_clone = task_id_worker.clone();
+            let mut last_emit = std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_millis(200))
+                .unwrap_or_else(std::time::Instant::now);
+
+            let rec = KnownFolderService::relocate_known_folder_with_file(
                 &folder_id,
                 drive_char,
                 None,
@@ -446,9 +488,68 @@ pub async fn relocate_known_folder(
                 &shell_api,
                 &vol_api,
                 &task_ctrl,
-                |_, _| {},
+                move |done_b, done_f, rel_file| {
+                    if last_emit.elapsed() < std::time::Duration::from_millis(100)
+                        && done_b < total_bytes
+                    {
+                        return;
+                    }
+                    last_emit = std::time::Instant::now();
+                    let percent = if total_bytes > 0 {
+                        (((done_b as f64 / total_bytes as f64) * 98.0) as u32).min(99)
+                    } else {
+                        0
+                    };
+                    state_progress.emit_progress(&TaskProgressEvent {
+                        task_id: task_id_clone.clone(),
+                        kind: "relocate".to_string(),
+                        state: "running".to_string(),
+                        percent,
+                        phase: "moving".to_string(),
+                        title: format!("Đang chuyển {}", display_name),
+                        detail: rel_file.to_string(),
+                        done_files: done_f,
+                        total_files,
+                        done_bytes: done_b,
+                        total_bytes,
+                        throughput_bps: 0,
+                        eta_seconds: 0,
+                    });
+                },
             )
             .map_err(|e| format!("Lỗi chuyển thư mục hệ thống: {e}"))?;
+
+            if rec.size_bytes > 0 {
+                let now_utc = chrono::Utc::now();
+                let _ = state_inner.db.record_savings_event(
+                    &greenc_storage::SavingsEventInput {
+                        timestamp: now_utc.to_rfc3339(),
+                        event_date: now_utc.format("%Y-%m-%d").to_string(),
+                        source_kind: "relocate".to_string(),
+                        source_ref: rec.id.map(|id| id.to_string()).unwrap_or_default(),
+                        app_name: rec.app_name.clone(),
+                        category: "relocate".to_string(),
+                        bytes_freed: rec.size_bytes,
+                        drive_letter: "C".to_string(),
+                    },
+                );
+            }
+
+            state_inner.emit_progress(&TaskProgressEvent {
+                task_id: task_id_worker,
+                kind: "relocate".to_string(),
+                state: "completed".to_string(),
+                percent: 100,
+                phase: "done".to_string(),
+                title: format!("Đã chuyển {}", rec.app_name),
+                detail: format!("Dữ liệu mới ở {}", rec.target_path.display()),
+                done_files: total_files.max(1),
+                total_files: total_files.max(1),
+                done_bytes: rec.size_bytes,
+                total_bytes: rec.size_bytes,
+                throughput_bps: 0,
+                eta_seconds: 0,
+            });
 
             Ok(RelocationResultDto {
                 id: rec.id,
@@ -686,4 +787,384 @@ pub async fn repair_junction_target(
     })
     .await
     .map_err(|e| format!("Task join error: {e}"))?
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchRelocateItemDto {
+    pub id: String,
+    pub name: String,
+    pub success: bool,
+    pub moved_bytes: u64,
+    pub target_path: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchRelocateReportDto {
+    pub task_id: String,
+    pub target_drive: String,
+    pub succeeded_count: usize,
+    pub failed_count: usize,
+    pub total_moved_bytes: u64,
+    pub cancelled: bool,
+    pub items: Vec<BatchRelocateItemDto>,
+}
+
+/// Moves multiple selected Known Folders and application candidates sequentially under a single task.
+#[tauri::command]
+pub async fn relocate_batch(
+    candidate_ids: Vec<String>,
+    known_folder_ids: Vec<String>,
+    target_drive: String,
+    state: State<'_, AppState>,
+) -> std::result::Result<BatchRelocateReportDto, String> {
+    let task_id = format!("relocate-batch-{}", chrono::Utc::now().timestamp_millis());
+    let task_ctrl = Arc::new(TaskControl::new());
+    state.register_task(task_id.clone(), task_ctrl.clone());
+
+    let state_inner = state.inner().clone();
+    let task_id_worker = task_id.clone();
+
+    let result = tokio::task::spawn_blocking(move || {
+        let drive_char = target_drive
+            .chars()
+            .next()
+            .ok_or_else(|| "Chưa chọn ổ đĩa hợp lệ".to_string())?
+            .to_ascii_uppercase();
+
+        let vol_api = NativeWin32VolumeApi;
+        let shell_api = NativeShellFolderApi;
+        let lock_probe = NativeFileLockProbe;
+        let proc_probe = NativeProcessServiceProbe;
+        let reparse_api = NativeReparsePointApi;
+
+        let all_candidates = CandidateScanner::discover_all(
+            drive_char,
+            &vol_api,
+            &shell_api,
+            &lock_probe,
+            &proc_probe,
+        );
+        let all_known = KnownFolderService::list_known_folders(drive_char, &shell_api)
+            .unwrap_or_default();
+
+        let selected_known: Vec<_> = all_known
+            .into_iter()
+            .filter(|kf| {
+                known_folder_ids.contains(&kf.folder_id) && !kf.is_onedrive && !kf.is_redirected
+            })
+            .collect();
+        let selected_cands: Vec<_> = all_candidates
+            .into_iter()
+            .filter(|c| candidate_ids.contains(&c.id) && c.is_eligible && !c.is_locked)
+            .collect();
+
+        let grand_total_bytes: u64 = selected_known
+            .iter()
+            .map(|k| k.size_bytes)
+            .chain(selected_cands.iter().map(|c| c.size_bytes))
+            .fold(0u64, u64::saturating_add);
+        let total_items = selected_known.len() + selected_cands.len();
+
+        let mut items_out = Vec::new();
+        let mut succeeded_count = 0usize;
+        let mut failed_count = 0usize;
+        let mut total_moved_bytes = 0u64;
+        let mut completed_bytes_so_far = 0u64;
+        let mut idx = 0usize;
+
+        // 1. Move selected Known Folders (skipped on Microsoft Store builds)
+        #[cfg(not(feature = "store"))]
+        for kf in selected_known {
+            if task_ctrl.is_cancelled() {
+                break;
+            }
+            idx += 1;
+            let state_progress = state_inner.clone();
+            let tid = task_id_worker.clone();
+            let kf_name = kf.name.clone();
+            let base_bytes = completed_bytes_so_far;
+            let mut last_emit = std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_millis(200))
+                .unwrap_or_else(std::time::Instant::now);
+
+            let res = KnownFolderService::relocate_known_folder_with_file(
+                &kf.folder_id,
+                drive_char,
+                None,
+                &state_inner.db,
+                &shell_api,
+                &vol_api,
+                &task_ctrl,
+                move |done_b, done_f, rel_file| {
+                    if last_emit.elapsed() < std::time::Duration::from_millis(100) {
+                        return;
+                    }
+                    last_emit = std::time::Instant::now();
+                    let cur = base_bytes.saturating_add(done_b);
+                    let pct = if grand_total_bytes > 0 {
+                        (((cur as f64 / grand_total_bytes as f64) * 98.0) as u32).min(99)
+                    } else {
+                        ((idx * 95) / total_items.max(1)) as u32
+                    };
+                    state_progress.emit_progress(&TaskProgressEvent {
+                        task_id: tid.clone(),
+                        kind: "relocate_batch".to_string(),
+                        state: "running".to_string(),
+                        percent: pct,
+                        phase: "moving".to_string(),
+                        title: format!("Đang chuyển ({}/{}) {}", idx, total_items, kf_name),
+                        detail: rel_file.to_string(),
+                        done_files: done_f,
+                        total_files: kf.file_count,
+                        done_bytes: cur,
+                        total_bytes: grand_total_bytes,
+                        throughput_bps: 0,
+                        eta_seconds: 0,
+                    });
+                },
+            );
+
+            match res {
+                Ok(rec) => {
+                    succeeded_count += 1;
+                    total_moved_bytes = total_moved_bytes.saturating_add(rec.size_bytes);
+                    if rec.size_bytes > 0 {
+                        let now_utc = chrono::Utc::now();
+                        let _ = state_inner.db.record_savings_event(
+                            &greenc_storage::SavingsEventInput {
+                                timestamp: now_utc.to_rfc3339(),
+                                event_date: now_utc.format("%Y-%m-%d").to_string(),
+                                source_kind: "relocate".to_string(),
+                                source_ref: rec.id.map(|id| id.to_string()).unwrap_or_default(),
+                                app_name: rec.app_name.clone(),
+                                category: "relocate".to_string(),
+                                bytes_freed: rec.size_bytes,
+                                drive_letter: "C".to_string(),
+                            },
+                        );
+                    }
+                    items_out.push(BatchRelocateItemDto {
+                        id: kf.folder_id,
+                        name: kf.name,
+                        success: true,
+                        moved_bytes: rec.size_bytes,
+                        target_path: Some(rec.target_path.to_string_lossy().to_string()),
+                        error: None,
+                    });
+                }
+                Err(e) => {
+                    failed_count += 1;
+                    items_out.push(BatchRelocateItemDto {
+                        id: kf.folder_id,
+                        name: kf.name,
+                        success: false,
+                        moved_bytes: 0,
+                        target_path: None,
+                        error: Some(e.to_string()),
+                    });
+                }
+            }
+            completed_bytes_so_far = completed_bytes_so_far.saturating_add(kf.size_bytes);
+        }
+        #[cfg(feature = "store")]
+        let _ = selected_known;
+
+        // 2. Move selected app candidates
+        for cand in selected_cands {
+            if task_ctrl.is_cancelled() {
+                break;
+            }
+            idx += 1;
+            let state_progress = state_inner.clone();
+            let tid = task_id_worker.clone();
+            let cand_name = cand.name.clone();
+            let base_bytes = completed_bytes_so_far;
+            let mut last_emit = std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_millis(200))
+                .unwrap_or_else(std::time::Instant::now);
+
+            let res = TransactionalMover::relocate_junction_with_file(
+                &cand,
+                MoveOptions {
+                    target_drive: drive_char,
+                    custom_target_path: None,
+                },
+                &state_inner.db,
+                &vol_api,
+                &reparse_api,
+                &proc_probe,
+                &shell_api,
+                &task_ctrl,
+                move |done_b, done_f, rel_file| {
+                    if last_emit.elapsed() < std::time::Duration::from_millis(100) {
+                        return;
+                    }
+                    last_emit = std::time::Instant::now();
+                    let cur = base_bytes.saturating_add(done_b);
+                    let pct = if grand_total_bytes > 0 {
+                        (((cur as f64 / grand_total_bytes as f64) * 98.0) as u32).min(99)
+                    } else {
+                        ((idx * 95) / total_items.max(1)) as u32
+                    };
+                    state_progress.emit_progress(&TaskProgressEvent {
+                        task_id: tid.clone(),
+                        kind: "relocate_batch".to_string(),
+                        state: "running".to_string(),
+                        percent: pct,
+                        phase: "moving".to_string(),
+                        title: format!("Đang chuyển ({}/{}) {}", idx, total_items, cand_name),
+                        detail: rel_file.to_string(),
+                        done_files: done_f,
+                        total_files: cand.file_count,
+                        done_bytes: cur,
+                        total_bytes: grand_total_bytes,
+                        throughput_bps: 0,
+                        eta_seconds: 0,
+                    });
+                },
+            );
+
+            match res {
+                Ok(rec) => {
+                    succeeded_count += 1;
+                    total_moved_bytes = total_moved_bytes.saturating_add(rec.size_bytes);
+                    if rec.size_bytes > 0 {
+                        let now_utc = chrono::Utc::now();
+                        let _ = state_inner.db.record_savings_event(
+                            &greenc_storage::SavingsEventInput {
+                                timestamp: now_utc.to_rfc3339(),
+                                event_date: now_utc.format("%Y-%m-%d").to_string(),
+                                source_kind: "relocate".to_string(),
+                                source_ref: rec.id.map(|id| id.to_string()).unwrap_or_default(),
+                                app_name: rec.app_name.clone(),
+                                category: "relocate".to_string(),
+                                bytes_freed: rec.size_bytes,
+                                drive_letter: "C".to_string(),
+                            },
+                        );
+                    }
+                    items_out.push(BatchRelocateItemDto {
+                        id: cand.id,
+                        name: cand.name,
+                        success: true,
+                        moved_bytes: rec.size_bytes,
+                        target_path: Some(rec.target_path.to_string_lossy().to_string()),
+                        error: None,
+                    });
+                }
+                Err(e) => {
+                    failed_count += 1;
+                    items_out.push(BatchRelocateItemDto {
+                        id: cand.id,
+                        name: cand.name,
+                        success: false,
+                        moved_bytes: 0,
+                        target_path: None,
+                        error: Some(e.to_string()),
+                    });
+                }
+            }
+            completed_bytes_so_far = completed_bytes_so_far.saturating_add(cand.size_bytes);
+        }
+
+        let cancelled = task_ctrl.is_cancelled();
+        state_inner.emit_progress(&TaskProgressEvent {
+            task_id: task_id_worker.clone(),
+            kind: "relocate_batch".to_string(),
+            state: if cancelled { "cancelled" } else { "completed" }.to_string(),
+            percent: 100,
+            phase: "done".to_string(),
+            title: "Đã hoàn tất di chuyển".to_string(),
+            detail: format!("Thành công: {} · Lỗi: {}", succeeded_count, failed_count),
+            done_files: succeeded_count as u64,
+            total_files: total_items as u64,
+            done_bytes: total_moved_bytes,
+            total_bytes: grand_total_bytes,
+            throughput_bps: 0,
+            eta_seconds: 0,
+        });
+
+        Ok(BatchRelocateReportDto {
+            task_id: task_id_worker,
+            target_drive: drive_char.to_string(),
+            succeeded_count,
+            failed_count,
+            total_moved_bytes,
+            cancelled,
+            items: items_out,
+        })
+    })
+    .await
+    .map_err(|e| format!("Batch relocate join error: {e}"))?;
+
+    state.unregister_task(&task_id);
+    result
+}
+
+/// Lists installed WSL2 distributions on Windows.
+#[tauri::command]
+pub async fn list_wsl_distros() -> std::result::Result<Vec<greenc_relocate::wsl::WslDistroInfo>, String> {
+    tokio::task::spawn_blocking(greenc_relocate::wsl::list_installed_wsl_distros)
+        .await
+        .map_err(|e| format!("WSL list error: {e}"))
+}
+
+/// Builds a validated, fail-closed 1-line PowerShell command & script for moving a WSL2 distro.
+#[tauri::command]
+pub async fn build_wsl_move_command(
+    distro: String,
+    target_drive: String,
+) -> std::result::Result<greenc_relocate::wsl::WslMoveScript, String> {
+    greenc_relocate::wsl::build_wsl_move_script(&distro, &target_drive).map_err(|e| e.to_string())
+}
+
+/// Launches the verified WSL2 move PowerShell script in a visible terminal window (non-Store Windows builds).
+#[tauri::command]
+pub async fn launch_wsl_move_powershell(
+    distro: String,
+    target_drive: String,
+) -> std::result::Result<bool, String> {
+    #[cfg(feature = "store")]
+    {
+        let _ = (distro, target_drive);
+        Err(
+            "Bản Microsoft Store không tự khởi chạy PowerShell. Hãy sao chép lệnh một dòng và dán vào PowerShell."
+                .to_string(),
+        )
+    }
+
+    #[cfg(not(feature = "store"))]
+    {
+        let script = greenc_relocate::wsl::build_wsl_move_script(&distro, &target_drive)
+            .map_err(|e| e.to_string())?;
+
+        #[cfg(windows)]
+        {
+            let tmp_dir = std::env::temp_dir().join("GreenC");
+            std::fs::create_dir_all(&tmp_dir)
+                .map_err(|e| format!("Không tạo được thư mục tạm: {e}"))?;
+            let script_path = tmp_dir.join(format!("move-wsl-{}.ps1", script.distro));
+            std::fs::write(&script_path, script.script_body.as_bytes())
+                .map_err(|e| format!("Không ghi được script PowerShell: {e}"))?;
+
+            std::process::Command::new("powershell.exe")
+                .args([
+                    "-NoExit",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    &script_path.to_string_lossy(),
+                ])
+                .spawn()
+                .map_err(|e| format!("Không mở được PowerShell: {e}"))?;
+            Ok(true)
+        }
+
+        #[cfg(not(windows))]
+        {
+            let _ = script;
+            Err("Tự chạy PowerShell chỉ khả dụng trên Windows.".to_string())
+        }
+    }
 }

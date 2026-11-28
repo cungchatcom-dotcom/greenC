@@ -242,6 +242,22 @@ pub fn verified_copy_tree_manifest<F>(
 where
     F: FnMut(u64, u64),
 {
+    verified_copy_tree_manifest_with_file(src, dst, opts, ctrl, |bytes, files, _rel| {
+        on_progress(bytes, files);
+    })
+}
+
+/// Like [`verified_copy_tree_manifest`], also passing the compact relative path of the file just copied.
+pub fn verified_copy_tree_manifest_with_file<F>(
+    src: &Path,
+    dst: &Path,
+    opts: &CopyTreeOptions,
+    ctrl: &TaskControl,
+    mut on_progress: F,
+) -> Result<(CopyStats, CopyManifest)>
+where
+    F: FnMut(u64, u64, &str),
+{
     let src_io = to_extended_io_path(src);
     let src_meta = match fs::symlink_metadata(&src_io) {
         Ok(m) => m,
@@ -357,17 +373,20 @@ where
                         created_files.push(dest_io);
                         copy_and_verify_file(&entry_path, &dest_path, ctrl)?.0
                     };
-                    if let Ok(rel) = entry_path.strip_prefix(src) {
+                    let rel_label = if let Ok(rel) = entry_path.strip_prefix(src) {
                         manifest.files.push(ManifestFile {
                             rel: rel.to_path_buf(),
                             len: meta.len(),
                             mtime: meta.modified().ok(),
                             regenerable,
                         });
-                    }
+                        rel.to_string_lossy().into_owned()
+                    } else {
+                        entry.file_name().to_string_lossy().into_owned()
+                    };
                     stats.files_copied = stats.files_copied.saturating_add(1);
                     stats.bytes_copied = stats.bytes_copied.saturating_add(copied_bytes);
-                    on_progress(stats.bytes_copied, stats.files_copied);
+                    on_progress(stats.bytes_copied, stats.files_copied, &rel_label);
                 } else if opts.fail_on_special_file {
                     return Err(GreenCError::PreconditionBlocked {
                         operation: "verified_copy".to_string(),
@@ -514,4 +533,34 @@ fn copy_and_verify_file(src: &Path, dst: &Path, ctrl: &TaskControl) -> Result<(u
     }
 
     Ok((total_copied, hash_src))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn verified_copy_with_file_streams_relative_filenames() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        let dst = dir.path().join("dst");
+        fs::create_dir_all(src.join("sub")).unwrap();
+        fs::write(src.join("sub").join("hello.bin"), b"greenc-payload").unwrap();
+
+        let ctrl = TaskControl::new();
+        let mut seen_files: Vec<String> = Vec::new();
+        let (stats, _) = verified_copy_tree_manifest_with_file(
+            &src,
+            &dst,
+            &CopyTreeOptions::default(),
+            &ctrl,
+            |_bytes, _files, rel| {
+                seen_files.push(rel.replace('\\', "/"));
+            },
+        )
+        .unwrap();
+
+        assert_eq!(stats.files_copied, 1);
+        assert_eq!(seen_files, vec!["sub/hello.bin".to_string()]);
+    }
 }

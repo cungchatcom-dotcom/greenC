@@ -9,6 +9,7 @@ pub mod mover;
 pub mod recovery;
 pub mod verified_copy;
 pub mod vhdx;
+pub mod wsl;
 pub mod zalo_move;
 
 pub use candidate::{

@@ -2,7 +2,10 @@
 
 use crate::candidate::{CandidateQualificationEngine, RelocationCandidate};
 use crate::recovery::path_has_content_or_uncertain;
-use crate::verified_copy::{remove_dir_all_safe, verified_copy_tree_manifest, CopyTreeOptions};
+use crate::verified_copy::{
+    remove_dir_all_safe, verified_copy_tree_manifest, verified_copy_tree_manifest_with_file,
+    CopyTreeOptions,
+};
 use chrono::Utc;
 use greenc_core::error::{GreenCError, Result};
 use greenc_core::models::{
@@ -164,10 +167,37 @@ impl TransactionalMover {
         proc_probe: &dyn ProcessServiceProbe,
         shell_api: &dyn ShellFolderApi,
         ctrl: &TaskControl,
-        on_progress: F,
+        mut on_progress: F,
     ) -> Result<RelocationRecord>
     where
         F: FnMut(u64, u64),
+    {
+        Self::relocate_junction_with_file(
+            candidate,
+            options,
+            db,
+            volume_api,
+            reparse_api,
+            proc_probe,
+            shell_api,
+            ctrl,
+            |b, f, _| on_progress(b, f),
+        )
+    }
+
+    pub fn relocate_junction_with_file<F>(
+        candidate: &RelocationCandidate,
+        options: MoveOptions,
+        db: &GreenCDb,
+        volume_api: &dyn Win32VolumeApi,
+        reparse_api: &dyn ReparsePointApi,
+        proc_probe: &dyn ProcessServiceProbe,
+        shell_api: &dyn ShellFolderApi,
+        ctrl: &TaskControl,
+        on_progress: F,
+    ) -> Result<RelocationRecord>
+    where
+        F: FnMut(u64, u64, &str),
     {
         let target_drive = options.target_drive;
         let source_path = candidate.source_path.clone();
@@ -219,7 +249,7 @@ impl TransactionalMover {
             target_path.display()
         );
 
-        let (copy_stats, manifest) = verified_copy_tree_manifest(
+        let (copy_stats, manifest) = verified_copy_tree_manifest_with_file(
             &source_path,
             &target_path,
             // A copy without the links inside would look complete but break the app.

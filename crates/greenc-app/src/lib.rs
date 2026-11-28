@@ -81,12 +81,16 @@ pub fn run() {
             // Relocation (User Story 3)
             commands::relocate::scan_relocation_candidates,
             commands::relocate::relocate_directory,
+            commands::relocate::relocate_batch,
             commands::relocate::get_known_folders,
             commands::relocate::relocate_known_folder,
             commands::relocate::recover_interrupted_relocations,
             commands::relocate::list_relocation_history,
             commands::relocate::undo_relocation,
             commands::relocate::repair_junction_target,
+            commands::relocate::list_wsl_distros,
+            commands::relocate::build_wsl_move_command,
+            commands::relocate::launch_wsl_move_powershell,
             // Zalo PC Management (Discovery, Safe Clean & Auto Move)
             commands::zalo::get_zalo_status,
             commands::zalo::clean_zalo_now,

@@ -2,7 +2,7 @@
 
 use crate::candidate::{CandidateQualificationEngine, CandidateScanner};
 use crate::mover::contains_zalo_chat_data;
-use crate::verified_copy::{verified_copy_tree_manifest, CopyTreeOptions};
+use crate::verified_copy::{verified_copy_tree_manifest_with_file, CopyTreeOptions};
 use chrono::Utc;
 use greenc_core::error::{GreenCError, Result};
 use greenc_core::models::{
@@ -90,10 +90,36 @@ impl KnownFolderService {
         shell_api: &dyn ShellFolderApi,
         volume_api: &dyn Win32VolumeApi,
         ctrl: &TaskControl,
-        on_progress: F,
+        mut on_progress: F,
     ) -> Result<RelocationRecord>
     where
         F: FnMut(u64, u64),
+    {
+        Self::relocate_known_folder_with_file(
+            folder_id,
+            target_drive,
+            custom_target_path,
+            db,
+            shell_api,
+            volume_api,
+            ctrl,
+            |b, f, _| on_progress(b, f),
+        )
+    }
+
+    /// Same as [`relocate_known_folder`], also streaming the current relative file path.
+    pub fn relocate_known_folder_with_file<F>(
+        folder_id: &str,
+        target_drive: char,
+        custom_target_path: Option<PathBuf>,
+        db: &GreenCDb,
+        shell_api: &dyn ShellFolderApi,
+        volume_api: &dyn Win32VolumeApi,
+        ctrl: &TaskControl,
+        on_progress: F,
+    ) -> Result<RelocationRecord>
+    where
+        F: FnMut(u64, u64, &str),
     {
         let guid = match folder_id {
             "downloads" => FOLDERID_DOWNLOADS,
@@ -144,7 +170,7 @@ impl KnownFolderService {
         fs::create_dir_all(&target_path)?;
 
         // Copy files with streaming SHA-256 verification
-        let (copy_stats, manifest) = verified_copy_tree_manifest(
+        let (copy_stats, manifest) = verified_copy_tree_manifest_with_file(
             &current_path,
             &target_path,
             &CopyTreeOptions::default(),
