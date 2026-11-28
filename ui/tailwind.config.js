@@ -5,20 +5,20 @@ export default {
   theme: {
     extend: {
       colors: {
-        canvas: 'var(--bg-canvas)',
-        card: 'var(--bg-card)',
-        subtle: 'var(--bg-subtle)',
+        canvas: 'rgb(var(--bg-canvas-rgb) / <alpha-value>)',
+        card: 'rgb(var(--bg-card-rgb) / <alpha-value>)',
+        subtle: 'rgb(var(--bg-subtle-rgb) / <alpha-value>)',
         border: 'var(--border-subtle)',
-        primary: 'var(--text-primary)',
-        secondary: 'var(--text-secondary)',
+        primary: 'rgb(var(--text-primary-rgb) / <alpha-value>)',
+        secondary: 'rgb(var(--text-secondary-rgb) / <alpha-value>)',
         disabled: 'var(--text-disabled)',
         accent: {
-          DEFAULT: 'var(--accent)',
-          hover: 'var(--accent-hover)',
+          DEFAULT: 'rgb(var(--accent-rgb) / <alpha-value>)',
+          hover: 'rgb(var(--accent-hover-rgb) / <alpha-value>)',
           subtle: 'var(--accent-subtle)'
         },
-        danger: 'var(--danger)',
-        warning: 'var(--warning)'
+        danger: 'rgb(var(--danger-rgb) / <alpha-value>)',
+        warning: 'rgb(var(--warning-rgb) / <alpha-value>)'
       },
       fontFamily: {
         sans: ['"Segoe UI Variable Text"', '"Segoe UI"', 'system-ui', 'sans-serif'],

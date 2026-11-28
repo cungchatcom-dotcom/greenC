@@ -7,6 +7,12 @@ Ghi thay đổi mới vào mục **Unreleased**. Khi phát hành, `scripts/versi
 
 ## [Unreleased]
 
+## [2.4.1] - 2026-11-28
+
+### Sửa
+- Sửa lỗi biểu đồ cột trong **Hiệu quả của GreenC** (`SavingsScorecard`) bị trong suốt/tàng hình do Tailwind v3 bỏ qua các lớp độ mờ (`bg-accent/85`, `bg-accent/15`, `bg-danger/15`, ...) khi biến màu trong `tailwind.config.js` khai báo dạng hex `var(--accent)` thay vì kênh RGB `rgb(var(--accent-rgb) / <alpha-value>)`.
+- Bổ sung `aria-label` và cỡ chữ dễ đọc hơn cho các cột biểu đồ theo kết quả rà soát OCR.
+
 ## [2.4.0] - 2026-11-28
 
 ### Cải thiện

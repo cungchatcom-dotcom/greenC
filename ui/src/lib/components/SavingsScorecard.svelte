@@ -165,14 +165,14 @@
         </div>
 
         <div class="pt-3 space-y-1.5">
-          <div class="relative h-36 flex items-end gap-1.5 border-b border-border/70 pb-0.5">
+          <div class="relative h-40 flex items-end gap-1.5 border-b border-zinc-300 dark:border-zinc-700 pb-0.5">
             <!-- Subtle horizontal guide lines -->
-            <div class="pointer-events-none absolute inset-x-0 top-0 border-t border-dashed border-border/40"></div>
-            <div class="pointer-events-none absolute inset-x-0 top-1/2 border-t border-dashed border-border/40"></div>
+            <div class="pointer-events-none absolute inset-x-0 top-0 border-t border-dashed border-zinc-300/70 dark:border-zinc-700/70"></div>
+            <div class="pointer-events-none absolute inset-x-0 top-1/2 border-t border-dashed border-zinc-300/70 dark:border-zinc-700/70"></div>
 
             {#each stats.buckets as bucket, idx}
               {@const barPx = bucket.bytes_freed > 0
-                ? Math.max(10, Math.round((bucket.bytes_freed / maxBucketBytes) * 132))
+                ? Math.max(10, Math.round((bucket.bytes_freed / maxBucketBytes) * 116))
                 : 3}
               <button
                 type="button"
@@ -181,19 +181,20 @@
                 onfocus={() => (hoveredIdx = idx)}
                 class="relative z-10 flex-1 h-full flex flex-col items-center justify-end group outline-none"
                 title={`${bucket.label}: ${formatSize(bucket.bytes_freed)}`}
+                aria-label={`${bucket.label}: ${formatSize(bucket.bytes_freed)}`}
               >
                 {#if bucket.bytes_freed > 0}
-                  <span class="text-[9px] font-mono font-semibold text-accent mb-1 truncate max-w-full opacity-90 group-hover:opacity-100">
+                  <span class="text-[10px] font-mono font-semibold text-accent mb-1 truncate max-w-full leading-tight">
                     {formatSize(bucket.bytes_freed)}
                   </span>
                 {/if}
                 <div
-                  class={`w-full max-w-[36px] rounded-t-md transition-all duration-200 ${
+                  class={`w-full max-w-[36px] min-w-[6px] rounded-t-md transition-all duration-200 ${
                     bucket.bytes_freed > 0
-                      ? 'bg-accent/85 group-hover:bg-accent shadow-sm'
-                      : 'bg-border/45 group-hover:bg-border/80'
+                      ? 'bg-accent group-hover:bg-accent-hover shadow-sm'
+                      : 'bg-zinc-300/60 dark:bg-zinc-700/60 group-hover:bg-zinc-400 dark:group-hover:bg-zinc-600'
                   }`}
-                  style={`height: ${barPx}px`}
+                  style:height={`${barPx}px`}
                 ></div>
               </button>
             {/each}
@@ -238,7 +239,7 @@
                     <span class="text-[10px] text-secondary font-normal">({app.share_pct}%)</span>
                   </span>
                 </div>
-                <div class="w-full h-1.5 rounded-full bg-border/50 overflow-hidden">
+                <div class="w-full h-1.5 rounded-full bg-zinc-200 dark:bg-zinc-700/60 overflow-hidden">
                   <div
                     class="h-full rounded-full bg-accent transition-all duration-300"
                     style={`width: ${Math.max(4, Math.min(100, app.share_pct))}%`}
