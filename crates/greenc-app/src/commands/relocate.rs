@@ -876,15 +876,15 @@ pub async fn relocate_batch(
         let mut failed_count = 0usize;
         let mut total_moved_bytes = 0u64;
         let mut completed_bytes_so_far = 0u64;
-        let mut idx = 0usize;
+        let known_count = selected_known.len();
 
         // 1. Move selected Known Folders (skipped on Microsoft Store builds)
         #[cfg(not(feature = "store"))]
-        for kf in selected_known {
+        for (kf_idx, kf) in selected_known.into_iter().enumerate() {
             if task_ctrl.is_cancelled() {
                 break;
             }
-            idx += 1;
+            let idx = kf_idx + 1;
             let state_progress = state_inner.clone();
             let tid = task_id_worker.clone();
             let kf_name = kf.name.clone();
@@ -976,11 +976,11 @@ pub async fn relocate_batch(
         let _ = selected_known;
 
         // 2. Move selected app candidates
-        for cand in selected_cands {
+        for (cand_idx, cand) in selected_cands.into_iter().enumerate() {
             if task_ctrl.is_cancelled() {
                 break;
             }
-            idx += 1;
+            let idx = known_count + cand_idx + 1;
             let state_progress = state_inner.clone();
             let tid = task_id_worker.clone();
             let cand_name = cand.name.clone();

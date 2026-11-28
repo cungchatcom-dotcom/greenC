@@ -7,6 +7,16 @@ Ghi thay đổi mới vào mục **Unreleased**. Khi phát hành, `scripts/versi
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-11-28
+
+### Cải thiện
+- Bỏ menu trái, thay bằng thanh top bar icon gọn gàng (**Trang chủ**, **Khôi phục**, **Tùy chỉnh**, **Cài đặt**, **Chạy ngầm**).
+- Nâng cấp nút **Làm xanh ổ C: ngay** chạy trọn chuỗi (Phân tích → Chọn ổ dự phòng → Dọn rác tách theo từng ứng dụng → Nén gọn WOF → Tự động chuyển dữ liệu an toàn → Báo cáo trước/sau), hỗ trợ máy 1 ổ với 2 lựa chọn và hỏi xác nhận đóng/mở lại các ứng dụng đang mở.
+- Thêm bảng **Hiệu quả của GreenC** ngay trên Trang chủ theo Ngày / Tuần / Tháng / Năm kèm xếp hạng top ứng dụng sinh rác nhiều nhất.
+- Trang **Khôi phục** hợp nhất, lọc theo Ngày hoặc Ứng dụng, khôi phục 1 chạm không còn thuật ngữ kỹ thuật.
+- Màn **Di chuyển** hỗ trợ chọn nhiều mục + **Chuyển tất cả**, bỏ popup xác nhận từng dòng, hỗ trợ **Ẩn chạy ngầm**, hiển thị gọn tên tệp đang chuyển, tự động đóng popup khi xong, và thêm **1 chạm PowerShell** cho WSL2.
+- Quốc tế hoá nhóm **Chat & Mạng xã hội** (Telegram, Discord, Slack, Teams, WhatsApp, WeChat, Viber, LINE, DingTalk, Zalo PC) và ẩn hoàn toàn các mục không còn gì để dọn/chuyển trên ổ C:.
+
 ## [2.2.3] - 2026-11-26
 
 ### Cải thiện
